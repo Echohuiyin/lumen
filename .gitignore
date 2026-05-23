@@ -17,3 +17,6 @@ __pycache__/
 
 # LangGraph
 .langgraph_api/
+
+# test / runtime artifacts
+_test_tmp.txt
