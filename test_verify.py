@@ -12,6 +12,7 @@ from graph.router import (
     route_after_executor,
     route_after_reviewer,
 )
+from langgraph.checkpoint.memory import MemorySaver
 from graph.workflow import build_workflow
 from tools.project_tools import read_file, run_shell_command, search_code, write_file
 
@@ -31,11 +32,13 @@ def test_parsers():
     exec_ok = parse_executor_response("完成\nSTATUS: success\nRESULT:\n文件共 85 行")
     assert exec_ok["status"] == "success"
 
-    exec_ask = parse_executor_response("需要澄清\nSTATUS: need_user_input\nQUESTION:\n哪个目录？")
-    assert exec_ask["status"] == "need_user_input"
-
     exec_fail = parse_executor_response("失败\nSTATUS: failed\nERROR:\n权限不足")
     assert exec_fail["status"] == "failed"
+
+    exec_fail_over_ask = parse_executor_response(
+        "需要澄清\nSTATUS: need_user_input\nQUESTION:\n哪个目录？\nSTATUS: failed\nERROR:\nx"
+    )
+    assert exec_fail_over_ask["status"] == "failed"
 
     rev_ok = parse_reviewer_response("通过\nREVIEW: approved\nSUMMARY:\n结果正确")
     assert rev_ok["status"] == "approved"
@@ -64,8 +67,8 @@ def test_tools():
 def test_routing():
     assert route_after_coordinator({"next_node": "executor"}) == "executor"
     assert route_after_coordinator({"next_node": "end"}) == "__end__"
+    assert route_after_coordinator({"next_node": "clarify"}) == "coordinator_clarify"
 
-    assert route_after_executor({"executor_status": "need_user_input"}) == "coordinator"
     assert route_after_executor({"executor_status": "failed"}) == "coordinator"
     assert route_after_executor({"executor_status": "success"}) == "reviewer"
 
@@ -76,9 +79,10 @@ def test_routing():
 
 
 def test_graph_compile():
-    graph = build_workflow()
+    graph = build_workflow(checkpointer=MemorySaver())
     nodes = set(graph.get_graph().nodes.keys())
     assert "coordinator" in nodes
+    assert "coordinator_clarify" in nodes
     assert "executor" in nodes
     assert "reviewer" in nodes
     print("[OK] graph compile")

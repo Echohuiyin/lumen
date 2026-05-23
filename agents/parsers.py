@@ -25,11 +25,6 @@ def parse_coordinator_response(text: str) -> dict:
 
 
 def parse_executor_response(text: str) -> dict:
-    if "STATUS: need_user_input" in text:
-        return {
-            "status": "need_user_input",
-            "content": extract_section(text, "QUESTION") or text.strip(),
-        }
     if "STATUS: failed" in text:
         return {
             "status": "failed",

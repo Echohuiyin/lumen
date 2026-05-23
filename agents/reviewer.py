@@ -1,5 +1,6 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from agents.llm_display import call_llm_with_display
 from agents.parsers import parse_reviewer_response
 from config import get_llm, load_prompt
 from graph.state import WorkflowState
@@ -16,13 +17,13 @@ def reviewer_node(state: WorkflowState) -> dict:
         "请审核执行结果是否符合预期。"
     )
 
-    print(f"\n[Reviewer] 开始审核执行结果...")
-    response = llm.invoke(
-        [SystemMessage(content=system_prompt), HumanMessage(content=user_content)]
+    response = call_llm_with_display(
+        "Reviewer",
+        "思考并审核执行结果",
+        llm,
+        [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
     )
     parsed = parse_reviewer_response(response.content)
-
-    print(f"[Reviewer] 审核结果: {parsed['status']}")
 
     result: dict = {
         "messages": [response],

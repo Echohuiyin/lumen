@@ -1,0 +1,14 @@
+{
+  "messages": [],
+  "user_request": "读取 main.py 并统计行数",
+  "task_plan": "",
+  "execution_result": "",
+  "review_feedback": "",
+  "review_status": null,
+  "executor_status": null,
+  "retry_count": 0,
+  "final_response": "",
+  "next_node": "executor",
+  "coordinator_mode": "plan",
+  "clarify_question": ""
+}

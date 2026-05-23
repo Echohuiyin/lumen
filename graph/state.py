@@ -11,8 +11,9 @@ class WorkflowState(TypedDict):
     execution_result: str
     review_feedback: str
     review_status: Optional[Literal["approved", "rejected"]]
-    executor_status: Optional[Literal["success", "need_user_input", "failed"]]
+    executor_status: Optional[Literal["success", "failed"]]
     retry_count: int
     final_response: str
     next_node: str
     coordinator_mode: str
+    clarify_question: str

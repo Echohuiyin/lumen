@@ -1,5 +1,6 @@
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
+from agents.llm_display import call_llm_with_display, print_tool_call, print_tool_result
 from agents.parsers import parse_executor_response
 from config import get_llm, load_prompt
 from graph.state import WorkflowState
@@ -12,8 +13,13 @@ def _run_tool_loop(llm, messages: list) -> str:
     llm_with_tools = llm.bind_tools(PROJECT_TOOLS)
     tool_map = {tool.name: tool for tool in PROJECT_TOOLS}
 
-    for _ in range(MAX_TOOL_ITERATIONS):
-        response = llm_with_tools.invoke(messages)
+    for step in range(1, MAX_TOOL_ITERATIONS + 1):
+        response = call_llm_with_display(
+            "Executor",
+            f"思考并执行 (第 {step} 轮)",
+            llm_with_tools,
+            messages,
+        )
         messages.append(response)
 
         if not response.tool_calls:
@@ -21,6 +27,7 @@ def _run_tool_loop(llm, messages: list) -> str:
 
         for tool_call in response.tool_calls:
             tool_fn = tool_map.get(tool_call["name"])
+            print_tool_call(tool_call["name"], tool_call["args"])
             if tool_fn is None:
                 result = f"错误: 未知工具 {tool_call['name']}"
             else:
@@ -28,6 +35,7 @@ def _run_tool_loop(llm, messages: list) -> str:
                     result = tool_fn.invoke(tool_call["args"])
                 except Exception as exc:
                     result = f"工具执行异常: {exc}"
+            print_tool_result(str(result))
             messages.append(
                 ToolMessage(content=str(result), tool_call_id=tool_call["id"])
             )
@@ -51,11 +59,8 @@ def executor_node(state: WorkflowState) -> dict:
         HumanMessage(content=f"任务计划:\n{task_context}"),
     ]
 
-    print(f"\n[Executor] 开始执行任务...")
     raw_response = _run_tool_loop(llm, messages)
     parsed = parse_executor_response(raw_response)
-
-    print(f"[Executor] 状态: {parsed['status']}")
 
     return {
         "messages": [HumanMessage(content=f"[Executor] {raw_response}")],

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://langgra.ph/schema.json",
+  "python_version": "3.12",
+  "dependencies": ["."],
+  "graphs": {
+    "ewel": {
+      "path": "./graph/workflow.py:graph",
+      "description": "EWEL 项目例行多 Agent 工作流（Coordinator / Executor / Reviewer）"
+    }
+  },
+  "env": ".env"
+}
