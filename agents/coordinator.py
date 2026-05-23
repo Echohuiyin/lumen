@@ -3,7 +3,7 @@ from langgraph.types import Overwrite, interrupt
 
 from agents.llm_display import call_llm_with_display
 from agents.parsers import parse_coordinator_response, parse_task_items
-from config import MAX_PARALLEL_TASKS, get_llm, load_prompt
+from config import get_llm, load_prompt
 from graph.state import WorkflowState
 
 PHASE_LABELS = {
@@ -70,11 +70,12 @@ def _apply_planning_result(state: WorkflowState, response, parsed: dict) -> dict
 
     if parsed["mode"] == "plan" and parsed.get("task_plan", "").strip():
         task_plan = parsed["task_plan"]
-        task_items = parse_task_items(task_plan)[:MAX_PARALLEL_TASKS]
+        task_items = parse_task_items(task_plan)
         return {
             "messages": [response],
             "task_plan": task_plan,
             "task_items": task_items,
+            "task_batch_offset": 0,
             "execution_results": Overwrite([]),
             "execution_result": "",
             "executor_status": None,

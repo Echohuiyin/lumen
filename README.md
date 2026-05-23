@@ -26,8 +26,10 @@ flowchart TD
 
     fanout --> executor[Executor<br/>执行者]
     executor --> aggregate[executor_aggregate<br/>汇总执行结果]
-    aggregate -->|"success"| reviewer[Reviewer<br/>审核者]
     aggregate -->|"failed"| coordinator
+    aggregate -->|"success 且仍有待执行批次"| batch[batch_advance<br/>下一批]
+    batch --> fanout
+    aggregate -->|"success 且全部完成"| reviewer[Reviewer<br/>审核者]
 
     reviewer -->|"approved"| summarizer[Summarizer<br/>汇总者]
     reviewer -->|"rejected 且未超重试上限"| fanout
@@ -49,9 +51,9 @@ flowchart TD
 
 1. **用户交互仅发生在任务制定阶段**：Coordinator 信息不足时使用 `USER_QUESTION` 向用户澄清；无法形成可执行计划时直接 `FINAL_RESPONSE` 结束，不交给 Executor。
 2. **Executor 不得向用户提问**：遇到阻碍时使用 `STATUS: failed` 报告，由 Coordinator 自动重新规划（不再询问用户）。
-3. **子任务并行执行**：Coordinator 在 `TASK_PLAN` 中用编号列表（`1.` `2.` …）输出多个子任务；解析器拆分为 `task_items`，通过 LangGraph `Send` 并行 fan-out 到多个 Executor，全部完成后由 `executor_aggregate` 汇总，再进入 Reviewer。
-4. **Reviewer 拒绝后自动重试**：最多重试 3 次（`config.py` 中 `MAX_RETRIES`），超限后 Summarizer 强制汇总。
-5. **并发上限**：`config.py` 中 `MAX_PARALLEL_TASKS`（默认 5）限制单次 fan-out 的子任务数量。
+3. **子任务并行执行**：Coordinator 在 `TASK_PLAN` 中用编号列表（`1.` `2.` …）输出多个子任务；解析器拆分为完整 `task_items` 列表。每批最多 `MAX_PARALLEL_TASKS`（默认 5）个子任务通过 LangGraph `Send` 并行 fan-out；一批完成后由 `batch_advance` 推进下一批，**全部子任务执行完毕**后 `executor_aggregate` 汇总，再进入 Reviewer。
+4. **Reviewer 拒绝后自动重试**：最多重试 3 次（`config.py` 中 `MAX_RETRIES`），超限后 Summarizer 强制汇总。重试时从第一批重新执行全部子任务。
+5. **并发批次上限**：`config.py` 中 `MAX_PARALLEL_TASKS`（默认 5）控制**每批**并发子任务数，不限制计划中的子任务总数。
 
 ---
 
@@ -71,7 +73,7 @@ Lumen/
 ├── agents/                      # Agent 节点实现
 │   ├── coordinator.py           # Coordinator + coordinator_clarify 节点逻辑
 │   ├── executor.py              # Executor 节点：单个子任务的 ReAct 工具循环
-│   ├── executor_aggregate.py    # 汇总多个并行 Executor 分支的执行结果
+│   ├── executor_aggregate.py    # 汇总执行结果；batch_advance 推进下一批子任务
 │   ├── reviewer.py              # Reviewer 节点：审核执行结果
 │   ├── summarizer.py            # Summarizer 节点：生成最终用户回复
 │   ├── llm_display.py           # LLM 流式输出与 thinking 展示工具
@@ -107,7 +109,7 @@ Lumen/
 | 文件 | 作用 |
 |------|------|
 | `main.py` | CLI 入口。读取用户指令，启动工作流，处理规划阶段的 interrupt 恢复，打印最终回复。本地运行时使用 `MemorySaver` 作为 checkpointer。 |
-| `config.py` | 加载 `.env`，提供 `get_llm()` 创建 LLM 客户端，`load_prompt()` 读取 `prompts/` 下的 Markdown 文件；`MAX_RETRIES` 控制审核重试上限，`MAX_PARALLEL_TASKS` 控制并发子任务上限。 |
+| `config.py` | 加载 `.env`，提供 `get_llm()` 创建 LLM 客户端，`load_prompt()` 读取 `prompts/` 下的 Markdown 文件；`MAX_RETRIES` 控制审核重试上限，`MAX_PARALLEL_TASKS` 控制每批并发子任务数（超出部分排队分批执行）。 |
 | `langgraph.json` | LangGraph dev 配置：指定 graph 路径、依赖、环境变量文件。运行 `langgraph dev` 时使用。 |
 | `pyproject.toml` | Python 包元数据，`langgraph dev` 通过 `"dependencies": ["."]` 安装本项目。 |
 | `requirements.txt` | 运行时 pip 依赖。 |
@@ -121,7 +123,7 @@ Lumen/
 |------|------|
 | `coordinator.py` | 实现 `coordinator_node` 和 `coordinator_clarify_node`。负责规划、澄清、重规划；将 `TASK_PLAN` 解析为 `task_items` 供并发执行。 |
 | `executor.py` | 实现 `executor_node`。每次只执行一个子任务（`current_task`），绑定 `project_tools`，通过 ReAct 循环（最多 10 轮）完成操作。 |
-| `executor_aggregate.py` | 实现 `executor_aggregate_node`。等待所有并行 Executor 分支完成后，合并 `execution_results` 并计算整体 `executor_status`。 |
+| `executor_aggregate.py` | 实现 `executor_aggregate_node` 与 `batch_advance_node`。每批 Executor 完成后合并 `execution_results`；若仍有待执行批次则推进 `task_batch_offset` 并继续 fan-out，全部完成后才交给 Reviewer。 |
 | `reviewer.py` | 实现 `reviewer_node`。对照用户需求和任务计划审核汇总后的执行结果，输出 approved / rejected。 |
 | `summarizer.py` | 实现 `summarizer_node`。审核完成后汇总全部信息，生成 `final_response`。 |
 | `llm_display.py` | 封装 `call_llm_with_display()`，流式打印 Agent 思考过程；支持模型原生 `reasoning_content` 字段；Executor 工具调用日志也在这里输出。 |
@@ -218,7 +220,7 @@ builder.add_edge("validator", "reviewer")
 
 编辑 `graph/router.py`。路由函数读取 `state` 中的状态字段（如 `next_node`、`executor_status`、`review_status`），返回下一个节点名称、`END`，或通过 `Send` 返回并行分支列表。
 
-Coordinator 与 Reviewer 的重试路径通过 `dispatch_executors()` 向 Executor fan-out；全部子任务完成后由 `executor_aggregate` fan-in，再进入 Reviewer 或 Coordinator。
+Coordinator 与 Reviewer 的重试路径通过 `dispatch_executors()` 向 Executor fan-out；每批子任务完成后由 `executor_aggregate` 检查是否还有 `batch_advance` 待执行批次，**全部子任务完成后**才 fan-in 进入 Reviewer 或 Coordinator（失败时）。
 
 节点函数通过设置 `next_node` 字段来影响 Coordinator 的路由：
 

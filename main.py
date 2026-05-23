@@ -53,6 +53,7 @@ def run_workflow(user_request: str) -> str:
         "task_items": [],
         "current_task": "",
         "task_index": 0,
+        "task_batch_offset": 0,
         "execution_results": [],
         "execution_result": "",
         "review_feedback": "",

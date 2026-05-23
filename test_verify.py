@@ -9,6 +9,7 @@ from agents.parsers import (
     parse_task_items,
 )
 from graph.router import (
+    has_pending_batches,
     route_after_coordinator,
     route_after_executor_aggregate,
     route_after_reviewer,
@@ -84,7 +85,19 @@ def test_routing():
     assert route_after_coordinator({"next_node": "clarify"}) == "coordinator_clarify"
 
     assert route_after_executor_aggregate({"executor_status": "failed"}) == "coordinator"
-    assert route_after_executor_aggregate({"executor_status": "success"}) == "reviewer"
+    assert route_after_executor_aggregate({"executor_status": "success", "task_items": ["a"]}) == "reviewer"
+    assert route_after_executor_aggregate({
+        "executor_status": "success",
+        "task_items": ["a", "b", "c", "d", "e", "f"],
+        "task_batch_offset": 0,
+    }) == "batch_advance"
+    assert route_after_executor_aggregate({
+        "executor_status": "success",
+        "task_items": ["a", "b", "c", "a", "b", "c"],
+        "task_batch_offset": 5,
+    }) == "reviewer"
+    assert has_pending_batches({"task_items": ["a"] * 6, "task_batch_offset": 0})
+    assert not has_pending_batches({"task_items": ["a"] * 6, "task_batch_offset": 5})
 
     retry = route_after_reviewer({"review_status": "rejected", "retry_count": 1, "task_items": ["a"]})
     assert retry[0].node == "executor"
@@ -100,6 +113,7 @@ def test_graph_compile():
     assert "coordinator_clarify" in nodes
     assert "executor" in nodes
     assert "executor_aggregate" in nodes
+    assert "batch_advance" in nodes
     assert "reviewer" in nodes
     assert "summarizer" in nodes
     print("[OK] graph compile")

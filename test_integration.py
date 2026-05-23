@@ -38,6 +38,7 @@ def _base_state(user_request: str) -> dict:
         "task_items": [],
         "current_task": "",
         "task_index": 0,
+        "task_batch_offset": 0,
         "execution_results": [],
         "execution_result": "",
         "review_feedback": "",
@@ -91,6 +92,37 @@ def test_parallel_execution():
                     assert "26" in result["execution_result"]
                     assert "85" in result["final_response"]
     print("[OK] parallel execution")
+
+
+def test_batched_execution():
+    """超出并发上限时排队分批：7 个子任务、MAX_PARALLEL_TASKS=2，全部完成后才进入 Reviewer"""
+    task_plan = "\n".join(f"{index}. 执行任务 {index}" for index in range(1, 8))
+    executor_responses = [
+        f"STATUS: success\nRESULT:\ndone {index}" for index in range(1, 8)
+    ]
+    responses = [
+        f"TASK_PLAN:\n{task_plan}",
+        *executor_responses,
+        "REVIEW: approved\nSUMMARY:\n全部 7 项任务已完成",
+        "FINAL_RESPONSE:\n7 项任务全部完成。",
+    ]
+    with patch("graph.router.MAX_PARALLEL_TASKS", 2):
+        with patch("agents.executor_aggregate.MAX_PARALLEL_TASKS", 2):
+            with patch("agents.coordinator.get_llm", return_value=_make_llm([responses[0]])):
+                with patch("agents.executor.get_llm", return_value=_make_llm(executor_responses)):
+                    with patch("agents.reviewer.get_llm", return_value=_make_llm([responses[8]])):
+                        with patch("agents.summarizer.get_llm", return_value=_make_llm([responses[9]])):
+                            graph = _build_test_graph()
+                            config = {"configurable": {"thread_id": "test-batched"}}
+                            result = graph.invoke(
+                                _base_state("依次执行 7 个任务"),
+                                config,
+                            )
+                            assert len(result["task_items"]) == 7
+                            assert "done 1" in result["execution_result"]
+                            assert "done 7" in result["execution_result"]
+                            assert "7 项任务" in result["final_response"]
+    print("[OK] batched execution")
 
 
 def test_coordinator_planning_clarification():
@@ -159,6 +191,7 @@ def test_reviewer_reject_retry():
 if __name__ == "__main__":
     test_happy_path()
     test_parallel_execution()
+    test_batched_execution()
     test_coordinator_planning_clarification()
     test_coordinator_cannot_plan()
     test_reviewer_reject_retry()

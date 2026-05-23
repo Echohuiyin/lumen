@@ -12,6 +12,7 @@ class WorkflowState(TypedDict):
     task_items: list[str]
     current_task: str
     task_index: int
+    task_batch_offset: int
     execution_results: Annotated[list[dict], operator.add]
     execution_result: str
     review_feedback: str

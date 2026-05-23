@@ -37,5 +37,6 @@ def reviewer_node(state: WorkflowState) -> dict:
         result["execution_results"] = Overwrite([])
         result["execution_result"] = ""
         result["executor_status"] = None
+        result["task_batch_offset"] = 0
 
     return result

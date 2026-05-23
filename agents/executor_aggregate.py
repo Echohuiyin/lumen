@@ -1,4 +1,10 @@
+from config import MAX_PARALLEL_TASKS
 from graph.state import WorkflowState
+
+
+def batch_advance_node(state: WorkflowState) -> dict:
+    offset = state.get("task_batch_offset", 0)
+    return {"task_batch_offset": offset + MAX_PARALLEL_TASKS}
 
 
 def executor_aggregate_node(state: WorkflowState) -> dict:
