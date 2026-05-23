@@ -1,0 +1,15 @@
+# local env files
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Trae
+.trae/
+
+#python
+*/__pycache__/
+
