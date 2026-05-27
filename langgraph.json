@@ -3,9 +3,9 @@
   "python_version": "3.12",
   "dependencies": ["."],
   "graphs": {
-    "rn": {
-      "path": "./graph/rn_workflow.py:rn_graph",
-      "description": "Release Note 生成工作流（Hero / Peon / Reviewer / Integrator）"
+    "maintenance": {
+      "path": "./graph/rn_workflow.py:maintenance_graph",
+      "description": "维护接口人工作流（Validator / PM / Tool Expert / Kernel Expert / Test Expert / Knowledge Base）"
     }
   },
   "env": ".env"

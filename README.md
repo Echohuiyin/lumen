@@ -1,16 +1,6 @@
-# Lumen — Release Note 生成工作流
+# Lumen — 维护接口人工作流
 
-基于 [LangGraph](https://github.com/langchain-ai/langgraph) 构建的多 Agent 工作流，根据配置的仓库地址和版本周期，自动获取提交/MR 信息，通过动态创建的 Peon/Reviewer Agent 对并行处理各 RN 列，最终生成 Excel 文件。
-
-支持：
-
-- 可配置的 RN 列定义（每列对应独立的 Peon + Reviewer）
-- 每个 Agent 可独立配置提示词和模型
-- 版本周期自动计算（默认每月 7 号转测、15 号发布）
-- MR 平台抽象接口（当前提供 Mock 实现，可扩展 GitLab/GitHub）
-- Reviewer 拒绝后自动重试，反馈传递给 Peon 修正输出
-- Agent 思考过程流式展示
-- CLI 命令行与 LangGraph Studio 两种调试方式
+基于 [LangGraph](https://github.com/langchain-ai/langgraph) 构建的多 Agent 工作流，用于自动化处理内核维护问题。用户提交问题描述后，工作流自动校验、分类、分析、验证并归档，形成完整的维护闭环。
 
 ---
 
@@ -18,34 +8,46 @@
 
 ```mermaid
 flowchart TD
-    START([START]) --> hero[Hero<br/>数据采集]
+    START([START]) --> validator[Validator<br/>输入校验]
+    validator -->|"校验通过"| pm[PM<br/>分类 & 创建 Issue]
+    validator -->|"校验不通过"| END1([END: 要求补充信息])
 
-    hero -->|"fan-out"| cp1[Column Processor 1<br/>Peon → Reviewer]
-    hero -->|"fan-out"| cp2[Column Processor 2<br/>Peon → Reviewer]
-    hero -->|"fan-out"| cpN[Column Processor N<br/>Peon → Reviewer]
+    pm -->|"fan-out"| te1[工具专家 1<br/>历史知识库搜索]
+    pm -->|"fan-out"| te2[工具专家 2<br/>锁分析]
+    pm -->|"fan-out"| te3[工具专家 3<br/>Crash 分析]
+    pm -->|"fan-out"| te4[工具专家 4<br/>内核日志分析]
 
-    cp1 --> integrator[Integrator<br/>汇总生成 Excel]
-    cp2 --> integrator
-    cpN --> integrator
+    te1 --> kernel[内核专家<br/>构造复现用例 & 维测方案]
+    te2 --> kernel
+    te3 --> kernel
+    te4 --> kernel
 
-    integrator --> END_NODE([END])
+    kernel --> test[测试专家<br/>复现验证]
+    test -->|"复现成功"| kb[知识库生成<br/>总结归档]
+    test -->|"复现失败 & 未超限"| kernel
+    test -->|"超过最大尝试"| kb
+
+    kb --> END2([END: 分析完成])
 ```
 
 ### 各 Agent 职责
 
 | Agent | 职责 |
 |-------|------|
-| **Hero** | 加载 RN 配置，计算版本周期日期范围，获取 git commits 和 MR 列表 |
-| **Peon** | 根据 column_config 动态加载提示词和模型，处理单个 RN 列（如提取机制变更、判断开源同步等） |
-| **Column Reviewer** | 审核 Peon 输出是否准确完整；拒绝时提供反馈，Peon 根据反馈重试 |
-| **Integrator** | 收集所有列结果，生成 Excel 文件 |
+| **Validator** | 校验用户输入信息是否完备，不完整则要求补充 |
+| **PM** | 分析问题类型，分类交给对应工具专家，创建 issue 跟踪 |
+| **工具专家** | 根据专业领域进行初步分析（历史知识库搜索、锁分析、Crash 分析、内核日志分析） |
+| **内核专家** | 综合工具专家输出，结合代码分析，构造必现用例并给出内核维测方案 |
+| **测试专家** | 根据复现用例验证问题，成功则归档，失败则反馈给内核专家重新分析 |
+| **知识库生成** | 将问题总结为知识库文档归档 |
 
 ### 关键设计原则
 
-1. **Fan-out 并行处理**：每个 RN 列通过 LangGraph `Send` 并行分发到独立的 `column_processor`，各列互不阻塞。
-2. **Peon→Reviewer 内部循环**：`column_processor` 在单个节点内实现 peon→reviewer 循环，避免子图嵌套。Reviewer 拒绝后，反馈传递给下一次 Peon 尝试。
-3. **动态 Agent 配置**：每列的 Peon/Reviewer 通过 `rn_config.json` 独立配置提示词、模型和温度，无需改代码。
-4. **MR 平台可扩展**：`MRPlatform` 抽象接口 + `MockMRPlatform` 实现，可通过 `register_platform()` 注册 GitLab/GitHub 适配器。
+1. **输入校验前置**：Validator 确保信息完备后才进入分析流程，避免无效分析
+2. **Fan-out 并行分析**：多个工具专家通过 LangGraph `Send` 并行执行，互不阻塞
+3. **内核专家 ⇄ 测试专家循环**：测试失败时反馈给内核专家重新分析，直到复现成功或超过最大尝试次数
+4. **工具专家可配置**：通过 JSON 配置文件定义工具专家类型和参数，无需改代码即可扩展
+5. **知识库自动归档**：分析完成后自动生成知识库文档，积累维护经验
 
 ---
 
@@ -53,46 +55,41 @@ flowchart TD
 
 ```
 Lumen/
-├── main.py                      # CLI 入口
-├── config.py                    # 全局配置：LLM 初始化、Prompt 加载
-├── langgraph.json               # LangGraph dev / Studio 配置文件
-├── pyproject.toml               # Python 包定义
-├── requirements.txt             # 运行时依赖
-├── requirements-dev.txt         # 开发依赖（含 langgraph-cli）
-├── rn_config.example.json       # RN 配置示例
-├── .env.example                 # 环境变量模板
+├── main.py                              # CLI 入口
+├── config.py                            # 全局配置：LLM 初始化、Prompt 加载
+├── langgraph.json                       # LangGraph dev / Studio 配置文件
+├── maintenance_config.example.json       # 工作流配置示例
+├── pyproject.toml                       # Python 包定义
+├── requirements.txt                     # 运行时依赖
+├── .env.example                         # 环境变量模板
 │
-├── agents/                      # Agent 节点实现
-│   ├── hero.py                  # Hero 节点：加载配置、获取 commits/MRs
-│   ├── peon.py                  # 通用 Peon Agent，根据 column_config 动态配置
-│   ├── column_reviewer.py       # 通用 Reviewer Agent
-│   ├── column_processor.py      # 列处理器：peon → reviewer 循环
-│   ├── integrator.py            # Integrator 节点：汇总结果生成 Excel
-│   ├── llm_display.py           # LLM 流式输出与 thinking 展示
-│   └── parsers.py               # 解析 LLM 输出中的结构化标记
+├── agents/                              # Agent 节点实现
+│   ├── validator.py                     # Validator：校验用户输入
+│   ├── pm.py                            # PM：问题分类 & 创建 issue
+│   ├── tool_expert.py                   # 工具专家：按类型执行专业分析
+│   ├── kernel_expert.py                 # 内核专家：构造复现用例 & 维测方案
+│   ├── test_expert.py                   # 测试专家：复现验证
+│   ├── knowledge_base.py               # 知识库生成：总结归档
+│   └── llm_display.py                   # LLM 流式输出与 thinking 展示
 │
-├── graph/                       # LangGraph 图定义
-│   ├── rn_state.py              # RNWorkflowState 类型定义
-│   ├── rn_router.py             # 条件路由与 Send fan-out 分发
-│   └── rn_workflow.py           # 构建 StateGraph，导出 rn_graph
+├── graph/                               # LangGraph 图定义
+│   ├── rn_state.py                      # MaintenanceWorkflowState 类型定义
+│   ├── rn_router.py                     # 条件路由与 Send fan-out 分发
+│   └── rn_workflow.py                   # 构建 StateGraph，导出 maintenance_graph
 │
-├── tools/                       # 工具
-│   ├── git_tools.py             # git_log / git_diff_commits / git_diff_repos
-│   ├── mr_platform.py           # MR 平台抽象接口 + Mock 实现
-│   └── excel_tools.py           # write_excel（openpyxl）
+├── prompts/                             # 各 Agent 的 System Prompt
+│   └── maintenance/
+│       ├── validator.md                 # Validator 提示词
+│       ├── pm.md                        # PM 提示词
+│       ├── knowledge_search.md          # 历史知识库搜索专家提示词
+│       ├── lock_analysis.md             # 锁分析专家提示词
+│       ├── crash_analysis.md            # Crash 分析专家提示词
+│       ├── kernel_log_analysis.md       # 内核日志分析专家提示词
+│       ├── kernel_expert.md             # 内核专家提示词
+│       ├── test_expert.md               # 测试专家提示词
+│       └── knowledge_base.md            # 知识库生成提示词
 │
-├── prompts/                     # 各 Agent 的 System Prompt
-│   └── rn/                      # RN 相关提示词
-│       ├── hero.md
-│       ├── mechanism_changes_peon.md
-│       ├── mechanism_changes_reviewer.md
-│       ├── open_source_sync_peon.md
-│       └── open_source_sync_reviewer.md
-│
-├── test_rn_verify.py            # 组件测试
-├── test_rn_integration.py       # 集成测试
-│
-└── .githooks/                   # Git commit-msg hook
+└── .githooks/                           # Git commit-msg hook
     └── commit-msg
 ```
 
@@ -110,36 +107,16 @@ cp .env.example .env
 
 ### CLI 命令行
 
-**全量生成：**
-
 ```bash
-python3 main.py --repo /path/to/repo --version 2024-06 --config rn_config.json
+python3 main.py --input "问题描述" --config maintenance_config.json
 ```
-
-**增量更新：**
-
-```bash
-python3 main.py --repo /path/to/repo --version 2024-06 --config rn_config.json \
-    --mode incremental
-```
-
-未指定 `--existing-excel` 时，自动使用配置中 `output_path` 解析后的版本文件路径（如 `output/release_note_2024-06.xlsx`）。
-
-增量模式下，工作流会：
-1. 读取已有 Excel，提取最后一条 commit hash
-2. 使用 `git log <hash>..HEAD` 仅获取新增 commits
-3. 仅对新增 commits 执行 Peon/Reviewer 处理
-4. 将新结果与旧数据合并，旧 commits 的列值保留不动
 
 参数说明：
 
 | 参数 | 必填 | 说明 |
 |------|------|------|
-| `--repo` | 是 | 仓库 URL 或本地路径 |
-| `--version` | 是 | 版本周期标识（如 `2024-06`） |
-| `--config` | 否 | RN 配置文件路径，默认 `rn_config.json` |
-| `--mode` | 否 | 生成模式：`full`（全量）或 `incremental`（增量），默认 `full` |
-| `--existing-excel` | 否 | 增量模式下的已有 Excel 文件路径（默认按 `output_path` + `{version}` 自动解析） |
+| `--input` | 是 | 用户输入的问题描述 |
+| `--config` | 否 | 工作流配置文件路径，默认 `maintenance_config.json` |
 
 ### LangGraph Studio 调试
 
@@ -147,131 +124,76 @@ python3 main.py --repo /path/to/repo --version 2024-06 --config rn_config.json \
 langgraph dev
 ```
 
-启动后在 Studio 中选择 graph **`rn`**。
-
-### 运行测试
-
-```bash
-python3 test_rn_verify.py
-python3 test_rn_integration.py
-```
+启动后在 Studio 中选择 graph **`maintenance`**。
 
 ---
 
-## RN 配置文件
+## 配置文件
 
-配置文件为 JSON 格式，示例见 `rn_config.example.json`。主要字段：
+配置文件为 JSON 格式，示例见 `maintenance_config.example.json`。主要字段：
 
 ```json
 {
-  "version_cycle": {
-    "test_cutoff_day": 7,
-    "release_day": 15
-  },
-  "repo": {
-    "url": "https://gitlab.example.com/team/project",
-    "local_path": "/path/to/local/repo",
-    "open_source_repo_path": "/path/to/open-source/repo"
-  },
-  "mr_platform": {
-    "type": "mock",
-    "data_path": "mock_mr_data.json",
-    "project_id": ""
-  },
-  "rn_columns": [...],
-  "excel": {
-    "template_path": "templates/release_note_template.xlsx",
-    "output_path": "output/release_note_{version}.xlsx",
-    "sheet_name": "Release Note",
-    "layout": {
-      "header_row": 5,
-      "data_start_row": 6,
-      "commit_fields": {
-        "short_hash": "A",
-        "message": "B",
-        "author": "C",
-        "date": "D"
-      },
-      "rn_columns": {
-        "mechanism_changes": "E",
-        "open_source_sync": "F"
-      }
+  "agents": {
+    "validator": {
+      "prompt_file": "prompts/maintenance/validator.md",
+      "model_name": "gpt-4o-mini",
+      "temperature": 0
     },
-    "metadata": {
-      "version": "B1",
-      "cycle_start": "B2",
-      "cycle_end": "B3"
+    "pm": { ... },
+    "kernel_expert": { ... },
+    "test_expert": { ... },
+    "knowledge_base": { ... }
+  },
+  "tool_experts": [
+    {
+      "type": "knowledge_search",
+      "name": "历史知识库搜索专家",
+      "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
+      "agent": {
+        "prompt_file": "prompts/maintenance/knowledge_search.md",
+        "model_name": "gpt-4o",
+        "temperature": 0
+      }
     }
+  ],
+  "knowledge_base": {
+    "output_dir": "knowledge_base"
   },
   "workflow": {
-    "max_retries": 3
+    "max_test_attempts": 3
   }
 }
 ```
 
-### Excel 模板与布局
+### Agent 配置
 
-- `template_path`：RN 格式模板 Excel，全量生成时从模板复制到输出路径，保留样式与表头
-- `output_path`：输出文件路径，支持 `{version}` 占位符（由 `--version` 替换）
-- `layout`：数据区行列映射；`commit_fields` 映射 commit 字段到列，`rn_columns` 映射 RN 列 id 到列（字母或 1-based 数字）
-- `metadata`（可选）：元信息单元格，全量生成时写入版本与周期日期；增量更新时保留已有值
+每个 Agent 可独立配置：
 
-未配置 `template_path` 时，回退到从零创建 Excel 的旧行为。
+| 字段 | 说明 |
+|------|------|
+| `prompt_file` | 系统提示词文件路径 |
+| `model_name` | 使用的模型名称 |
+| `temperature` | 采样温度 |
+| `api_key` | 独立 API Key（可选，默认使用环境变量） |
+| `base_url` | 独立 API Base URL（可选） |
 
-### 版本周期计算
+### 工具专家配置
 
-以 `version_cycle = "2024-06"` 为例：
-- **起始日期**：上月 `release_day + 1` → `2024-05-16`
-- **截止日期**：本月 `test_cutoff_day` → `2024-06-07`
+`tool_experts` 数组定义可用的工具专家，每个专家包含：
 
-### RN 列定义
+| 字段 | 说明 |
+|------|------|
+| `type` | 专家类型标识（用于路由） |
+| `name` | 专家显示名称 |
+| `description` | 专家职责描述（PM 据此选择专家） |
+| `agent` | Agent 配置（同上） |
 
-每列定义独立的 Peon 和 Reviewer：
+### 新增工具专家
 
-```json
-{
-  "id": "mechanism_changes",
-  "name": "机制变更说明",
-  "description": "从 MR 信息中提取机制变更说明",
-  "peon": {
-    "prompt_file": "prompts/rn/mechanism_changes_peon.md",
-    "model_name": "gpt-4o",
-    "temperature": 0
-  },
-  "reviewer": {
-    "prompt_file": "prompts/rn/mechanism_changes_reviewer.md",
-    "model_name": "gpt-4o-mini",
-    "temperature": 0
-  }
-}
-```
-
----
-
-## 如何修改 / 扩展
-
-### 新增 RN 列
-
-1. 在 `prompts/rn/` 下新建 peon 和 reviewer 提示词文件
-2. 在 `rn_config.json` 的 `rn_columns` 数组中添加列定义
-
-### 新增 MR 平台
-
-```python
-from tools.mr_platform import MRPlatform, register_platform
-
-class GitLabMRPlatform(MRPlatform):
-    def fetch_mrs(self, project_id, since, until):
-        ...
-
-register_platform("gitlab", GitLabMRPlatform)
-```
-
-然后在配置中设置 `"mr_platform": {"type": "gitlab", ...}`。
-
-### 修改 Agent 提示词
-
-直接编辑 `prompts/rn/` 下对应的 Markdown 文件。提示词中使用 `RESULT:`、`REVIEW:` 等标记时，需同步确认 `agents/parsers.py` 中的解析逻辑能正确识别。
+1. 在 `prompts/maintenance/` 下新建提示词文件
+2. 在配置文件的 `tool_experts` 数组中添加专家定义
+3. 无需修改代码
 
 ---
 
@@ -284,7 +206,7 @@ register_platform("gitlab", GitLabMRPlatform)
 | `MODEL_NAME` | 默认模型名称 | `gpt-4o-mini` |
 | `TEMPERATURE` | 默认采样温度 | `0` |
 
-每列的 Peon/Reviewer 可通过 `rn_config.json` 中的 `model_name`、`temperature`、`api_key`、`base_url` 独立覆盖。
+每个 Agent 可通过配置文件中的 `model_name`、`temperature`、`api_key`、`base_url` 独立覆盖。
 
 ---
 
@@ -296,6 +218,10 @@ register_platform("gitlab", GitLabMRPlatform)
 cp .githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
 ```
 
-**Q: Mock MR 平台如何使用？**
+**Q: 如何调整测试验证的最大尝试次数？**
 
-在 `rn_config.json` 中设置 `"mr_platform": {"type": "mock", "data_path": "path/to/mr_data.json"}`，MR 数据文件格式为 JSON 数组，每个元素包含 `id`、`title`、`description`、`author`、`labels`、`source_branch`、`target_branch`、`merged_at` 字段。
+在配置文件的 `workflow.max_test_attempts` 中修改，默认为 3 次。
+
+**Q: Issue 创建功能何时可用？**
+
+当前 Issue 创建为打桩实现，后续将补充具体的 Issue 跟踪系统集成。

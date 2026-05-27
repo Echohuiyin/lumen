@@ -5,82 +5,69 @@ from langgraph.graph.message import add_messages
 from typing_extensions import TypedDict
 
 
-class CommitInfo(TypedDict):
-    hash: str
-    short_hash: str
-    author: str
-    date: str           # ISO 8601
-    message: str
+class ToolExpertResult(TypedDict):
+    expert_type: str           # "knowledge_search" | "lock_analysis" | "crash_analysis" | "kernel_log_analysis"
+    expert_name: str
+    analysis_output: str
 
 
-class MRInfo(TypedDict):
-    id: str
-    title: str
-    description: str
-    author: str
-    labels: list[str]
-    source_branch: str
-    target_branch: str
-    merged_at: str      # ISO 8601
+class TestResult(TypedDict):
+    reproduced: bool
+    test_output: str
+    attempt: int
 
 
-class ColumnResult(TypedDict):
-    column_id: str
-    column_name: str
-    peon_output: str
-    structured_result: dict   # {commit_hash: value}
-    review_status: Literal["approved", "rejected", "max_retries_exceeded"]
-    review_feedback: str
-    retry_count: int
-
-
-class RNWorkflowState(TypedDict):
+class MaintenanceWorkflowState(TypedDict):
     messages: Annotated[list, add_messages]
-    # 输入
-    repo_url: str
-    version_cycle: str               # 如 "2024-06" 或 "v3.2.0"
-    rn_config_path: str
-    rn_config: dict
-    mode: str                        # "full" | "incremental"
-    existing_excel_path: str         # 增量模式下的已有 Excel 路径
-    # Hero 输出
-    commits: list[CommitInfo]
-    mr_list: list[MRInfo]
-    cycle_start_date: str
-    cycle_end_date: str
-    # 增量模式：已有数据
-    existing_commits: list[CommitInfo]
-    existing_column_results: list[ColumnResult]
-    last_commit_hash: str
+    # 配置
+    config_path: str
+    config: dict
+    # 用户输入
+    user_input: str
+    # Validator 输出
+    validation_passed: bool
+    validation_feedback: str
+    # PM 输出
+    required_experts: list[str]       # 需要调用的专家类型列表
+    issue_id: str                     # 创建的 issue ID（打桩）
+    issue_url: str                    # issue URL（打桩）
     # Fan-out 传参（Send 设置）
-    column_config: dict
-    # Column Processor 输出（operator.add 累积）
-    column_results: Annotated[list[ColumnResult], operator.add]
-    # Integrator 输出
-    excel_path: str
+    expert_type: str
+    # 工具专家输出（operator.add 累积）
+    expert_results: Annotated[list[ToolExpertResult], operator.add]
+    # 内核专家输出
+    reproduce_case: str               # 构造的必现用例
+    kernel_diagnosis: str             # 内核维测方案
+    kernel_analysis: str              # 完整分析内容
+    # 测试专家输出
+    test_result: str                  # 测试结果详情
+    test_passed: bool                 # 是否成功复现
+    test_attempts: int                # 测试尝试次数
+    # 知识库生成输出
+    knowledge_file: str               # 知识库文件路径
     final_response: str
 
 
-def make_rn_initial_state(repo_url: str = "", version_cycle: str = "", rn_config_path: str = "",
-                          *, mode: str = "full", existing_excel_path: str = "") -> dict:
-    """Create a RNWorkflowState dict with sensible defaults."""
+def make_initial_state(user_input: str = "", config_path: str = "maintenance_config.json") -> dict:
+    """Create a MaintenanceWorkflowState dict with sensible defaults."""
     return {
         "messages": [],
-        "repo_url": repo_url,
-        "version_cycle": version_cycle,
-        "rn_config_path": rn_config_path,
-        "rn_config": {},
-        "mode": mode,
-        "existing_excel_path": existing_excel_path,
-        "commits": [],
-        "mr_list": [],
-        "cycle_start_date": "",
-        "cycle_end_date": "",
-        "existing_commits": [],
-        "existing_column_results": [],
-        "last_commit_hash": "",
-        "column_config": {},
-        "column_results": [],
-        "excel_path": "",
+        "config_path": config_path,
+        "config": {},
+        "user_input": user_input,
+        "validation_passed": False,
+        "validation_feedback": "",
+        "required_experts": [],
+        "issue_id": "",
+        "issue_url": "",
+        "expert_type": "",
+        "expert_results": [],
+        "reproduce_case": "",
+        "kernel_diagnosis": "",
+        "kernel_analysis": "",
+        "test_result": "",
+        "test_passed": False,
+        "test_attempts": 0,
+        "knowledge_file": "",
         "final_response": "",
     }
