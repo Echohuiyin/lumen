@@ -47,8 +47,10 @@ def main():
     if result.get("validation_passed") is False and result.get("validation_feedback"):
         print("输入信息不完整，请补充以下信息：")
         print(result["validation_feedback"])
+    elif result.get("final_response"):
+        print(result["final_response"])
     else:
-        print(result.get("final_response", "工作流已完成，但未生成最终回复。"))
+        print("工作流已完成，但未生成最终回复。")
 
 
 if __name__ == "__main__":
