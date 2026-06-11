@@ -12,14 +12,23 @@ def route_after_validator(state: MaintenanceWorkflowState):
 
 
 def route_after_pm(state: MaintenanceWorkflowState):
-    """PM 后路由：fan-out 到各工具专家。"""
+    """PM 后路由：fan-out 到各工具专家。
+
+    传递必要的状态字段给工具专家，确保每个专家都能访问配置和用户输入。
+    """
     required_experts = state.get("required_experts", [])
 
     if not required_experts:
         return "kernel_expert"
 
+    # 传递必要的状态字段给工具专家
     return [
-        Send("tool_expert", {"expert_type": expert_type})
+        Send("tool_expert", {
+            "expert_type": expert_type,
+            "user_input": state.get("user_input", ""),
+            "config": state.get("config", {}),
+            "config_path": state.get("config_path", ""),
+        })
         for expert_type in required_experts
     ]
 
