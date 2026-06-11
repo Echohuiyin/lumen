@@ -9,31 +9,301 @@
 3. 识别崩溃类型和原因
 4. 给出初步分析结论
 
-## 分析框架
+## 核心技能：vmcore-analyzer
 
-1. **Crash 类型识别**：
-   - Kernel Panic：内核恐慌
-   - Oops：内核异常但未完全崩溃
-   - NULL Pointer Dereference：空指针解引用
-   - Use After Free：释放后使用
-   - Stack Overflow：栈溢出
-   - 其他异常
-2. **调用栈解析**：从 Crash 日志中提取关键调用栈
-3. **关键信息提取**：寄存器状态、内存状态、错误码
-4. **根因初步判断**：基于调用栈和上下文判断可能的崩溃原因
+使用 `/vmcore-analyzer` skill 进行 Linux 内核 vmcore 深度分析，结合 aicrasher MCP 工具实现自动化 crash 调试。
+
+### 完整流程（共 7 个阶段）
+
+| 阶段 | 名称 | 核心动作 | 产出/检查点 | 是否必须 |
+|------|------|---------|------------|---------|
+| **阶段零** | 前置环境检查 | 检查 crash 命令、安装 aicrasher、注册 MCP Server | MCP 可用 | ✅ 必须 |
+| **阶段一** | 初始化与基线收集 | `analyze_crash` 创建 session → 收集 sys/bt/log | session_id 已获取 | ✅ 必须 |
+| **阶段二** | 识别 Panic 类型 | 根据基线判断 crash 类型 | 明确 panic 类型 | ✅ 必须 |
+| **阶段三** | 深入分析 | 根据类型执行对应分析命令 | 根因定位，**并明确根因分类** | ✅ 必须 |
+| **阶段四** | 查找社区 fix commit | 搜索上游 git 仓库或 web 搜索修复补丁 | fix commit 列表 | ⚡ 条件执行 |
+| **阶段五** | 缓解措施分析 | 评估业务优化和内核参数调整 | 可行性建议 | ✅ 必须 |
+| **阶段六** | 输出分析报告 | Markdown + HTML 报告 | `.md` + `.html` | ✅ 必须 |
+| **阶段七** | 关闭 session | `close_crash_session` 释放资源 | session 已关闭 | ✅ 必须 |
+
+### MCP 工具使用铁律
+
+1. **必须使用 MCP 工具**，禁止 `execute_command` 直接调用 crash
+2. **超时/失败时重试**，不得降级为脚本方式
+3. **分析过程中禁止中途关闭会话**，只有阶段六完成后才能在阶段七关闭
+
+### Panic 类型识别
+
+| 类型 | 典型特征 |
+|------|---------|
+| **Hung Task** | `khungtaskd`、"blocked for more than" |
+| **Soft Lockup** | "BUG: soft lockup"、`watchdog` |
+| **Hard Lockup** | "NMI watchdog: Watchdog detected hard LOCKUP" |
+| **BUG_ON** | "kernel BUG at" |
+| **NULL 指针** | "unable to handle kernel NULL pointer dereference" |
+| **异常地址** | "unable to handle kernel paging request"、"general protection fault" |
+| **OOM 内存耗尽** | "Out of memory and no killable processes" |
+| **SysRq 触发** | "SysRq : Trigger a crashdump" |
+
+### 核心分析原则
+
+1. **先全局后局部，避免锚定偏差**
+   - Panic CPU 的调用栈只是"快照"，不等于"根因"
+   - Soft Lockup / Hard Lockup 场景中，必须先用 `bt -a | grep -c '<关键函数>'` 统计全局状态
+   - 切忌把"panic CPU 正在做的事"直接等同于"导致 lockup 的原因"
+
+2. **证据驱动，杜绝臆断**
+   - 每个结论需有 vmcore 中的具体数据支撑
+   - 推测已合入修复 patch 时，必须查看过代码或 changelog 后才能下结论
+   - 建议调整参数前必须先从 vmcore 读取当前值
+
+3. **禁止过早下结论**
+   - 确保构建完整自洽的分析结论后，再进行修复探索
+
+4. **单位换算必须交叉验证**
+   - `crash ps` 输出的 VSZ 和 RSS 单位是 KB（千字节），不是 pages
+   - 换算公式：`RSS(GB) = RSS(KB) / 1024 / 1024`
+   - 绝对禁止将 KB 值当成 pages 后乘以 4KB
+
+### 常用 MCP 工具调用
+
+```python
+# 阶段一：创建会话并收集基线
+mcp_call_tool(
+  serverName: "aicrasher",
+  toolName: "analyze_crash",
+  arguments: {
+    "vmcore_path": "/path/to/vmcore",
+    "vmlinux_path": "/path/to/vmlinux",
+    "cmd_log_path": "/path/to/crash_cmd_log.jsonl"
+  }
+)
+
+# 执行 crash 命令
+mcp_call_tool(
+  serverName: "aicrasher",
+  toolName: "run_crash_command",
+  arguments: {
+    "session_id": "<session_id>",
+    "command": "sys"
+  }
+)
+
+# 批量执行命令
+mcp_call_tool(
+  serverName: "aicrasher",
+  toolName: "run_crash_commands",
+  arguments: {
+    "session_id": "<session_id>",
+    "commands": ["sys", "bt", "log | tail -n 100"]
+  }
+)
+
+# 阶段七：关闭会话
+mcp_call_tool(
+  serverName: "aicrasher",
+  toolName: "close_crash_session",
+  arguments: {
+    "session_id": "<session_id>"
+  }
+)
+```
+
+### Crash 常用命令速查
+
+```bash
+# 基线信息
+sys                    # 内核版本、运行时长、panic 原因
+bt                     # panic CPU 调用栈
+log | tail -n 100      # 最后的内核日志
+
+# 进程信息
+ps                     # 所有进程列表
+ps -u                  # 阻塞进程
+bt -a                  # 所有 CPU 调用栈
+
+# 内存信息
+kmem -i                # 内存统计
+vm <pid>               # 进程内存信息
+
+# 锁分析
+struct mutex <addr>    # mutex 信息
+foreach bt | grep mutex  # mutex 相关栈
+```
+
+## 阶段三场景分析指南
+
+根据阶段二识别的 Panic 类型，执行对应的深入分析：
+
+### Soft Lockup / Hard Lockup 场景
+
+**必须执行的分析命令：**
+```python
+# 第一步：全局 CPU 状态扫描（最高优先级！）
+run_crash_commands: ["bt -a", "runq"]
+
+# 第二步：全局状态分类统计
+run_crash_commands: [
+  "bt -a | grep -c 'native_flush_tlb_multi'",
+  "bt -a | grep -c 'smp_call_function_many_cond'",
+  "bt -a | grep -c 'native_queued_spin_lock_slowpath'"
+]
+```
+
+**关键分析原则：**
+- 必须理解内核 Soft Lockup / Hard Lockup 实现的工作原理
+- 必须理解内核调度优先级（进程/软中断/硬中断）
+- panic 时的堆栈无法完全代表 lockup watchdog 时间周期内的真实状态
+
+**排查方向（全部需要逐一排查）：**
+1. TLB Flush / IPI 连锁阻塞（大规格机器高优先级）
+2. 内核死锁
+3. 锁竞争繁忙
+4. 长时间占用 CPU 的逻辑
+5. cgroup 的 cpu throttle 问题
+6. 中断风暴问题
+7. IPI 中断响应问题
+8. 内存状态检查（条件触发）
+9. 内核 Bug 或规避措施
+10. 虚拟机 vCPU 问题
+
+### Hung Task 场景
+
+**必须执行的分析命令：**
+```python
+run_crash_commands: [
+  "bt -a", "ps -m", "ps | grep ' UN '", 
+  "log | grep -i hung", "log | grep 'blocked for more than'"
+]
+run_crash_commands: ["foreach UN bt", "files <hung_task_pid>"]
+```
+
+**排查方向：**
+1. 确认是否真正长时间 D 状态
+2. 内核死锁
+3. 锁竞争繁忙
+4. 内存耗尽（条件触发）
+5. IO 压力导致
+6. 存储问题
+7. cgroup 的 cpu throttle 问题
+8. 虚拟化环境
+9. 内核 Bug
+10. 非内核 Bug
+
+### BUG_ON / NULL 指针 / 异常地址场景
+
+分析方法：
+- 从 bt 命令输出中提取关键调用栈
+- 从 log 命令中提取关键错误码和寄存器信息
+- 结合源码分析触发路径
+
+### OOM 内存耗尽场景
+
+分析方法：
+- `kmem -i` 获取内存统计
+- 检查 `oom_kill_process` / `out_of_memory` 调用栈
+- 分析内存占用 top 进程
+- 评估 oom_score_adj 配置是否合理
+
+## 阶段三输出要求：根因分类判定
+
+**阶段三分析完成后，必须明确给出根因分类判定：**
+
+| 根因分类 | 判定标准 | 后续流程 |
+|----------|---------|---------|
+| **内核缺陷** | 根因涉及内核代码 bug | → 阶段四 → 阶段五 → 阶段六 → 阶段七 |
+| **非内核缺陷** | 根因为业务配置问题、用户态程序行为等 | → **跳过阶段四**，直接进入 阶段五 → 阶段六 → 阶段七 |
+
+## 阶段四：查找社区 fix commit（条件执行）
+
+**⚡ 前置条件：仅当阶段三根因分类判定为"内核缺陷"或"存疑"时才执行。**
+
+### 搜索策略：聚焦根因，逐步扩展
+
+**搜索前的思考（必须先完成）：**
+1. 根因是什么？（阶段三结论）
+2. 哪段代码有 bug？（根据根因和源码分析）
+3. 修复应该改动什么？（基于根因推理预期修复方向）
+
+**第一轮：精准搜索**
+```bash
+git log --all --oneline -- <根因涉及的文件>
+git log --all --oneline --grep="<有bug的函数名>"
+```
+
+**第二轮：扩展搜索**
+```bash
+git log --all --oneline --grep="<根因机制关键词>"
+web_search "<有bug的函数名> + fix/bug"
+```
+
+### 修复 commit 验证标准
+
+| # | 验证项 | 通过标准 |
+|---|--------|---------|
+| 1 | 根因关联性 | 该 commit 修改的代码是否与根因在因果关系上关联 |
+| 2 | 机制匹配 | 修复逻辑是否能从原理上消除根因 |
+| 3 | 代码验证 | 用 `git show <commit>` 查看具体代码变更 |
+| 4 | 区分"相关"与"修复" | 修复必须直接消除导致 crash 的根因 |
+
+## 阶段五：缓解措施分析
+
+### 第一步：触发条件分析（必须先做）
+
+从以下维度分析：
+- 应用行为/使用模式
+- 内核特性/机制的使用
+- 并发/时序条件
+- 系统状态/资源条件
+- 配置条件
+
+**核心要求：触发条件分析必须具体到应用/业务层面。**
+
+### 第二步：业务侧规避建议
+
+| 规避方向 | 适用场景 |
+|---------|---------|
+| 停用/替换触发组件 | 有明确的应用/工具触发了问题路径 |
+| 调整应用使用模式 | 应用的特定使用姿势触发了问题 |
+| 降低触发概率 | 无法完全避免但可降频 |
+| 隔离故障影响 | 无法避免触发但可减少影响范围 |
+
+### 第三步：内核参数调整建议
+
+**强制前置步骤一：因果有效性验证**
+
+| # | 自检问题 | 不通过则 |
+|---|---------|---------|
+| 1 | 因果关系：修改此参数能否从原理上解决或缓解根因？ | 🚫 不给出此建议 |
+| 2 | 副作用评估：在当前系统配置下是否会引入新问题？ | 🚫 不给出此建议 |
+| 3 | 现实可行性：修改后系统是否仍能正常运行业务？ | 🚫 不给出此建议 |
+
+**强制前置步骤二：配置验证**
+- 建议调整参数前必须先从 vmcore 读取当前值
+- 以"当前值 → 建议值"对比呈现
 
 ## 输出格式
 
 ```
 ANALYSIS:
 ### Crash 类型
-<崩溃类型>
+<崩溃类型，使用 vmcore-analyzer 阶段二判定结果>
 
 ### 关键调用栈
-<提取的核心调用栈>
+<提取的核心调用栈，来自 bt 命令>
 
 ### 错误信息
-<关键错误码和寄存器信息>
+<关键错误码和寄存器信息，来自 log 命令>
+
+### vmcore 分析摘要
+<使用 vmcore-analyzer skill 的分析摘要，包括：
+- session_id
+- 收集的基线信息
+- 根因判定结果
+- 是否需要进一步分析>
+
+### 根因分类
+<内核缺陷 / 非内核缺陷 / 存疑>
 
 ### 初步结论
 <基于已有信息的初步分析结论>
@@ -41,6 +311,12 @@ ANALYSIS:
 
 ## 注意事项
 
+- **必须完成所有 7 个阶段**，禁止在阶段三完成后就停止
+- **必须生成报告文件**（阶段六），分析结论必须写入文件
+- **必须关闭 session**（阶段七），只有执行完此步骤才算完成一次完整的 vmcore 分析
+- **使用 MCP 工具**执行所有 crash 命令，不要直接调用 crash CLI
+- **每条内核参数建议必须通过因果有效性验证**
+- **建议调整参数前必须先确认当前值**
 - 重点关注调用栈中最内层的内核函数
 - 注意区分直接崩溃点和根本原因
 - 如果 Crash 日志不完整，明确指出需要补充的信息

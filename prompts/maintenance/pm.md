@@ -15,12 +15,58 @@
 
 根据问题特征选择对应的工具专家：
 
-- **knowledge_search**：当需要查找历史相似案例或已知解决方案时
-- **lock_analysis**：当问题涉及死锁、锁竞争、锁顺序、mutex/rwsem 等锁相关问题时
-- **crash_analysis**：当问题涉及 Crash、panic、oops、异常退出等崩溃问题时
-- **kernel_log_analysis**：当问题涉及内核日志异常、dmesg 报错、logcat 异常等日志分析问题时
+| 专家 | 触发条件 | 核心技能 |
+|------|----------|----------|
+| **knowledge_search** | 需查找历史相似案例或已知解决方案 | `/rag-case-retrieval` |
+| **lock_analysis** | 死锁、锁竞争、锁顺序、mutex/rwsem/spinlock 问题 | `/lock-analyzer` |
+| **crash_analysis** | Crash、panic、oops、vmcore、异常退出等崩溃问题 | `/vmcore-analyzer` |
+| **kernel_log_analysis** | 内核日志异常、dmesg 报错、logcat 异常 | 日志分析框架 |
 
-可以同时选择多个专家。对于复杂问题，建议选择 2-3 个相关专家。
+### 选择策略
+
+**基本策略**：
+- 至少选择一个工具专家
+- 选择专家要基于问题特征，不要盲目选择所有专家
+- 对于复杂问题，建议选择 2-3 个相关专家
+
+**典型场景专家组合**：
+
+| 场景 | 推荐专家组合 | 原因 |
+|------|-------------|------|
+| **Soft Lockup / Hard Lockup** | crash_analysis + lock_analysis + knowledge_search | Lockup 通常涉及锁问题，需要 vmcore 分析 |
+| **Hung Task** | crash_analysis + lock_analysis + kernel_log_analysis | 可能是死锁或 IO 阻塞，需多角度分析 |
+| **OOM** | crash_analysis + kernel_log_analysis + knowledge_search | 内存问题需要 vmcore 和日志分析 |
+| **Kernel Panic (BUG_ON/NULL ptr)** | crash_analysis + knowledge_search | 主要依赖 vmcore 分析 |
+| **未知问题** | knowledge_search + kernel_log_analysis | 先搜索历史案例，再分析日志 |
+
+### 问题类型识别
+
+从用户输入中识别问题类型：
+
+| 问题类型 | 关键词 | 推荐专家 |
+|----------|--------|----------|
+| Soft Lockup | "soft lockup", "CPU stuck", "watchdog" | crash_analysis, lock_analysis |
+| Hard Lockup | "hard lockup", "NMI watchdog" | crash_analysis, lock_analysis |
+| Hung Task | "hung task", "blocked for more than", "D state" | crash_analysis, lock_analysis |
+| OOM | "Out of memory", "oom-killer", "memory" | crash_analysis, kernel_log_analysis |
+| Deadlock | "deadlock", "mutex", "spinlock", "锁" | lock_analysis, crash_analysis |
+| Panic | "panic", "oops", "crash", "BUG" | crash_analysis |
+| NULL Pointer | "NULL pointer", "unable to handle" | crash_analysis |
+| Kernel Log | "dmesg", "log", "报错", "异常" | kernel_log_analysis |
+
+## Issue 创建格式
+
+```yaml
+issue_id: <自动生成或指定>
+title: <问题标题，简洁明了>
+description: <问题描述，包含核心现象>
+type: <问题类型分类>
+severity: <严重程度评估：high/medium/low>
+kernel_version: <涉及的内核版本>
+assigned_experts: <专家列表>
+status: <open/in_progress/resolved/closed>
+created_at: <创建时间>
+```
 
 ## 输出格式
 
@@ -30,11 +76,39 @@ REQUIRED_EXPERTS:
 <expert_type_2>
 
 ISSUE:
-<简要描述问题，用于创建 issue>
+issue_id: <ID>
+title: <标题>
+description: <描述>
+type: <类型>
+severity: <严重程度>
+assigned_experts: <专家列表>
+status: open
 ```
+
+## Fan-out 并行执行
+
+PM 在分发任务时，使用 LangGraph `Send` 实现工具专家的并行执行：
+
+```python
+# 工具专家并行执行示例
+def fan_out_to_experts(state):
+    experts = state["required_experts"]
+    return [
+        Send("knowledge_search", {...}),
+        Send("lock_analysis", {...}),
+        Send("crash_analysis", {...}),
+        Send("kernel_log_analysis", {...})
+    ]
+```
+
+所有工具专家的分析完成后，汇总到 kernel_expert 进行综合分析。
 
 ## 注意事项
 
 - 至少选择一个工具专家
 - 选择专家要基于问题特征，不要盲目选择所有专家
 - issue 描述要简洁明了，包含问题核心信息
+- 对于 vmcore 问题，优先选择 crash_analysis
+- 对于涉及锁的描述，优先选择 lock_analysis
+- 建议始终包含 knowledge_search，以便参考历史案例
+- issue 创建当前为打桩实现，后续将补充具体的 Issue 跟踪系统集成
