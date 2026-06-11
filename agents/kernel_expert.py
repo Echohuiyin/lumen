@@ -1,6 +1,6 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.llm_display import call_llm_with_display
+from agents.llm_display import call_llm_with_display, display_expert_outputs
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
@@ -17,6 +17,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     # 汇总所有工具专家的分析结果
     expert_results = state.get("expert_results", [])
+
+    # 统一展示所有工具专家的输出（从文件读取）
+    display_expert_outputs(expert_results)
     expert_summaries = []
     for result in expert_results:
         expert_summaries.append(
