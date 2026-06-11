@@ -18,7 +18,10 @@ def _to_ai_message(gathered: BaseMessage) -> AIMessage:
 DIM = "\033[2m"
 CYAN = "\033[36m"
 YELLOW = "\033[33m"
+GREEN = "\033[32m"
+BLUE = "\033[34m"
 RESET = "\033[0m"
+BOLD = "\033[1m"
 
 
 def _supports_color() -> bool:
@@ -43,9 +46,14 @@ def _extract_reasoning(chunk: BaseMessage) -> str:
 
 
 def _print_agent_header(agent: str, phase: str) -> None:
+    """Print agent header with clear separator."""
     label = f"[{agent}] {phase}" if phase else f"[{agent}]"
-    print(f"\n{_c(CYAN, label)}", flush=True)
-    print(_c(DIM, "-" * 50), flush=True)
+    # Use box-style separator for better visual distinction
+    separator = "━" * 60
+    print(f"\n{_c(BOLD + CYAN, '┌' + separator + '┐')}", flush=True)
+    print(f"{_c(BOLD + CYAN, '│')} {_c(GREEN, label)} {_c(BOLD + CYAN, '│')}", flush=True)
+    print(f"{_c(BOLD + CYAN, '└' + separator + '┘')}", flush=True)
+    print(_c(DIM, "▼ 输出开始"), flush=True)
 
 
 def _stream_chunk(chunk: BaseMessage) -> None:
@@ -85,6 +93,11 @@ def _print_static_content(message: BaseMessage) -> None:
             print(joined, flush=True)
 
 
+def _print_agent_footer(agent: str) -> None:
+    """Print agent footer to mark end of output."""
+    print(_c(DIM, "▲ 输出结束"), flush=True)
+
+
 def call_llm_with_display(
     agent: str,
     phase: str,
@@ -99,7 +112,7 @@ def call_llm_with_display(
         response = llm.invoke(messages)
         _print_static_reasoning(response)
         _print_static_content(response)
-        print(flush=True)
+        _print_agent_footer(agent)
         return response
 
     gathered_parts: list[str] = []
@@ -116,4 +129,5 @@ def call_llm_with_display(
                     gathered_parts.append(part.get("text", ""))
 
     print(flush=True)
+    _print_agent_footer(agent)
     return AIMessage(content="".join(gathered_parts))

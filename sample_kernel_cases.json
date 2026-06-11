@@ -1,0 +1,70 @@
+{
+  "cases": [
+    {
+      "id": "case-001",
+      "title": "Soft Lockup: CPU#23 stuck for 22s in schedule() on ARM64 128-core system",
+      "content": "## Problem Description\n\n系统出现 soft lockup，CPU#23 stuck for 22s。问题发生在高并发网络包处理场景。\n\n## Environment\n- OS: openEuler 22.03\n- Kernel: 5.10.0-60.43.0\n- Architecture: ARM64\n- CPU: 128 cores\n\n## Analysis\n\n### Crash Tool Analysis\n```\ncrash> bt -c 23\nPID: 12345  TASK: ffff800012345678  CPU: 23  COMMAND: \"nginx\"\n#0 [ffff80001234a000] schedule at ffff800010123456\n#1 [ffff80001234a100] schedule_timeout at ffff800010123567\n#2 [ffff80001234a200] wait_for_completion at ffff800010123678\n#3 [ffff80001234a300] mutex_lock_slowpath at ffff800010123789\n```\n\n### Root Cause\n\n死锁问题：进程 nginx 持有 mutex A，等待 mutex B，而另一进程持有 B 等待 A。\n\n### Solution\n\n1. 检查锁顺序是否一致\n2. 使用 lockdep 检测锁依赖\n3. 添加 CONFIG_LOCKDEP=y 重新编译内核\n\n### Verification\n\n编译启用 LOCKDEP 的内核，启动后 lockdep 报告：\n```\n[    1.234] lockdep: Circular locking dependency detected\n[    1.235] lockdep: Possible circular locking scenario:\n[    1.236] lockdep:   CPU0                CPU1\n[    1.237] lockdep:   ----                ----\n[    1.238] lockdep:   lock(A);           lock(B);\n[    1.239] lockdep:   lock(B);           lock(A);\n```\n\n修复锁顺序后问题解决。",
+      "metadata": {
+        "category": "soft_lockup",
+        "tags": ["mutex", "deadlock", "ARM64", "high_concurrency"],
+        "kernel_version": "5.10.0-60.43.0",
+        "resolved": true
+      }
+    },
+    {
+      "id": "case-002",
+      "title": "Hung Task: nfsd blocked for 120s in nfs4_state_manager",
+      "content": "## Problem Description\n\n进程 nfsd 处于 D 状态超过 120 秒，阻塞在 nfs4_state_manager。\n\n## Environment\n- OS: openEuler 22.03\n- Kernel: 5.10.0-60.43.0\n- Architecture: x86_64\n- CPU: 32 cores\n\n## Analysis\n\n### Dmesg Output\n```\n[12345.67] INFO: task nfsd:1234 blocked for more than 120 seconds.\n[12345.68]       Tainted: P           OE 5.10.0-60.43.0\n[12345.69] \"echo 0 > /proc/sys/kernel/hung_task_timeout_secs\" disables this message.\n[12345.70] task:nfsd         state:D stack:    0 pid: 1234 ppid:   1 flags:0x00004000\n[12345.71] Call Trace:\n[12345.72]  __schedule+0x2a3/0x680\n[12345.73]  schedule+0x35/0xa0\n[12345.74]  nfs4_state_manager+0x123/0x450 [nfsd]\n```\n\n### Root Cause\n\nNFS4 状态管理器在等待客户端响应时超时，但未设置合理的超时时间。\n\n### Solution\n\n1. 增加 NFS4 超时配置\n2. 检查网络连接状态\n3. 考虑使用 NFS3 替代（如果不需要 NFS4 特性）\n\n配置修改：\n```bash\n# 增加超时时间\necho 300 > /proc/fs/nfsd/nfsv4gracetime\necho 300 > /proc/fs/nfsd/nfsv4oldgracetime\n```\n\n### Verification\n\n修改配置后 hung task 消失，nfsd 正常运行。",
+      "metadata": {
+        "category": "hung_task",
+        "tags": ["nfsd", "D_state", "NFS4", "timeout"],
+        "kernel_version": "5.10.0-60.43.0",
+        "resolved": true
+      }
+    },
+    {
+      "id": "case-003",
+      "title": "OOM: java process killed by oom-killer on 16GB memory system",
+      "content": "## Problem Description\n\nJava 进程被 oom-killer 杀死，系统内存 16GB，进程内存使用达到上限。\n\n## Environment\n- OS: openEuler 22.03\n- Kernel: 5.10.0-60.43.0\n- Architecture: x86_64\n- Memory: 16GB\n\n## Analysis\n\n### Dmesg Output\n```\n[12345.67] java invoked oom-killer: gfp_mask=0x14000ca(GFP_HIGHUSER_MOVABLE), order=0, oom_score_adj=0\n[12345.68] java cpuset=/ mems_allowed=0-1\n[12345.69] CPU: 4 PID: 5678 Comm: java Not tainted 5.10.0-60.43.0\n[12345.70] Hardware name: Dell PowerEdge R740\n[12345.71] Call Trace:\n[12345.72]  dump_header+0x4a/0x1f0\n[12345.73]  oom_kill_process+0x120/0x130\n[12345.74]  out_of_memory+0x2b0/0x300\n[12345.75]  __alloc_pages_nodemask+0x123/0x450\n\nMemory cgroup out of memory: Killed process 5678 (java) total-vm:8589934592, anon-rss:4194304, file-rss:0, shmem-rss:0\n```\n\n### Root Cause\n\nJava 进程设置了过大的 heap size (-Xmx8G)，但 cgroup 内存限制为 4GB。\n\n### Solution\n\n1. 调整 Java heap size 以适应 cgroup 限制\n2. 或增加 cgroup 内存限制\n3. 启用 swap 作为缓冲\n\n解决方案：\n```bash\n# 方案1: 调整 Java 参数\njava -Xmx3G -Xms1G -jar app.jar\n\n# 方案2: 增加 cgroup 限制\necho 8G > /sys/fs/cgroup/memory/app/memory.limit_in_bytes\n```\n\n### Verification\n\n调整后 java 进程稳定运行，无 OOM。",
+      "metadata": {
+        "category": "oom",
+        "tags": ["java", "oom-killer", "cgroup", "memory"],
+        "kernel_version": "5.10.0-60.43.0",
+        "resolved": true
+      }
+    },
+    {
+      "id": "case-004",
+      "title": "Kernel Panic: BUG_ON(!spin_is_locked(&lock)) in scheduler",
+      "content": "## Problem Description\n\n内核 panic，触发 BUG_ON(!spin_is_locked(&rq->lock)) 在 scheduler.c。\n\n## Environment\n- OS: openEuler 22.03\n- Kernel: 5.10.0-60.43.0\n- Architecture: ARM64\n- CPU: 64 cores\n\n## Analysis\n\n### Panic Log\n```\n[12345.67] kernel BUG at kernel/sched/core.c:1234!\n[12345.68] Internal error: Oops - BUG: 0 [#1] SMP\n[12345.69] CPU: 12 PID: 123 Comm: kworker/12:0 Tainted: P        OE 5.10.0-60.43.0\n[12345.70] pstate: 80000005 (Nzcv daif -PAN -UAO)\n[12345.71] pc : schedule+0x123/0x450\n[12345.72] lr : __schedule+0x234/0x680\n[12345.73] sp : ffff80001234a000\n[12345.74] Call trace:\n[12345.75]  schedule+0x123/0x450\n[12345.76]  do_exit+0x45/0x1a0\n[12345.77]  do_group_exit+0x23/0x80\n```\n\n### Vmcore Analysis\n\n```\ncrash> bt -c 12\nPID: 123  TASK: ffff800012345678  CPU: 12  COMMAND: \"kworker/12:0\"\n#0 [ffff80001234a000] schedule at ffff800010123456\n#1 [ffff80001234a100] __schedule at ffff800010123567\n#2 [ffff80001234a200] do_exit at ffff800010123678\n\ncrash> struct rq.lock ffff800010123456\nstruct rq.lock = {\n  raw_lock = {\n    slock = 0  // 锁未被持有！这是 BUG 的原因\n  }\n}\n```\n\n### Root Cause\n\n锁在错误的时间被释放，可能是因为：\n1. 锁提前释放\n2. 锁顺序错误\n3. 竞态条件\n\n### Solution\n\n1. 分析代码路径，找到锁释放的位置\n2. 检查是否有 preempt_count 不匹配\n3. 禁用 CONFIG_PREEMPT 测试\n\n### Verification\n\n分析后发现是 preempt_count 不匹配导致，修复后问题解决。",
+      "metadata": {
+        "category": "kernel_panic",
+        "tags": ["BUG_ON", "spinlock", "scheduler", "ARM64"],
+        "kernel_version": "5.10.0-60.43.0",
+        "resolved": true
+      }
+    },
+    {
+      "id": "case-005",
+      "title": "Hard Lockup: NMI watchdog detected CPU#5 stuck for 10s",
+      "content": "## Problem Description\n\nNMI watchdog 检测到 CPU#5 硬锁，持续 10 秒无响应。\n\n## Environment\n- OS: openEuler 22.03\n- Kernel: 5.10.0-60.43.0\n- Architecture: x86_64\n- CPU: 16 cores\n\n## Analysis\n\n### Dmesg Output\n```\n[12345.67] NMI watchdog: BUG: hard lockup - CPU#5 stuck for 10s!\n[12345.68] CPU: 5 PID: 1234 Comm: mysqld Tainted: P        OE 5.10.0-60.43.0\n[12345.69] Registers:\n[12345.70] RIP: 0010:spin_lock_irqsave+0x23/0x30\n[12345.71] RSP: 0018:ffffc90001234500 EFLAGS: 00000046\n[12345.72] RAX: 0000000000000001 RBX: ffff888012345678 RCX: 0000000000000000\n[12345.73] Call Trace:\n[12345.74]  spin_lock_irqsave+0x23/0x30\n[12345.75]  some_driver_ioctl+0x123/0x450 [some_driver]\n```\n\n### Root Cause\n\n驱动 some_driver 在 ioctl 中持有 spinlock 并执行耗时操作（IO 等待），导致硬锁。\n\n### Solution\n\n1. 检查驱动代码，找到持有锁的长时间操作\n2. 将耗时操作移到锁外\n3. 或使用 mutex 替代 spinlock（如果可以睡眠）\n\n代码修复：\n```c\n// Before: 错误做法\nspin_lock_irqsave(&lock, flags);\ndo_io_operation();  // 不能在 spinlock 中睡眠！\nspin_unlock_irqrestore(&lock, flags);\n\n// After: 正确做法\nspin_lock_irqsave(&lock, flags);\ndata = prepare_data();\nspin_unlock_irqrestore(&lock, flags);\ndo_io_operation(data);  // 在锁外执行\n```\n\n### Verification\n\n修复驱动后，hard lockup 消失。",
+      "metadata": {
+        "category": "hard_lockup",
+        "tags": ["NMI_watchdog", "spinlock", "driver", "ioctl"],
+        "kernel_version": "5.10.0-60.43.0",
+        "resolved": true
+      }
+    },
+    {
+      "id": "case-006",
+      "title": "Deadlock: ABBA deadlock between inode_lock and i_mutex",
+      "content": "## Problem Description\n\n系统出现死锁，两个进程互相等待对方持有的锁。\n\n## Environment\n- OS: openEuler 22.03\n- Kernel: 5.10.0-60.43.0\n- Architecture: ARM64\n- CPU: 32 cores\n\n## Analysis\n\n### Lockdep Output\n```\n[    1.234] lockdep: Circular locking dependency detected\n[    1.235] lockdep: Possible circular locking scenario:\n[    1.236] lockdep:   CPU0                CPU1\n[    1.237] lockdep:   ----                ----\n[    1.238] lockdep:   lock(inode_lock);  lock(i_mutex);\n[    1.239] lockdep:   lock(i_mutex);     lock(inode_lock);\n```\n\n### Vmcore Analysis\n```\ncrash> bt -a | grep -A5 inode_lock\nPID: 1234  TASK: ffff800012345678  CPU: 5  COMMAND: \"process_a\"\n#0 [ffff80001234a000] schedule at ffff800010123456\n#1 [ffff80001234a100] __mutex_lock_slowpath at ffff800010123567\n#2 [ffff80001234a200] mutex_lock at ffff800010123678\n#3 [ffff80001234a300] inode_lock at ffff800010123789\n\nPID: 5678  TASK: ffff800012345abc  CPU: 7  COMMAND: \"process_b\"\n#0 [ffff80001234a000] schedule at ffff800010123456\n#1 [ffff80001234a100] __mutex_lock_slowpath at ffff800010123567\n#2 [ffff80001234a200] mutex_lock at ffff800010123678\n#3 [ffff80001234a300] i_mutex at ffff800010123789\n```\n\n### Root Cause\n\n两个进程以不同顺序获取 inode_lock 和 i_mutex：\n- Process A: inode_lock -> i_mutex\n- Process B: i_mutex -> inode_lock\n\n### Solution\n\n1. 统一锁获取顺序\n2. 使用 lockdep 验证\n\n代码修复：\n```c\n// 统一顺序：总是先获取 inode_lock，再获取 i_mutex\nvoid func_a() {\n    mutex_lock(&inode_lock);\n    mutex_lock(&i_mutex);\n    // do work\n    mutex_unlock(&i_mutex);\n    mutex_unlock(&inode_lock);\n}\n\nvoid func_b() {\n    mutex_lock(&inode_lock);  // 修改顺序\n    mutex_lock(&i_mutex);\n    // do work\n    mutex_unlock(&i_mutex);\n    mutex_unlock(&inode_lock);\n}\n```\n\n### Verification\n\n修改后 lockdep 无警告，系统稳定运行。",
+      "metadata": {
+        "category": "deadlock",
+        "tags": ["ABBA", "lockdep", "inode_lock", "i_mutex"],
+        "kernel_version": "5.10.0-60.43.0",
+        "resolved": true
+      }
+    }
+  ]
+}
