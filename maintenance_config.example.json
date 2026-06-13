@@ -1,5 +1,6 @@
 {
   "version": "1.0",
+  "_comment": "NOTE: Agents 'validator', 'pm', 'kernel_expert', 'test_expert', 'knowledge_base' are automation agents and MUST NOT use 'cli' backend. CLI backend requires interactive user input and will block the workflow. Use 'openai' or 'http' backend for these agents.",
   "default": {
     "backend": "openai",
     "api_key": "your-api-key-here",
@@ -19,10 +20,9 @@
       "temperature": 0
     },
     "kernel_expert": {
-      "backend": "cli",
-      "cli_command": "claude -p",
-      "cli_timeout": 180,
-      "prompt_file": "prompts/maintenance/kernel_expert.md"
+      "prompt_file": "prompts/maintenance/kernel_expert.md",
+      "model_name": "gpt-4o",
+      "temperature": 0
     },
     "test_expert": {
       "prompt_file": "prompts/maintenance/test_expert.md",

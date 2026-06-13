@@ -10,7 +10,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("kernel_expert", {})
     default_config = config.get("default", {})
-    llm = get_llm_with_config(agent_config, default_config=default_config)
+    llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="kernel_expert")
     system_prompt = load_prompt_from_file(
         agent_config.get("prompt_file", "prompts/maintenance/kernel_expert.md")
     )

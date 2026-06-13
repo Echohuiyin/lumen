@@ -7,8 +7,31 @@ from agents.backends import CLIBackend, HTTPBackend
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+# Agents that run in automated workflow and must NOT use CLI backend
+AUTOMATION_AGENTS = [
+    "validator",
+    "pm",
+    "kernel_expert",
+    "test_expert",
+    "knowledge_base",
+]
 
-def get_llm_with_config(agent_config: dict, *, default_config: dict | None = None):
+
+def validate_agent_backend(agent_name: str, backend: str) -> None:
+    """Validate that automation agents don't use CLI backend.
+
+    CLI backend requires interactive user input and will block the workflow.
+    Automation agents must use OpenAI or HTTP backend for automatic execution.
+    """
+    if agent_name in AUTOMATION_AGENTS and backend == "cli":
+        raise ValueError(
+            f"Agent '{agent_name}' is an automation agent and cannot use CLI backend. "
+            f"CLI backend requires interactive user input and will block the workflow. "
+            f"Please use 'openai' or 'http' backend instead."
+        )
+
+
+def get_llm_with_config(agent_config: dict, *, default_config: dict | None = None, agent_name: str = ""):
     """Create LLM backend instance from agent-level config, falling back to default_config.
 
     Returns one of: ChatOpenAI, CLIBackend, HTTPBackend
@@ -16,6 +39,10 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
     """
     defaults = default_config or {}
     backend = agent_config.get("backend") or defaults.get("backend", "openai")
+
+    # Validate backend type for automation agents
+    if agent_name:
+        validate_agent_backend(agent_name, backend)
 
     if backend == "openai":
         return ChatOpenAI(

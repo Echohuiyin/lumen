@@ -16,7 +16,7 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("pm", {})
     default_config = config.get("default", {})
-    llm = get_llm_with_config(agent_config, default_config=default_config)
+    llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="pm")
     system_prompt = load_prompt_from_file(
         agent_config.get("prompt_file", "prompts/maintenance/pm.md")
     )
