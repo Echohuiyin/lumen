@@ -1,0 +1,1 @@
+savedcmd_/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_softlockup.mod := printf '%s\n'   crash_softlockup.o | awk '!x[$$0]++ { print("/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/"$$0) }' > /home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_softlockup.mod

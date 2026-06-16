@@ -49,12 +49,6 @@ def main():
         default=90,
         help="目标评分（达到后停止迭代）"
     )
-    parser.add_argument(
-        "--execution_mode",
-        default="mock",
-        choices=["mock", "real"],
-        help="执行模式: mock(模拟数据) 或 real(真实QEMU故障注入)"
-    )
     args = parser.parse_args()
 
     # 加载配置
@@ -75,7 +69,6 @@ def main():
         fault_type=args.fault_type,
         max_iterations=max_iterations,
         config_path=args.config,
-        execution_mode=args.execution_mode,
     )
     initial_state["config"] = config
     initial_state["target_score"] = target_score

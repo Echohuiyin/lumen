@@ -149,10 +149,10 @@ knowledge_base/
 
 ```bash
 # 单个文件导入
-python ~/.claude/skills/rag-case-retrieval/scripts/import_cases.py --source json --file case.json
+python skills/rag-case-retrieval/scripts/import_cases.py --source json --file case.json
 
 # ZIP 包批量导入
-python ~/.claude/skills/rag-case-retrieval/scripts/import_from_zip.py --zip knowledge_base.zip
+python skills/rag-case-retrieval/scripts/import_from_zip.py --zip knowledge_base.zip
 ```
 
 ## 注意事项

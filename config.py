@@ -8,10 +8,13 @@ from agents.backends import CLIBackend, HTTPBackend
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Add aicrasher to Python path for crash session management
-AICRASHER_PATH = "/home/liumingrui/code/Analysis-SKILL/src"
-if AICRASHER_PATH not in sys.path:
-    sys.path.insert(0, AICRASHER_PATH)
+# 本地技能目录（替代外部技能路径）
+SKILLS_DIR = PROJECT_ROOT / "skills"
+
+# 本地aicrasher模块路径
+AICRASHER_PATH = SKILLS_DIR / "shared" / "aicrasher"
+if AICRASHER_PATH.exists() and str(AICRASHER_PATH) not in sys.path:
+    sys.path.insert(0, str(AICRASHER_PATH))
 
 # Agents that run in automated workflow and must NOT use CLI backend
 AUTOMATION_AGENTS = [
@@ -23,6 +26,37 @@ AUTOMATION_AGENTS = [
     "evaluation",
     "improvement",
 ]
+
+
+def get_skill_path(skill_name: str) -> Path | None:
+    """获取本地技能路径
+
+    Args:
+        skill_name: 技能名称 (e.g., "kernel-fault-injection")
+
+    Returns:
+        技能目录路径，不存在则返回None
+    """
+    local_path = SKILLS_DIR / skill_name
+    return local_path if local_path.exists() else None
+
+
+def get_skill_script_path(skill_name: str, script_name: str) -> Path | None:
+    """获取技能脚本路径
+
+    Args:
+        skill_name: 技能名称
+        script_name: 脚本文件名
+
+    Returns:
+        脚本路径，不存在则返回None
+    """
+    skill_path = get_skill_path(skill_name)
+    if skill_path is None:
+        return None
+
+    script_path = skill_path / "scripts" / script_name
+    return script_path if script_path.exists() else None
 
 
 def validate_agent_backend(agent_name: str, backend: str) -> None:

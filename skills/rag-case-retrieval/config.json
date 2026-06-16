@@ -1,0 +1,44 @@
+{
+  "chroma": {
+    "path": null,
+    "collection_name": "cases"
+  },
+  "embedding": {
+    "base_url": "http://localhost:11434/v1",
+    "model": "nomic-embed-text",
+    "api_key": "not-required",
+    "timeout": 30,
+    "batch_size": 100,
+    "max_retries": 3,
+    "dimension": 768,
+    "max_tokens": 512
+  },
+  "retrieval": {
+    "default_top_k": 3,
+    "min_similarity": 0.7,
+    "distance_metric": "cosine",
+    "include_fields": ["id", "title", "content", "metadata"]
+  },
+  "vectorization": {
+    "strategy": "fixed_length",
+    "head_chars": 400,
+    "title_injection": true
+  },
+  "database": {
+    "type": "postgresql",
+    "host": "localhost",
+    "port": 5432,
+    "database": "cases_db",
+    "user": "your_user",
+    "password": "your_password"
+  },
+  "import_mapping": {
+    "id": "case_id",
+    "title": "case_title",
+    "content": "case_description",
+    "category": "category_name",
+    "tags": "tag_list",
+    "created_at": "created_time"
+  },
+  "import_query": "SELECT * FROM cases WHERE created_at > '2020-01-01'"
+}

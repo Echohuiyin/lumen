@@ -10,18 +10,12 @@ This test verifies:
 import os
 import sys
 
-# Add lumen project path for agents module
-sys.path.insert(0, "/home/liumingrui/lumen")
-
-# Add aicrasher path
-sys.path.insert(0, "/home/liumingrui/code/Analysis-SKILL/src")
-
 from pathlib import Path
 from datetime import datetime
 
-# Test file paths
-VMCORE_PATH = "/home/liumingrui/lumen/deadlock_analysis_output/vmcore.elf"
-VMLINUX_PATH = "/home/liumingrui/code/OLK-6.6/vmlinux"
+# Test file paths - 用户需自行配置
+VMCORE_PATH = "/path/to/your/vmcore.elf"
+VMLINUX_PATH = "/path/to/your/vmlinux"
 
 
 def test_crash_session_creation():

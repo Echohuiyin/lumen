@@ -1,0 +1,1 @@
+savedcmd_/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_nullptr.mod := printf '%s\n'   crash_nullptr.o | awk '!x[$$0]++ { print("/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/"$$0) }' > /home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_nullptr.mod

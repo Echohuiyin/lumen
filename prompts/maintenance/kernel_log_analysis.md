@@ -34,7 +34,7 @@ mcp_call_tool(
 根据日志中的关键错误信息，搜索历史相似案例：
 
 ```bash
-python ~/.claude/skills/rag-case-retrieval/scripts/retrieve_cases.py "日志中的关键错误信息" --top-k 5 --min-similarity 0.6
+python skills/rag-case-retrieval/scripts/retrieve_cases.py "日志中的关键错误信息" --top-k 5 --min-similarity 0.6
 ```
 
 ## 日志分类框架

@@ -1,4 +1,4 @@
-"""RAG 搜索集成模块：执行实际的向量检索并返回结构化结果。"""
+"""RAG 搜索集成模块：使用本地 rag-case-retrieval skill 执行向量检索"""
 
 import json
 import subprocess
@@ -6,38 +6,26 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from config import PROJECT_ROOT, SKILLS_DIR, get_skill_path
+
 
 def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0.3) -> dict:
-    """执行 RAG 搜索并返回结构化结果。
+    """执行 RAG 搜索并返回结构化结果
 
-    Args:
-        query: 搜索查询文本
-        top_k: 返回结果数量
-        min_similarity: 最小相似度阈值
-
-    Returns:
-        包含检索结果的字典，格式：
-        {
-            "status": "success" | "error" | "no_results",
-            "query": str,
-            "results": [
-                {
-                    "id": str,
-                    "title": str,
-                    "content": str,
-                    "similarity_score": float,
-                    "metadata": dict
-                }
-            ],
-            "error": str (如果失败)
-        }
+    使用 PROJECT_ROOT/skills/rag-case-retrieval 本地脚本
     """
-    # 获取 rag-case-retrieval skill 的脚本路径
-    skill_path = Path.home() / ".claude" / "skills" / "rag-case-retrieval"
-    script_path = skill_path / "scripts" / "retrieve_cases.py"
+    # 使用本地技能路径
+    skill_path = get_skill_path("rag-case-retrieval")
 
-    # 使用 Analysis-SKILL 的 venv（包含 chromadb）
-    venv_python = Path.home() / "code" / "Analysis-SKILL" / ".venv" / "bin" / "python"
+    if not skill_path:
+        return {
+            "status": "error",
+            "query": query,
+            "results": [],
+            "error": "rag-case-retrieval skill not found in local skills directory"
+        }
+
+    script_path = skill_path / "scripts" / "retrieve_cases.py"
 
     if not script_path.exists():
         return {
@@ -47,19 +35,14 @@ def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0
             "error": f"RAG script not found at {script_path}"
         }
 
-    if not venv_python.exists():
-        return {
-            "status": "error",
-            "query": query,
-            "results": [],
-            "error": f"Python venv not found at {venv_python}"
-        }
+    # 使用项目venv或系统Python
+    venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+    python_interpreter = str(venv_python) if venv_python.exists() else sys.executable
 
     try:
-        # 执行检索脚本
         result = subprocess.run(
             [
-                str(venv_python),
+                python_interpreter,
                 str(script_path),
                 query,
                 "--top-k", str(top_k),
@@ -68,6 +51,7 @@ def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0
             capture_output=True,
             text=True,
             timeout=60,
+            cwd=str(skill_path),
         )
 
         if result.returncode != 0:
@@ -78,9 +62,8 @@ def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0
                 "error": result.stderr or "Unknown error"
             }
 
-        # 解析 JSON 输出（脚本输出中最后部分是 JSON）
+        # 解析 JSON 输出
         output = result.stdout
-        # 找到 JSON 部分（以 { 开头的行）
         lines = output.strip().split("\n")
         json_start = -1
         for i, line in enumerate(lines):

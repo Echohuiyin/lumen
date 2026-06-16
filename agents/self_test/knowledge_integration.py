@@ -11,7 +11,6 @@
 
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
 
 from config import PROJECT_ROOT
 
@@ -27,7 +26,6 @@ def generate_knowledge_doc_from_iteration(state: dict) -> dict:
     - gaps_found: 发现的差距
     - improvement_suggestions: 改进建议
     - iteration_count: 迭代次数
-    - execution_mode: 执行模式（mock/real）
 
     输出：
     - title: 文档标题
@@ -42,7 +40,6 @@ def generate_knowledge_doc_from_iteration(state: dict) -> dict:
     gaps_found = state.get("gaps_found", [])
     improvement_suggestions = state.get("improvement_suggestions", [])
     iteration_count = state.get("iteration_count", 1)
-    execution_mode = state.get("execution_mode", "mock")
 
     # 构建标题
     success_level = "成功案例" if evaluation_score >= 80 else "改进案例" if evaluation_score >= 50 else "失败案例"
@@ -53,7 +50,6 @@ def generate_knowledge_doc_from_iteration(state: dict) -> dict:
 
 故障类型: {fault_type}
 难度级别: {expected_fault.get('difficulty', 'unknown')}
-执行模式: {execution_mode}
 评估分数: {evaluation_score}/100
 生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
@@ -182,7 +178,7 @@ def save_knowledge_doc(doc: dict, state: dict) -> str:
 def import_to_chroma(doc_path: str, fault_type: str) -> dict:
     """导入知识库文档到 Chroma 向量数据库。
 
-    使用 rag-case-retrieval skill 的导入脚本。
+    使用本地 rag-case-retrieval skill 的导入脚本。
 
     输入：
     - doc_path: 知识库文档路径
@@ -194,38 +190,34 @@ def import_to_chroma(doc_path: str, fault_type: str) -> dict:
     - message: 导入消息
     """
     import subprocess
+    import sys
 
-    # 查找 rag-case-retrieval skill
-    skill_paths = [
-        Path.home() / ".claude" / "skills" / "rag-case-retrieval",
-        PROJECT_ROOT.parent / "skills" / "rag-case-retrieval",
-    ]
+    from config import get_skill_path
 
-    skill_path = None
-    for path in skill_paths:
-        if path.exists():
-            skill_path = path
-            break
+    # 使用本地技能路径
+    skill_path = get_skill_path("rag-case-retrieval")
 
     if not skill_path:
         return {
             "success": False,
-            "message": "rag-case-retrieval skill not found",
+            "message": "rag-case-retrieval skill not found in local skills directory",
         }
 
     import_script = skill_path / "scripts" / "import_from_zip.py"
-
-    # 检查是否有其他导入方式（单文件导入）
     single_import_script = skill_path / "scripts" / "import_single_doc.py"
 
+    # 使用项目venv或系统Python
+    venv_python = PROJECT_ROOT / "venv" / "bin" / "python"
+    python_interpreter = str(venv_python) if venv_python.exists() else sys.executable
+
     if single_import_script.exists():
-        # 使用单文件导入脚本
         try:
             result = subprocess.run(
-                ["python3", str(single_import_script), doc_path],
+                [python_interpreter, str(single_import_script), doc_path],
                 capture_output=True,
                 text=True,
                 timeout=60,
+                cwd=str(skill_path),
             )
             if result.returncode == 0:
                 return {
@@ -251,16 +243,15 @@ def import_to_chroma(doc_path: str, fault_type: str) -> dict:
             tmp_path = Path(tmp.name)
 
         try:
-            # 创建 zip 包
             with zipfile.ZipFile(tmp_path, "w") as zf:
                 zf.write(doc_path, Path(doc_path).name)
 
-            # 使用 import_from_zip.py
             result = subprocess.run(
-                ["python3", str(import_script), str(tmp_path), "--fault-type", fault_type],
+                [python_interpreter, str(import_script), str(tmp_path), "--fault-type", fault_type],
                 capture_output=True,
                 text=True,
                 timeout=60,
+                cwd=str(skill_path),
             )
 
             tmp_path.unlink()
@@ -342,19 +333,14 @@ def auto_knowledge_pipeline(state: dict) -> dict:
     doc_path = save_knowledge_doc(doc, state)
     print(f"\n[知识库] 文档已保存: {doc_path}")
 
-    # 导入到 Chroma（仅在真实模式下）
-    execution_mode = state.get("execution_mode", "mock")
-    import_result = {"success": True, "message": "Mock mode, skipped Chroma import"}
-
-    if execution_mode == "real":
-        import_result = import_to_chroma(doc_path, doc["fault_type"])
-        print(f"[知识库] Chroma 导入: {import_result['message']}")
+    # 导入到 Chroma
+    import_result = import_to_chroma(doc_path, doc["fault_type"])
+    print(f"[知识库] Chroma 导入: {import_result['message']}")
 
     # 验证导入
-    verify_result = {"success": True, "message": "Mock mode, skipped verification"}
+    verify_result = {"success": True, "message": "Skipped verification"}
 
-    if execution_mode == "real" and import_result.get("success"):
-        # 使用故障类型作为查询词验证
+    if import_result.get("success"):
         verify_result = verify_knowledge_import(
             query=doc["fault_type"],
             expected_fault_type=doc["fault_type"],

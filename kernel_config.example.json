@@ -1,0 +1,18 @@
+{
+  "kernel": {
+    "source_dir": "/path/to/your/kernel/source",
+    "vmlinux_path": "/path/to/your/vmlinux",
+    "default_arch": "x86_64",
+    "default_config": "openeuler_defconfig"
+  },
+  "qemu": {
+    "arch": "x86_64",
+    "memory": "512M",
+    "timeout": 300,
+    "console": "ttyS0"
+  },
+  "crash": {
+    "crash_binary": "/usr/bin/crash",
+    "timeout": 120
+  }
+}

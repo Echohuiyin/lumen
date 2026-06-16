@@ -1,6 +1,6 @@
 # Lumen - 内核维护自动化工作流系统
 
-基于 LangGraph 构建的多 Agent 工作流系统，自动化处理内核维护问题（死锁、panic、softlockup等），支持自迭代验证和能力持续提升。
+基于 LangGraph 构建的独立多 Agent 工作流系统，自动化处理内核维护问题（死锁、panic、softlockup等），支持自迭代验证和能力持续提升。
 
 ---
 
@@ -29,9 +29,8 @@ bash deploy.sh
 - ✓ 安装项目依赖
 - ✓ 创建配置文件模板
 - ✓ 初始化知识库目录
-- ✓ 提供使用示例
 
-### 3. 配置 API Key
+### 3. 配置
 
 编辑 `maintenance_config.json`：
 
@@ -41,6 +40,9 @@ bash deploy.sh
     "api_key": "your-api-key-here",
     "base_url": "https://api.openai.com/v1",
     "model_name": "gpt-4o-mini"
+  },
+  "kernel": {
+    "vmlinux_path": "/path/to/your/vmlinux"
   }
 }
 ```
@@ -56,17 +58,7 @@ bash deploy.sh
 **使用方法：**
 
 ```bash
-# 基础用法
 python main.py --input "问题描述" --config maintenance_config.json
-
-# 示例：分析死锁问题
-python main.py --input "
-系统出现死锁现象：
-- 进程A持有锁L1，等待锁L2
-- 进程B持有锁L2，等待锁L1
-- vmcore已保存到 /tmp/vmcore
-- 内核版本: 5.10.0
-" --config maintenance_config.json
 ```
 
 **工作流程：**
@@ -83,11 +75,7 @@ python main.py --input "
 **使用方法：**
 
 ```bash
-# 运行自测试（模拟模式）
 python self_test_main.py --fault_type deadlock --max_iterations 5
-
-# 真实QEMU故障注入（需配置kernel-build和qemu-test技能）
-python self_test_main.py --fault_type nullptr --execution_mode real
 ```
 
 **支持的故障类型：**
@@ -99,53 +87,18 @@ python self_test_main.py --fault_type nullptr --execution_mode real
 
 ---
 
-## 配置说明
+## 内嵌技能
 
-### 主工作流配置（maintenance_config.json）
+项目包含完整的技能系统，无需外部依赖：
 
-```json
-{
-  "default": {
-    "backend": "openai",           // 后端类型: openai/cli/http
-    "api_key": "your-api-key",
-    "base_url": "https://api.openai.com/v1",
-    "model_name": "gpt-4o-mini",
-    "temperature": 0
-  },
-  "agents": {
-    "validator": { "model_name": "gpt-4o-mini" },
-    "pm": { "model_name": "gpt-4o" },
-    "kernel_expert": { "model_name": "gpt-4o" },
-    "test_expert": { "model_name": "gpt-4o" }
-  },
-  "tool_experts": [
-    { "type": "knowledge_search", "name": "知识库搜索" },
-    { "type": "lock_analysis", "name": "锁分析" },
-    { "type": "crash_analysis", "name": "Crash分析" },
-    { "type": "kernel_log_analysis", "name": "内核日志分析" }
-  ],
-  "workflow": {
-    "max_test_attempts": 3       // 测试验证最大尝试次数
-  }
-}
-```
-
-### 自测试配置（self_test_config.json）
-
-```json
-{
-  "self_test": {
-    "max_iterations": 5,          // 最大迭代次数
-    "target_score": 90,           // 目标评分
-    "fault_types": ["nullptr", "deadlock", "softlockup"]
-  },
-  "skills": {
-    "kernel_fault_injection": { "path": "~/.claude/skills/kernel-fault-injection" },
-    "kernel_build": { "path": "~/.claude/skills/kernel-build" },
-    "qemu_test": { "path": "~/.claude/skills/qemu-test" }
-  }
-}
-```
+| 技能 | 功能 | 路径 |
+|------|------|------|
+| **kernel-fault-injection** | 故障注入测试 | `skills/kernel-fault-injection/` |
+| **kernel-build** | 内核编译 | `skills/kernel-build/` |
+| **qemu-test** | QEMU测试 | `skills/qemu-test/` |
+| **vmcore-analyzer** | Crash分析 | `skills/vmcore-analyzer/` |
+| **rag-case-retrieval** | 知识库检索 | `skills/rag-case-retrieval/` |
+| **lock-analyzer** | 锁分析 | `skills/lock-analyzer/` |
 
 ---
 
@@ -153,48 +106,38 @@ python self_test_main.py --fault_type nullptr --execution_mode real
 
 ```
 lumen/
+├── skills/                    # 内嵌技能系统
+│   ├── kernel-fault-injection/
+│   ├── kernel-build/
+│   ├── qemu-test/
+│   ├── vmcore-analyzer/
+│   ├── rag-case-retrieval/
+│   ├── lock-analyzer/
+│   └── shared/
+│       └── aicrasher/         # Crash分析核心模块
+│
+├── agents/                    # Agent实现
+│   ├── validator.py
+│   ├── pm.py
+│   ├── tool_expert.py
+│   ├── kernel_expert.py
+│   ├── test_expert.py
+│   ├── crash_tools.py
+│   └── self_test/
+│
+├── graph/                     # LangGraph图定义
+├── prompts/                   # 提示词模板
+│   ├── maintenance/
+│   └── self_test/
+│
 ├── main.py                    # 主工作流入口
 ├── self_test_main.py          # 自测试入口
-├── deploy.sh                  # 一键部署脚本
 ├── config.py                  # 配置加载器
+├── deploy.sh                  # 一键部署脚本
 │
 ├── maintenance_config.json    # 主工作流配置
 ├── self_test_config.json      # 自测试配置
-├── requirements.txt           # Python依赖
-│
-├── agents/                    # Agent实现
-│   ├── validator.py           # 输入校验
-│   ├── pm.py                  # 问题分类
-│   ├── tool_expert.py         # 工具专家（MCP集成）
-│   ├── kernel_expert.py       # 内核专家
-│   ├── test_expert.py         # 测试专家
-│   ├── crash_tools.py         # Crash MCP工具
-│   ├── tool_calling_loop.py   # MCP工具调用循环
-│   ├── backends.py            # LLM后端（OpenAI/CLI/HTTP）
-│   └── self_test/             # 自测试模块
-│       ├── fault_generator.py     # 故障生成
-│       ├── workflow.py            # 自测试工作流
-│       ├── evaluation.py          # 分析评估
-│       ├── improvement.py         # 提示词改进
-│       └── knowledge_integration.py # 知识库集成
-│
-├── graph/                     # LangGraph图定义
-│   ├── rn_state.py            # 状态定义
-│   ├── rn_router.py           # 路由逻辑
-│   └── rn_workflow.py         # 工作流构建
-│
-├── prompts/                   # 提示词模板
-│   ├── maintenance/           # 主工作流提示词
-│   │   ├── validator.md
-│   │   ├── pm.md
-│   │   ├── kernel_expert.md
-│   │   ├── lock_analysis.md
-│   │   └── crash_analysis.md
-│   └── self_test/             # 自测试提示词
-│       ├── evaluation.md
-│       └── improvement.md
-│
-└── knowledge_base/            # 知识库存储（自动生成）
+└── kernel_config.example.json # 内核配置示例
 ```
 
 ---
@@ -205,61 +148,44 @@ lumen/
 |-------|------|---------|
 | **Validator** | 校验输入完整性 | 必填字段检查 |
 | **PM** | 问题分类与分发 | Fan-out并行调度 |
-| **工具专家** | 专业领域分析 | MCP工具调用、知识库搜索 |
+| **工具专家** | 专业领域分析 | 知识库搜索、Crash分析、锁分析 |
 | **内核专家** | 构造复现用例 | 综合分析、测试方案设计 |
 | **测试专家** | 验证问题复现 | QEMU测试、内核构建 |
 | **知识库生成** | 归档分析结果 | 结构化文档生成 |
 
 ---
 
-## 高级特性
+## 环境依赖
 
-### MCP工具集成
+运行完整功能需要以下环境：
 
-工具专家支持MCP（Model Context Protocol）工具调用：
-
-```bash
-# 配置MCP服务器（aicrasher）
-# 在self_test_config.json中:
-"skills": {
-  "vmcore_analyzer": {
-    "mcp_server": "aicrasher"
-  }
-}
-```
-
-### CLI后端（本地LLM）
-
-```json
-{
-  "kernel_expert": {
-    "backend": "cli",
-    "cli_command": "claude -p",
-    "cli_timeout": 180
-  }
-}
-```
-
-### LangGraph Studio调试
-
-```bash
-langgraph dev
-# 在Studio中选择 graph: maintenance
-```
+1. **内核源码**：配置 `kernel_config.json` 中的路径
+2. **QEMU**：用于内核测试和故障注入
+3. **Crash工具**：用于vmcore分析（`/usr/bin/crash`）
+4. **ChromaDB**：用于知识库向量检索（可选）
 
 ---
 
 ## 常见问题
 
-**Q: 如何查看历史分析案例？**
+**Q: 如何配置内核路径？**
 
-查看 `knowledge_base/` 目录下的 `.md` 文件，每个案例包含问题描述、分析过程和解决方案。
+编辑 `maintenance_config.json` 或 `kernel_config.json`：
 
-**Q: 自测试如何配置真实故障注入？**
+```json
+{
+  "kernel": {
+    "vmlinux_path": "/path/to/vmlinux",
+    "source_dir": "/path/to/kernel/source"
+  }
+}
+```
 
-1. 配置 `kernel-build` 和 `qemu-test` 技能路径
-2. 使用 `--execution_mode real` 参数
-3. 确保系统有QEMU和内核编译环境
+**Q: 技能脚本在哪里？**
+
+所有技能脚本位于 `skills/<skill-name>/scripts/` 目录，例如：
+- `skills/kernel-fault-injection/scripts/run_fault_injection.sh`
+- `skills/rag-case-retrieval/scripts/retrieve_cases.py`
 
 **Q: 如何添加新的工具专家？**
 
@@ -267,17 +193,13 @@ langgraph dev
 2. 在配置文件 `tool_experts` 数组添加专家定义
 3. 无需修改代码
 
-**Q: 测试验证失败会怎样？**
-
-工作流支持循环重试（`max_test_attempts`），失败后反馈给内核专家重新分析，超过限制后输出改进建议。
-
 ---
 
 ## 技术栈
 
 - **LangGraph**: 多Agent工作流编排
 - **LangChain**: LLM调用框架
-- **MCP**: 工具调用协议（aicrasher）
+- **aicrasher**: Crash分析核心模块（内嵌）
 - **QEMU**: 内核测试环境
 
 ---

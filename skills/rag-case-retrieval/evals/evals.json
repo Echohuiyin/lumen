@@ -1,0 +1,26 @@
+{
+  "skill_name": "rag-case-retrieval",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "我需要查找关于JWT认证失败的历史案例，帮我检索最相似的3个案例",
+      "expected_output": "从Chroma向量库检索Top-3案例，返回JSON结构化结果，包含案例ID、标题、内容、相似度分数",
+      "files": [],
+      "category": "基础检索"
+    },
+    {
+      "id": 2,
+      "prompt": "从数据库导入新案例到向量库，数据源是PostgreSQL数据库caselib，表名是historical_cases",
+      "expected_output": "连接数据库读取案例，生成embedding，分块存储到Chroma，返回导入统计信息",
+      "files": [],
+      "category": "数据导入"
+    },
+    {
+      "id": 3,
+      "prompt": "检索2024年的性能优化案例，只要相似度高于0.8的",
+      "expected_output": "应用时间过滤器和相似度阈值，返回筛选后的案例结果",
+      "files": [],
+      "category": "条件检索"
+    }
+  ]
+}

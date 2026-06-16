@@ -1,0 +1,1 @@
+savedcmd_/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/Module.symvers :=  scripts/mod/modpost -M        -o /home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/Module.symvers -T /home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/modules.order -i Module.symvers -e 

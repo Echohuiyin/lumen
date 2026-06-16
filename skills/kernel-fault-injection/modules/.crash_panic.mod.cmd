@@ -1,0 +1,1 @@
+savedcmd_/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_panic.mod := printf '%s\n'   crash_panic.o | awk '!x[$$0]++ { print("/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/"$$0) }' > /home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_panic.mod

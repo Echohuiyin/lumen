@@ -93,32 +93,23 @@ def build_user_input_node(state: SelfTestIterationState) -> dict:
 
     构建 Maintenance Workflow 可接受的输入格式，
     包含 vmcore 路径、vmlinux 路径、boot.log 内容、问题描述等。
-    对于 mock 模式，提供预定义的内核路径并说明是测试数据。
     """
     vmcore_path = state.get("generated_vmcore", "")
     boot_log_path = state.get("generated_boot_log", "")
     fault_description = state.get("fault_description", "")
     iteration_count = state.get("iteration_count", 0)
-    execution_mode = state.get("execution_mode", "mock")
+    config = state.get("config", {})
 
     # 增加迭代计数
     iteration_count += 1
 
     # 检查故障生成是否成功
     if state.get("fault_generation_error"):
-        # 故障生成失败，返回错误信息
         user_input = f"故障生成失败: {state['fault_generation_error']}"
     else:
-        # 对于 mock 模式，使用预定义的内核路径
-        # 真实模式则指向实际编译的内核
-        if execution_mode == "mock":
-            # mock 模式：使用 OLK-6.6 的预编译内核（即使不存在，说明是模拟测试）
-            vmlinux_path = "/home/liumingrui/code/OLK-6.6/vmlinux"
-            mode_note = "（模拟测试数据，boot.log 包含真实 panic 日志模式）"
-        else:
-            # 真实模式：使用实际生成的内核
-            vmlinux_path = "/home/liumingrui/code/OLK-6.6/vmlinux"
-            mode_note = ""
+        # 从配置获取vmlinux路径
+        kernel_config = config.get("kernel", {})
+        vmlinux_path = kernel_config.get("vmlinux_path", "/path/to/vmlinux")
 
         # 读取 boot.log 内容
         boot_log_content = ""
@@ -132,12 +123,10 @@ def build_user_input_node(state: SelfTestIterationState) -> dict:
             except Exception as e:
                 boot_log_content = f"无法读取 boot.log: {boot_log_path}\n错误: {e}"
 
-        # 构建用户输入（包含 vmlinux 路径以满足 validator 校验）
-        user_input = f"""内核崩溃问题分析请求{mode_note}
+        user_input = f"""内核崩溃问题分析请求
 
 故障描述: {fault_description}
 迭代次数: {iteration_count}
-执行模式: {execution_mode}
 
 ## 内核调试符号文件
 vmlinux 文件: {vmlinux_path}

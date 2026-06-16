@@ -1,0 +1,5 @@
+/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_nullptr.o
+/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_softlockup.o
+/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_deadlock.o
+/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_panic.o
+/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection/modules/crash_stack_overflow.o

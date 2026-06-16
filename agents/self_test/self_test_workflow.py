@@ -24,7 +24,6 @@ class SelfTestIterationState(TypedDict):
     fault_type: str                     # nullptr/softlockup/deadlock/panic/stack_overflow
     iteration_count: int                # 当前迭代次数
     max_iterations: int                 # 最大迭代次数
-    execution_mode: str                 # mock 或 real
 
     # 生成的测试数据
     generated_vmcore: str               # vmcore 文件路径
@@ -76,7 +75,6 @@ def make_self_test_initial_state(
     fault_type: str = "nullptr",
     max_iterations: int = 5,
     config_path: str = "maintenance_config.json",
-    execution_mode: str = "mock",
 ) -> dict:
     """创建自迭代验证的初始状态。
 
@@ -84,7 +82,6 @@ def make_self_test_initial_state(
         fault_type: 要注入的故障类型
         max_iterations: 最大迭代次数
         config_path: 配置文件路径
-        execution_mode: 执行模式 ("mock" 模拟数据 / "real" 真实故障注入)
 
     Returns:
         初始状态字典
@@ -96,7 +93,6 @@ def make_self_test_initial_state(
         "fault_type": fault_type,
         "iteration_count": 0,
         "max_iterations": max_iterations,
-        "execution_mode": execution_mode,
 
         "generated_vmcore": "",
         "generated_boot_log": "",
