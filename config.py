@@ -11,10 +11,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 本地技能目录（替代外部技能路径）
 SKILLS_DIR = PROJECT_ROOT / "skills"
 
-# 本地aicrasher模块路径
+# 本地aicrasher模块路径 - 需要将父目录加入sys.path才能导入aicrasher
 AICRASHER_PATH = SKILLS_DIR / "shared" / "aicrasher"
-if AICRASHER_PATH.exists() and str(AICRASHER_PATH) not in sys.path:
-    sys.path.insert(0, str(AICRASHER_PATH))
+AICRASHER_PARENT = SKILLS_DIR / "shared"
+if AICRASHER_PARENT.exists() and str(AICRASHER_PARENT) not in sys.path:
+    sys.path.insert(0, str(AICRASHER_PARENT))
 
 # Agents that run in automated workflow and must NOT use CLI backend
 AUTOMATION_AGENTS = [
