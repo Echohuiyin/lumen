@@ -24,6 +24,7 @@ class MaintenanceWorkflowState(TypedDict):
     config: dict
     # 用户输入
     user_input: str
+    execution_mode: str               # "real" | "simulation" - 控制测试专家是否实际执行
     # Validator 输出
     validation_passed: bool
     validation_feedback: str
@@ -48,13 +49,20 @@ class MaintenanceWorkflowState(TypedDict):
     final_response: str
 
 
-def make_initial_state(user_input: str = "", config_path: str = "maintenance_config.json") -> dict:
-    """Create a MaintenanceWorkflowState dict with sensible defaults."""
+def make_initial_state(user_input: str = "", config_path: str = "maintenance_config.json", execution_mode: str = "simulation") -> dict:
+    """Create a MaintenanceWorkflowState dict with sensible defaults.
+
+    Args:
+        user_input: 用户输入的问题描述
+        config_path: 配置文件路径
+        execution_mode: 执行模式 - "simulation"（文本分析）或 "real"（实际执行）
+    """
     return {
         "messages": [],
         "config_path": config_path,
         "config": {},
         "user_input": user_input,
+        "execution_mode": execution_mode,
         "validation_passed": False,
         "validation_feedback": "",
         "required_experts": [],

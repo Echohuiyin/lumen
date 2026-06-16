@@ -1,6 +1,8 @@
+from pathlib import Path
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.llm_display import call_llm_with_display, display_expert_outputs
+from agents.llm_display import call_llm_with_persistence, display_expert_outputs
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
@@ -36,9 +38,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     if test_result:
         user_content += f"\n\n## 上次测试结果（未成功复现）\n{test_result}\n请重新分析并调整复现用例。"
 
-    response = call_llm_with_display(
+    # 使用持久化版本
+    response = call_llm_with_persistence(
         "内核专家", "分析构造用例", llm,
         [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+        persist_dir=Path("outputs"),
     )
 
     text = response.content.strip()

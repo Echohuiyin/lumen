@@ -310,6 +310,77 @@ fi
 4. 使用 `/qemu-test` 执行测试
 5. 分析结果，判断是否成功复现
 
+## 🔴🔴🔴 关键执行要求（必须实际操作，不是描述）
+
+### 核心原则
+本 agent 在 **real mode** 下必须**实际执行测试验证**，而不是仅描述验证流程。
+
+### 执行路径（real mode）
+
+当 execution_mode = "real" 时，必须执行以下步骤：
+
+#### 步骤 1：解析复现用例
+从内核专家输出中提取：
+- 架构 (architecture)
+- 配置选项 (configs)
+- 复现器代码位置 (reproducer_path)
+- 测试脚本/命令 (test_script/test_command)
+- 预期结果 (expected_result)
+
+#### 步骤 2：编译内核模块（如有）
+使用 Bash 工具执行：
+```bash
+cd <reproducer_dir> && make
+```
+
+验证编译成功：
+```bash
+ls -la <reproducer.ko>
+```
+
+#### 步骤 3：执行 QEMU 测试
+使用 Bash 工具启动 QEMU（或调用 qemu-test skill）：
+
+```bash
+timeout 120 qemu-system-x86_64 \
+    -kernel <bzImage_path> \
+    -initrd <initramfs_path> \
+    -append "console=ttyS0" \
+    -m 512M -smp 2 -nographic \
+    2>&1 | tee boot.log
+```
+
+#### 步骤 4：读取并分析实际输出
+使用 Read 工具读取 boot.log：
+```
+Read file_path="boot.log"
+```
+
+提取关键证据：
+- 模块加载消息
+- 线程状态（D 状态确认）
+- 预期错误/panic
+- hung_task 检测输出
+
+#### 步骤 5：生成验证报告
+使用 Write 工具保存：
+```
+Write file_path="outputs/test_expert/validation_report.md"
+content="<报告内容>"
+```
+
+### 区分：描述 vs 执行
+
+| ❌ 错误（仅描述） | ✅ 正确（实际执行） |
+|------------------|-------------------|
+| "使用 qemu-test skill 测试" | 实际调用 Bash 工具执行 QEMU 命令 |
+| "检查 boot.log 内容" | 使用 Read 工具读取实际文件 |
+| "分析结果为 SUCCESS" | 基于实际 log 内容判断 |
+
+### simulation mode
+
+当 execution_mode = "simulation" 时，按当前行为执行文本分析。
+
 ## 输出格式
 
 ### 复现成功

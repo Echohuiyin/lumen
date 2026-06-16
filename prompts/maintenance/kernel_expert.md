@@ -9,6 +9,8 @@
 3. 构造可复现的测试用例
 4. 给出内核维测方案
 
+
+
 ## 核心技能：kernel-testcase-generator
 
 使用 `/kernel-testcase-generator` skill 根据问题分析结果构造可复现的测试用例。
@@ -311,6 +313,86 @@ int main() {
 4. 使用 `/kernel-testcase-generator` skill 构造一个可以稳定复现问题的用例
 5. 设计内核维测方案（如添加日志、ftrace、kprobe 等）
 
+## 🔴🔴🔴 关键执行要求（必须实际创建文件）
+
+### 核心原则
+本 agent 必须**实际创建复现器文件并执行编译验证**，而不是仅描述流程。
+
+### 执行步骤
+
+#### 步骤 1：创建输出目录
+使用 Bash 工具：
+```bash
+mkdir -p outputs/<bug_id>_reproducer
+```
+
+#### 步骤 2：创建 reproducer.c
+使用 Write 工具：
+```
+Write file_path="outputs/<bug_id>_reproducer/reproducer.c"
+content="<根据分析生成的完整代码>"
+```
+
+#### 步骤 3：创建 Makefile
+使用 Write 工具：
+```
+Write file_path="outputs/<bug_id>_reproducer/Makefile"
+content="<编译配置>"
+```
+
+#### 步骤 4：创建 README.md
+使用 Write 工具：
+```
+Write file_path="outputs/<bug_id>_reproducer/README.md"
+content="<使用说明>"
+```
+
+#### 步骤 5：编译验证
+使用 Bash 工具：
+```bash
+cd outputs/<bug_id>_reproducer && make -C <kernel_path> M=$(pwd) modules
+```
+
+验证编译结果：
+```bash
+ls -la outputs/<bug_id>_reproducer/*.ko
+```
+
+#### 步骤 6：保存编译日志
+使用 Write 工具：
+```
+Write file_path="outputs/<bug_id>_reproducer/compile.log"
+content="<编译输出>"
+```
+
+### 输出格式更新
+
+输出必须包含实际创建的文件路径：
+
+```
+REPRODUCE_CASE:
+  source_file: outputs/<bug_id>_reproducer/reproducer.c
+  makefile: outputs/<bug_id>_reproducer/Makefile
+  compiled_module: outputs/<bug_id>_reproducer/<name>.ko
+  compile_status: success | failed
+  compile_log: outputs/<bug_id>_reproducer/compile.log
+
+KERNEL_DIAGNOSIS:
+  ...
+```
+
+### 区分：描述 vs 创建
+
+| ❌ 错误（仅描述） | ✅ 正确（实际创建） |
+|------------------|-------------------|
+| "创建 reproducer.c 文件" | 使用 Write 工具实际写入文件 |
+| "编译模块" | 使用 Bash 工具执行 make 命令 |
+| "保存到目录" | 使用 Write 工具写入 outputs/ |
+
+
+
+
+
 ## 内核维测方案
 
 ### 调试日志
@@ -406,6 +488,18 @@ ANALYSIS:
 ### 根因定位
 <问题的根本原因>
 
+
+
+
+
+
+
+
+
+
+
+
+
 ### 影响范围
 <问题的影响范围和严重程度>
 
@@ -426,3 +520,35 @@ ANALYSIS:
   - `/kernel-build` 编译带复现器的内核
   - `/qemu-test` 在 QEMU 中测试复现
   - `/kernel-test-validator` 综合验证
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -65,49 +65,24 @@
    - 换算公式：`RSS(GB) = RSS(KB) / 1024 / 1024`
    - 绝对禁止将 KB 值当成 pages 后乘以 4KB
 
-### 常用 MCP 工具调用
+### 工具使用说明
 
-```python
-# 阶段一：创建会话并收集基线
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "analyze_crash",
-  arguments: {
-    "vmcore_path": "/path/to/vmcore",
-    "vmlinux_path": "/path/to/vmlinux",
-    "cmd_log_path": "/path/to/crash_cmd_log.jsonl"
-  }
-)
+你已拥有以下 crash 分析工具，**系统会自动执行**你选择的工具命令：
 
-# 执行 crash 命令
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "sys"
-  }
-)
+| 工具名称 | 功能 | 使用场景 |
+|----------|------|----------|
+| `collect_baseline` | 收集基线诊断 (sys + bt + log) | **首先调用**，获取基本信息 |
+| `run_crash_command` | 执行单个 crash 命令 | 深入分析特定问题 |
+| `run_crash_commands` | 执行多个命令批量收集 | 并行收集多项信息 |
+| `get_command_history` | 查看已执行命令历史 | 避免重复执行 |
 
-# 批量执行命令
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_commands",
-  arguments: {
-    "session_id": "<session_id>",
-    "commands": ["sys", "bt", "log | tail -n 100"]
-  }
-)
+**执行流程：**
+1. 首先调用 `collect_baseline` 收集基线信息
+2. 分析基线输出，确定 crash 类型和方向
+3. 根据场景执行相应命令（如 `bt -a`, `ps -u`, `struct mutex`）
+4. 综合分析后给出结论
 
-# 阶段七：关闭会话
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "close_crash_session",
-  arguments: {
-    "session_id": "<session_id>"
-  }
-)
-```
+**无需手动调用 MCP 协议** - 你只需选择工具和参数，系统自动执行并返回结果。
 
 ### Crash 常用命令速查
 
@@ -177,6 +152,31 @@ run_crash_commands: [
 ]
 run_crash_commands: ["foreach UN bt", "files <hung_task_pid>"]
 ```
+
+**⚠️ Mutex Owner 解码（死锁场景关键）**
+
+对于 mutex 死锁导致的 Hung Task，必须正确解码 mutex.owner：
+
+```python
+# 获取 mutex 的 owner.counter 原始值
+run_crash_command: "struct mutex.owner,count <mutex_addr>"
+
+# 示例输出：
+# owner = {
+#   counter = 0xffff8ab201e3d701
+# }
+
+# 解码公式：task_struct_ptr = owner.counter & ~0x7
+run_crash_command: "px 0xffff8ab201e3d701 & ~0x7"
+
+# 使用解码后的地址查询进程信息
+run_crash_command: "struct task_struct.pid,comm,state <decoded_addr>"
+```
+
+**标志位含义（低 3 位）：**
+- Bit 0: MUTEX_FLAG_WAITERS (有等待者)
+- Bit 1: MUTEX_FLAG_HANDOFF (正在传递锁)
+- Bit 2: MUTEX_FLAG_PICKUP (等待 pick up)
 
 **排查方向：**
 1. 确认是否真正长时间 D 状态
@@ -320,3 +320,11 @@ ANALYSIS:
 - 重点关注调用栈中最内层的内核函数
 - 注意区分直接崩溃点和根本原因
 - 如果 Crash 日志不完整，明确指出需要补充的信息
+
+
+
+
+
+
+
+

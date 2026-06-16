@@ -1,12 +1,22 @@
+from pathlib import Path
+
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.llm_display import call_llm_with_display
+from agents.llm_display import call_llm_with_persistence
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
 
 def test_expert_node(state: MaintenanceWorkflowState) -> dict:
-    """测试专家 agent：根据内核专家给出的复现用例进行问题复现验证。"""
+    """测试专家 agent：根据内核专家给出的复现用例进行问题复现验证。
+
+    支持两种执行模式：
+    - simulation: 纯文本分析，由 LLM 描述验证流程
+    - real: 实际执行测试（需要通过外部工具调用）
+
+    当前实现中，real mode 需要用户手动或通过 skill 调用执行实际测试，
+    agent 本身无法直接调用 Bash/Read 工具。
+    """
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("test_expert", {})
     default_config = config.get("default", {})
@@ -19,13 +29,27 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     max_attempts = config.get("workflow", {}).get("max_test_attempts", 3)
     is_last_attempt = current_attempts >= max_attempts
 
+    # 获取执行模式
+    execution_mode = state.get("execution_mode", "simulation")
+
     user_content = (
         f"用户输入:\n{state['user_input']}\n\n"
         f"## 内核专家构造的复现用例\n{state.get('reproduce_case', '')}\n\n"
         f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
         f"## 完整内核分析\n{state.get('kernel_analysis', '')}\n\n"
-        f"请根据以上信息验证问题是否可以复现。这是第 {current_attempts} 次验证。"
+        f"## 执行模式\n当前执行模式: **{execution_mode}**\n\n"
     )
+
+    if execution_mode == "real":
+        user_content += (
+            "⚠️ 当前为 real 模式，但此 agent 无法直接执行 QEMU 测试。\n"
+            "请生成详细的测试执行计划，包括具体的命令和参数，供用户或外部系统执行。\n"
+            "在输出中提供可执行的 shell 命令脚本。\n\n"
+        )
+    else:
+        user_content += "当前为 simulation 模式，请进行文本分析。\n\n"
+
+    user_content += f"请根据以上信息验证问题是否可以复现。这是第 {current_attempts} 次验证。"
 
     if is_last_attempt:
         user_content += (
@@ -33,9 +57,11 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
             f"如果仍然无法复现，请给出详细的分析建议，帮助用户改进复现思路。**"
         )
 
-    response = call_llm_with_display(
+    # 使用持久化版本
+    response = call_llm_with_persistence(
         "测试专家", f"复现验证（第{current_attempts}次）", llm,
         [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+        persist_dir=Path("outputs"),
     )
 
     text = response.content.strip()
@@ -94,9 +120,10 @@ def _generate_improvement_suggestions(state: MaintenanceWorkflowState, test_resu
         f"4. 维测方案：建议添加哪些额外的调试手段"
     )
 
-    response = call_llm_with_display(
+    response = call_llm_with_persistence(
         "测试专家", "生成改进建议", llm,
         [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+        persist_dir=Path("outputs"),
     )
 
     return response.content.strip()

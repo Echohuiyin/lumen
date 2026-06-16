@@ -52,33 +52,59 @@ struct mutex {
 }
 ```
 
-**必须先检查内核版本**：
-```python
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "sys"
-  }
-)
+**⚠️ Mutex Owner 解码（重要！）**
+
+`mutex.owner` 字段的 `.counter` 值包含 `task_struct` 指针，但低 3 位用作标志位。解码公式：
+
+```bash
+# 原始值示例：0xffff8ab201e3d701
+# 解码后 task_struct 地址：0xffff8ab201e3d700
+
+# 解码公式（在 crash 中执行）
+crash> px 0xffff8ab201e3d701 & ~0x7
+$1 = 0xffff8ab201e3d700
+
+# 然后用解码后的地址查询进程信息
+crash> struct task_struct.pid,comm,state 0xffff8ab201e3d700
 ```
+
+**标志位含义（低 3 位）：**
+- Bit 0: MUTEX_FLAG_WAITERS (有等待者)
+- Bit 1: MUTEX_FLAG_HANDOFF (正在传递锁)
+- Bit 2: MUTEX_FLAG_PICKUP (等待 pick up)
+
+**正确的 owner 分析流程：**
+1. 获取原始 owner.counter 值
+2. 使用 `& ~0x7` 解码得到 task_struct 指针
+3. 使用解码后的地址查询 task_struct 信息
+4. 验证进程状态（是否为 D 状态/阻塞）
+
+**必须先检查内核版本**：
+使用 `run_crash_command` 执行 `sys` 命令查看内核版本。
+
+### 工具使用说明
+
+你已拥有以下 crash 分析工具，**系统会自动执行**你选择的工具命令：
+
+| 工具名称 | 功能 | 使用场景 |
+|----------|------|----------|
+| `collect_baseline` | 收集基线诊断 (sys + bt + log) | **首先调用**，获取基本信息 |
+| `run_crash_command` | 执行单个 crash 命令 | 分析特定锁结构、进程状态 |
+| `run_crash_commands` | 执行多个命令批量收集 | 并行收集多项信息 |
+
+**执行流程：**
+1. 首先调用 `collect_baseline` 收集基线信息（包含内核版本）
+2. 分析基线输出，确定锁类型和问题方向
+3. 根据锁类型执行相应命令（如 `struct mutex`, `bt <pid>`）
+4. 综合分析后给出死锁模型和结论
+
+**无需手动调用 MCP 协议** - 你只需选择工具和参数，系统自动执行并返回结果。
 
 ### 分析流程
 
 #### 步骤 1: 确定锁类型
 
-```python
-# 通过 MCP 执行 crash 命令
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct -o mutex <lock-address>"
-  }
-)
-```
+使用 `run_crash_command` 执行 `struct -o mutex <lock-address>` 查看锁结构。
 
 检查结构类型：
 - 有 `owner` 字段 → mutex
@@ -88,27 +114,9 @@ mcp_call_tool(
 #### 步骤 2: 按类型分析
 
 **Mutex 分析**：
-```python
-# 获取 mutex 拥有者
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct mutex.owner,count,wait_list <lock-address>"
-  }
-)
-
-# 获取拥有者进程详情
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct task_struct.pid,comm,state <owner-address>"
-  }
-)
-```
+使用 `run_crash_command` 执行：
+- `struct mutex.owner,count,wait_list <lock-address>` - 获取 mutex 拥有者
+- `struct task_struct.pid,comm,state <owner-address>` - 获取拥有者进程详情
 
 **Spinlock 分析**：
 ```python
@@ -339,6 +347,20 @@ ANALYSIS:
 
 ### 锁持有者信息
 <使用 lock-analyzer skill 获取的锁持有者详情>
+⚠️ 对于 mutex，必须使用 owner 解码公式（见上文"Mutex Owner 解码"）正确解析 task_struct 指针
+
+### 死锁模型（仅死锁场景）
+如果检测到 ABBA 死锁，必须输出以下表格：
+
+| 线程/进程 | 持有锁 | 等待锁 | 状态 | 来源 |
+|-----------|--------|--------|------|------|
+| Thread A | mutex_α | mutex_β | BLOCKED/D | crash 工具解码 |
+| Thread B | mutex_β | mutex_α | BLOCKED/D | crash 工具解码 |
+
+**注意：**
+- 锁名称来源必须标注：crash 工具提取 vs 源码推断
+- 线程 PID 和进程名必须从 task_struct 解码获得
+- 状态必须从 task_struct.state 字段读取
 
 ### 代码路径分析
 <梳理加锁/解锁的代码路径>
@@ -360,3 +382,11 @@ ANALYSIS:
 - **分析后关闭会话** - 使用 `close_crash_session` 清理资源
 - 如果信息不足以确定问题类型，明确指出需要补充哪些信息
 - 注意区分真正的锁问题和由其他问题引起的锁症状
+
+
+
+
+
+
+
+

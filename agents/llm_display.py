@@ -3,12 +3,15 @@
 支持两种模式：
 1. stream 模式：实时打印到 stdout（用于 validator、pm、kernel_expert）
 2. silent 模式：收集输出到文件，不打印（用于并行执行的 tool_expert）
+
+自动持久化：每个 agent 完成后自动保存输出到 outputs/ 目录
 """
 
 import sys
 import os
 from pathlib import Path
 from typing import Any
+from datetime import datetime
 
 from langchain_core.messages import AIMessage, BaseMessage
 
@@ -299,3 +302,122 @@ def display_expert_outputs(expert_results: list) -> None:
 
     print("\n" + _c(BOLD + BLUE, "=" * 60), flush=True)
     print(flush=True)
+
+
+# ===== 输出持久化功能 =====
+
+# Agent 到子目录的映射
+AGENT_DIR_MAP = {
+    "validator": "validation",
+    "pm": "validation",
+    "kernel_expert": "kernel_expert",
+    "test_expert": "test_expert",
+}
+
+
+def get_persist_dir(base_dir: Path | None = None) -> Path:
+    """获取持久化输出目录。"""
+    if base_dir is None:
+        base_dir = Path("outputs")
+    base_dir.mkdir(parents=True, exist_ok=True)
+    return base_dir
+
+
+def get_agent_output_dir(agent: str, base_dir: Path | None = None) -> Path:
+    """获取特定 agent 的输出目录。"""
+    persist_dir = get_persist_dir(base_dir)
+    subdir = AGENT_DIR_MAP.get(agent, "experts")
+    agent_dir = persist_dir / subdir
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    return agent_dir
+
+
+def _persist_agent_output(
+    base_dir: Path,
+    agent: str,
+    phase: str,
+    content: str,
+) -> Path:
+    """保存 agent 输出到文件。
+
+    Args:
+        base_dir: 输出根目录
+        agent: Agent 名称
+        phase: 执行阶段
+        content: 输出内容
+
+    Returns:
+        输出文件路径
+    """
+    agent_dir = get_agent_output_dir(agent, base_dir)
+
+    # 使用时间戳创建唯一文件名
+    timestamp = datetime.now().strftime("%H%M%S")
+    # 清理 phase 中的特殊字符
+    safe_phase = phase.replace("/", "_").replace(" ", "_")
+    filename = f"{agent}_output_{safe_phase}_{timestamp}.txt"
+
+    output_file = agent_dir / filename
+
+    # 写入内容
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(f"[{agent}] {phase}\n")
+        f.write(f"Timestamp: {datetime.now().isoformat()}\n\n")
+        f.write(content)
+
+    return output_file
+
+
+def call_llm_with_persistence(
+    agent: str,
+    phase: str,
+    llm: Any,
+    messages: list,
+    silent: bool = False,
+    output_file: Path | None = None,
+    persist_dir: Path | None = None,
+) -> AIMessage:
+    """调用 LLM 并自动持久化输出。
+
+    这是 call_llm_with_display 的增强版本，自动保存输出到 outputs/ 目录。
+
+    Args:
+        agent: Agent 名称
+        phase: 执行阶段
+        llm: LLM 实例
+        messages: 消息列表
+        silent: 静默模式
+        output_file: 输出文件路径（静默模式）
+        persist_dir: 持久化目录（默认 outputs/）
+
+    Returns:
+        AIMessage 响应
+    """
+    # 使用原有函数执行 LLM 调用
+    response = call_llm_with_display(
+        agent=agent,
+        phase=phase,
+        llm=llm,
+        messages=messages,
+        silent=silent,
+        output_file=output_file,
+    )
+
+    # 自动持久化输出
+    if persist_dir is None:
+        persist_dir = Path("outputs")
+
+    try:
+        saved_file = _persist_agent_output(
+            base_dir=persist_dir,
+            agent=agent,
+            phase=phase,
+            content=response.content,
+        )
+        # 不打印保存信息，避免输出干扰
+        # 实际使用时可通过日志记录
+    except Exception as e:
+        # 持久化失败不影响主流程
+        pass
+
+    return response

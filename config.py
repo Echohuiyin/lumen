@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 from langchain_openai import ChatOpenAI
@@ -7,6 +8,11 @@ from agents.backends import CLIBackend, HTTPBackend
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
+# Add aicrasher to Python path for crash session management
+AICRASHER_PATH = "/home/liumingrui/code/Analysis-SKILL/src"
+if AICRASHER_PATH not in sys.path:
+    sys.path.insert(0, AICRASHER_PATH)
+
 # Agents that run in automated workflow and must NOT use CLI backend
 AUTOMATION_AGENTS = [
     "validator",
@@ -14,6 +20,8 @@ AUTOMATION_AGENTS = [
     "kernel_expert",
     "test_expert",
     "knowledge_base",
+    "evaluation",
+    "improvement",
 ]
 
 
@@ -93,3 +101,39 @@ def resolve_project_path(path: str) -> Path:
     if p.is_absolute():
         return p
     return PROJECT_ROOT / p
+
+
+def create_crash_session(vmcore_path: str, vmlinux_path: str) -> "CrashSessionManager":
+    """Create crash analysis session using aicrasher.
+
+    Args:
+        vmcore_path: Path to vmcore dump file
+        vmlinux_path: Path to vmlinux image with debug symbols
+
+    Returns:
+        CrashSessionManager instance (started and ready for commands)
+
+    Raises:
+        ImportError: If aicrasher not available
+        FileNotFoundError: If vmcore or vmlinux doesn't exist
+        RuntimeError: If crash session fails to start
+    """
+    from aicrasher.crash_session import CrashSessionManager
+    from aicrasher.config import AppConfig
+
+    vmcore = Path(vmcore_path)
+    vmlinux = Path(vmlinux_path)
+
+    if not vmcore.exists():
+        raise FileNotFoundError(f"vmcore not found: {vmcore_path}")
+    if not vmlinux.exists():
+        raise FileNotFoundError(f"vmlinux not found: {vmlinux_path}")
+
+    config = AppConfig()
+    session = CrashSessionManager(
+        vmcore_path=vmcore,
+        vmlinux_path=vmlinux,
+        config=config,
+    )
+    session.start()
+    return session
