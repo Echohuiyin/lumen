@@ -1,286 +1,287 @@
-# Lumen — 维护接口人工作流
+# Lumen - 内核维护自动化工作流系统
 
-基于 [LangGraph](https://github.com/langchain-ai/langgraph) 构建的多 Agent 工作流，用于自动化处理内核维护问题。用户提交问题描述后，工作流自动校验、分类、分析、验证并归档，形成完整的维护闭环。
-
----
-
-## 工作流概览
-
-```mermaid
-flowchart TD
-    START([START]) --> validator[Validator<br/>输入校验]
-    validator -->|"校验通过"| pm[PM<br/>分类 & 创建 Issue]
-    validator -->|"校验不通过"| END1([END: 要求补充信息])
-
-    pm -->|"fan-out"| te1[工具专家 1<br/>历史知识库搜索]
-    pm -->|"fan-out"| te2[工具专家 2<br/>锁分析]
-    pm -->|"fan-out"| te3[工具专家 3<br/>Crash 分析]
-    pm -->|"fan-out"| te4[工具专家 4<br/>内核日志分析]
-
-    te1 --> kernel[内核专家<br/>构造复现用例 & 维测方案]
-    te2 --> kernel
-    te3 --> kernel
-    te4 --> kernel
-
-    kernel --> test[测试专家<br/>复现验证]
-    test -->|"复现成功"| kb[知识库生成<br/>总结归档]
-    test -->|"复现失败 & 未超限"| kernel
-    test -->|"超过最大尝试"| END3([END: 给出改进建议])
-
-    kb --> END2([END: 分析完成])
-```
-
-### 各 Agent 职责
-
-| Agent | 职责 | 核心技能 |
-|-------|------|----------|
-| **Validator** | 校验用户输入信息是否完备，不完整则要求补充 | 输入校验框架 |
-| **PM** | 分析问题类型，分类交给对应工具专家，创建 issue 跟踪 | Fan-out 并行分发 |
-| **知识库搜索专家** | 搜索历史知识库，查找相似案例和解决方案 | `/rag-case-retrieval` |
-| **锁分析专家** | 分析内核锁问题（死锁、竞争、顺序） | `/lock-analyzer` + MCP (aicrasher) |
-| **Crash 分析专家** | 分析 vmcore，定位崩溃原因和调用栈 | `/vmcore-analyzer` + MCP (aicrasher) |
-| **内核日志分析专家** | 分析内核日志，提取关键错误信息 | 日志分类框架 |
-| **内核专家** | 综合工具专家输出，构造复现用例，给出维测方案 | `/kernel-testcase-generator` |
-| **测试专家** | 根据复现用例验证问题 | `/kernel-build` + `/qemu-test` + `/kernel-test-validator` |
-| **知识库生成** | 将问题总结为知识库文档归档 | 结构化文档生成 |
-
-### 关键设计原则
-
-1. **输入校验前置**：Validator 确保信息完备后才进入分析流程，避免无效分析
-2. **Fan-out 并行分析**：多个工具专家通过 LangGraph `Send` 并行执行，互不阻塞
-3. **内核专家 ⇄ 测试专家循环**：测试失败时反馈给内核专家重新分析，直到复现成功或超过最大尝试次数；超限时跳过知识库生成，直接给出改进建议（环境、信息、分析思路、维测方案）结束流程
-4. **工具专家可配置**：通过 JSON 配置文件定义工具专家类型和参数，无需改代码即可扩展
-5. **知识库自动归档**：分析完成后自动生成知识库文档，积累维护经验
+基于 LangGraph 构建的多 Agent 工作流系统，自动化处理内核维护问题（死锁、panic、softlockup等），支持自迭代验证和能力持续提升。
 
 ---
 
-## 项目结构
+## 快速开始
 
-```
-Lumen/
-├── main.py                              # CLI 入口
-├── config.py                            # 全局配置：LLM 初始化、Prompt 加载
-├── langgraph.json                       # LangGraph dev / Studio 配置文件
-├── maintenance_config.example.json       # 工作流配置示例
-├── requirements.txt                     # 运行时依赖
-│
-├── agents/                              # Agent 节点实现
-│   ├── validator.py                     # Validator：校验用户输入
-│   ├── pm.py                            # PM：问题分类 & 创建 issue
-│   ├── tool_expert.py                   # 工具专家：按类型执行专业分析
-│   ├── kernel_expert.py                 # 内核专家：构造复现用例 & 维测方案
-│   ├── test_expert.py                   # 测试专家：复现验证
-│   ├── knowledge_base.py               # 知识库生成：总结归档
-│   ├── backends.py                      # Agent 后端实现（OpenAI / CLI / HTTP）
-│   └── llm_display.py                   # LLM 流式输出与 thinking 展示
-│
-├── graph/                               # LangGraph 图定义
-│   ├── rn_state.py                      # MaintenanceWorkflowState 类型定义
-│   ├── rn_router.py                     # 条件路由与 Send fan-out 分发
-│   └── rn_workflow.py                   # 构建 StateGraph，导出 maintenance_graph
-│
-├── prompts/                             # 各 Agent 的 System Prompt
-│   └── maintenance/
-│       ├── validator.md                 # Validator 提示词
-│       ├── pm.md                        # PM 提示词
-│       ├── knowledge_search.md          # 历史知识库搜索专家提示词
-│       ├── lock_analysis.md             # 锁分析专家提示词
-│       ├── crash_analysis.md            # Crash 分析专家提示词
-│       ├── kernel_log_analysis.md       # 内核日志分析专家提示词
-│       ├── kernel_expert.md             # 内核专家提示词
-│       ├── test_expert.md               # 测试专家提示词
-│       └── knowledge_base.md            # 知识库生成提示词
-│
-└── .githooks/                           # Git commit-msg hook
-    └── commit-msg
-```
-
----
-
-## 使用方法
-
-### 环境准备
+### 1. 环境准备
 
 ```bash
+# 克隆项目
+git clone https://github.com/your-org/lumen.git
+cd lumen
+
+# 安装依赖
 pip install -r requirements.txt
-cp maintenance_config.example.json maintenance_config.json
-# 编辑 maintenance_config.json，填入 default.api_key 等
 ```
 
-### CLI 命令行
+### 2. 一键部署
 
 ```bash
-python3 main.py --input "问题描述" --config maintenance_config.json
+# 运行部署脚本
+bash deploy.sh
 ```
 
-参数说明：
+脚本会自动完成：
+- ✓ 检查 Python 环境（≥3.8）
+- ✓ 安装项目依赖
+- ✓ 创建配置文件模板
+- ✓ 初始化知识库目录
+- ✓ 提供使用示例
 
-| 参数 | 必填 | 说明 |
-|------|------|------|
-| `--input` | 是 | 用户输入的问题描述 |
-| `--config` | 否 | 工作流配置文件路径，默认 `maintenance_config.json` |
+### 3. 配置 API Key
 
-### LangGraph Studio 调试
-
-```bash
-langgraph dev
-```
-
-启动后在 Studio 中选择 graph **`maintenance`**。
-
----
-
-## 配置文件
-
-配置文件为 JSON 格式，示例见 `maintenance_config.example.json`。主要字段：
+编辑 `maintenance_config.json`：
 
 ```json
 {
   "default": {
     "api_key": "your-api-key-here",
     "base_url": "https://api.openai.com/v1",
-    "model_name": "gpt-4o-mini",
-    "temperature": 0
-  },
-  "agents": {
-    "validator": {
-      "prompt_file": "prompts/maintenance/validator.md",
-      "model_name": "gpt-4o-mini",
-      "temperature": 0
-    },
-    "pm": { ... },
-    "kernel_expert": { ... },
-    "test_expert": { ... },
-    "knowledge_base": { ... }
-  },
-  "tool_experts": [
-    {
-      "type": "knowledge_search",
-      "name": "历史知识库搜索专家",
-      "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
-      "agent": {
-        "prompt_file": "prompts/maintenance/knowledge_search.md",
-        "model_name": "gpt-4o",
-        "temperature": 0
-      }
-    }
-  ],
-  "knowledge_base": {
-    "output_dir": "knowledge_base"
-  },
-  "workflow": {
-    "max_test_attempts": 3
+    "model_name": "gpt-4o-mini"
   }
 }
 ```
 
-### 默认配置
+---
 
-`default` 块定义全局默认值，所有 Agent 未单独配置时自动回退：
+## 核心功能
 
-| 字段 | 说明 |
-|------|------|
-| `backend` | 后端类型：`"openai"`(默认) / `"cli"` / `"http"` |
-| `api_key` | LLM API Key（openai 后端必填） |
-| `base_url` | API 基础 URL |
-| `model_name` | 默认模型名称 |
-| `temperature` | 默认采样温度 |
+### 1. 内核故障分析工作流
 
-### 后端类型
+自动化分析内核故障，从输入校验到知识归档形成完整闭环。
 
-每个 Agent 可通过 `backend` 字段选择不同的调用后端：
+**使用方法：**
 
-#### OpenAI 后端（默认）
+```bash
+# 基础用法
+python main.py --input "问题描述" --config maintenance_config.json
 
-通过 OpenAI 兼容 API 调用 LLM，配置字段同上。
+# 示例：分析死锁问题
+python main.py --input "
+系统出现死锁现象：
+- 进程A持有锁L1，等待锁L2
+- 进程B持有锁L2，等待锁L1
+- vmcore已保存到 /tmp/vmcore
+- 内核版本: 5.10.0
+" --config maintenance_config.json
+```
 
-#### CLI 后端
+**工作流程：**
 
-调用本地 CLI 工具（如 `claude`、`opencode`），适用于 coding agent：
+```
+用户输入 → Validator校验 → PM分类 → 工具专家并行分析
+  → 内核专家综合 → 测试专家验证 → 知识库归档
+```
 
-| 字段 | 说明 |
-|------|------|
-| `backend` | 设为 `"cli"` |
-| `cli_command` | 命令前缀，如 `"claude -p"` 或 `["claude", "-p"]` |
-| `cli_timeout` | 超时秒数（默认 120） |
-| `cli_stdin` | 通过 stdin 传入 prompt（默认 false，适用于长 prompt 避免 OS 参数长度限制） |
+### 2. 自迭代验证系统
 
-示例：
+自动生成内核故障测试案例，验证专家分析能力，持续改进提示词。
+
+**使用方法：**
+
+```bash
+# 运行自测试（模拟模式）
+python self_test_main.py --fault_type deadlock --max_iterations 5
+
+# 真实QEMU故障注入（需配置kernel-build和qemu-test技能）
+python self_test_main.py --fault_type nullptr --execution_mode real
+```
+
+**支持的故障类型：**
+- `nullptr` - 空指针解引用
+- `deadlock` - 死锁
+- `softlockup` - 软锁定
+- `panic` - 内核崩溃
+- `stack_overflow` - 栈溢出
+
+---
+
+## 配置说明
+
+### 主工作流配置（maintenance_config.json）
+
 ```json
-"kernel_expert": {
-  "backend": "cli",
-  "cli_command": "claude -p",
-  "cli_timeout": 180,
-  "prompt_file": "prompts/maintenance/kernel_expert.md"
+{
+  "default": {
+    "backend": "openai",           // 后端类型: openai/cli/http
+    "api_key": "your-api-key",
+    "base_url": "https://api.openai.com/v1",
+    "model_name": "gpt-4o-mini",
+    "temperature": 0
+  },
+  "agents": {
+    "validator": { "model_name": "gpt-4o-mini" },
+    "pm": { "model_name": "gpt-4o" },
+    "kernel_expert": { "model_name": "gpt-4o" },
+    "test_expert": { "model_name": "gpt-4o" }
+  },
+  "tool_experts": [
+    { "type": "knowledge_search", "name": "知识库搜索" },
+    { "type": "lock_analysis", "name": "锁分析" },
+    { "type": "crash_analysis", "name": "Crash分析" },
+    { "type": "kernel_log_analysis", "name": "内核日志分析" }
+  ],
+  "workflow": {
+    "max_test_attempts": 3       // 测试验证最大尝试次数
+  }
 }
 ```
 
-#### HTTP 后端
+### 自测试配置（self_test_config.json）
 
-调用 HTTP API 端点：
-
-| 字段 | 说明 |
-|------|------|
-| `backend` | 设为 `"http"` |
-| `http_url` | API 端点 URL |
-| `http_headers` | 自定义 HTTP 头（可选） |
-| `http_timeout` | 超时秒数（默认 120） |
-| `http_response_path` | 响应内容提取路径，dot-notation（默认 `"choices.0.message.content"`） |
-
-示例：
 ```json
-"test_expert": {
-  "backend": "http",
-  "http_url": "http://localhost:8080/v1/chat/completions",
-  "http_headers": {"Authorization": "Bearer local-token"},
-  "prompt_file": "prompts/maintenance/test_expert.md"
+{
+  "self_test": {
+    "max_iterations": 5,          // 最大迭代次数
+    "target_score": 90,           // 目标评分
+    "fault_types": ["nullptr", "deadlock", "softlockup"]
+  },
+  "skills": {
+    "kernel_fault_injection": { "path": "~/.claude/skills/kernel-fault-injection" },
+    "kernel_build": { "path": "~/.claude/skills/kernel-build" },
+    "qemu_test": { "path": "~/.claude/skills/qemu-test" }
+  }
 }
 ```
 
-### Agent 配置
+---
 
-每个 Agent 可独立配置：
+## 项目结构
 
-| 字段 | 说明 |
-|------|------|
-| `prompt_file` | 系统提示词文件路径 |
-| `backend` | 后端类型（可选，默认使用 default.backend） |
-| `model_name` | 使用的模型名称 |
-| `temperature` | 采样温度 |
-| `api_key` | 独立 API Key（可选，默认使用 default.api_key） |
-| `base_url` | 独立 API Base URL（可选，默认使用 default.base_url） |
+```
+lumen/
+├── main.py                    # 主工作流入口
+├── self_test_main.py          # 自测试入口
+├── deploy.sh                  # 一键部署脚本
+├── config.py                  # 配置加载器
+│
+├── maintenance_config.json    # 主工作流配置
+├── self_test_config.json      # 自测试配置
+├── requirements.txt           # Python依赖
+│
+├── agents/                    # Agent实现
+│   ├── validator.py           # 输入校验
+│   ├── pm.py                  # 问题分类
+│   ├── tool_expert.py         # 工具专家（MCP集成）
+│   ├── kernel_expert.py       # 内核专家
+│   ├── test_expert.py         # 测试专家
+│   ├── crash_tools.py         # Crash MCP工具
+│   ├── tool_calling_loop.py   # MCP工具调用循环
+│   ├── backends.py            # LLM后端（OpenAI/CLI/HTTP）
+│   └── self_test/             # 自测试模块
+│       ├── fault_generator.py     # 故障生成
+│       ├── workflow.py            # 自测试工作流
+│       ├── evaluation.py          # 分析评估
+│       ├── improvement.py         # 提示词改进
+│       └── knowledge_integration.py # 知识库集成
+│
+├── graph/                     # LangGraph图定义
+│   ├── rn_state.py            # 状态定义
+│   ├── rn_router.py           # 路由逻辑
+│   └── rn_workflow.py         # 工作流构建
+│
+├── prompts/                   # 提示词模板
+│   ├── maintenance/           # 主工作流提示词
+│   │   ├── validator.md
+│   │   ├── pm.md
+│   │   ├── kernel_expert.md
+│   │   ├── lock_analysis.md
+│   │   └── crash_analysis.md
+│   └── self_test/             # 自测试提示词
+│       ├── evaluation.md
+│       └── improvement.md
+│
+└── knowledge_base/            # 知识库存储（自动生成）
+```
 
-### 工具专家配置
+---
 
-`tool_experts` 数组定义可用的工具专家，每个专家包含：
+## Agent 职责
 
-| 字段 | 说明 |
-|------|------|
-| `type` | 专家类型标识（用于路由） |
-| `name` | 专家显示名称 |
-| `description` | 专家职责描述（PM 据此选择专家） |
-| `agent` | Agent 配置（同上） |
+| Agent | 职责 | 关键能力 |
+|-------|------|---------|
+| **Validator** | 校验输入完整性 | 必填字段检查 |
+| **PM** | 问题分类与分发 | Fan-out并行调度 |
+| **工具专家** | 专业领域分析 | MCP工具调用、知识库搜索 |
+| **内核专家** | 构造复现用例 | 综合分析、测试方案设计 |
+| **测试专家** | 验证问题复现 | QEMU测试、内核构建 |
+| **知识库生成** | 归档分析结果 | 结构化文档生成 |
 
-### 新增工具专家
+---
 
-1. 在 `prompts/maintenance/` 下新建提示词文件
-2. 在配置文件的 `tool_experts` 数组中添加专家定义
-3. 无需修改代码
+## 高级特性
+
+### MCP工具集成
+
+工具专家支持MCP（Model Context Protocol）工具调用：
+
+```bash
+# 配置MCP服务器（aicrasher）
+# 在self_test_config.json中:
+"skills": {
+  "vmcore_analyzer": {
+    "mcp_server": "aicrasher"
+  }
+}
+```
+
+### CLI后端（本地LLM）
+
+```json
+{
+  "kernel_expert": {
+    "backend": "cli",
+    "cli_command": "claude -p",
+    "cli_timeout": 180
+  }
+}
+```
+
+### LangGraph Studio调试
+
+```bash
+langgraph dev
+# 在Studio中选择 graph: maintenance
+```
 
 ---
 
 ## 常见问题
 
-**Q: 如何安装 Git commit Signed-off-by hook？**
+**Q: 如何查看历史分析案例？**
 
-```bash
-cp .githooks/commit-msg .git/hooks/commit-msg && chmod +x .git/hooks/commit-msg
-```
+查看 `knowledge_base/` 目录下的 `.md` 文件，每个案例包含问题描述、分析过程和解决方案。
 
-**Q: 如何调整测试验证的最大尝试次数？**
+**Q: 自测试如何配置真实故障注入？**
 
-在配置文件的 `workflow.max_test_attempts` 中修改，默认为 3 次。
+1. 配置 `kernel-build` 和 `qemu-test` 技能路径
+2. 使用 `--execution_mode real` 参数
+3. 确保系统有QEMU和内核编译环境
 
-**Q: Issue 创建功能何时可用？**
+**Q: 如何添加新的工具专家？**
 
-当前 Issue 创建为打桩实现，后续将补充具体的 Issue 跟踪系统集成。
+1. 在 `prompts/maintenance/` 创建提示词文件
+2. 在配置文件 `tool_experts` 数组添加专家定义
+3. 无需修改代码
+
+**Q: 测试验证失败会怎样？**
+
+工作流支持循环重试（`max_test_attempts`），失败后反馈给内核专家重新分析，超过限制后输出改进建议。
+
+---
+
+## 技术栈
+
+- **LangGraph**: 多Agent工作流编排
+- **LangChain**: LLM调用框架
+- **MCP**: 工具调用协议（aicrasher）
+- **QEMU**: 内核测试环境
+
+---
+
+## 许可证
+
+Apache 2.0
