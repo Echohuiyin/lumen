@@ -1,0 +1,107 @@
+{
+  "version": "1.0",
+  "_comment": "Self-test workflow configuration for iterative agent validation",
+  "default": {
+    "backend": "openai",
+    "api_key": "sk-GqNCcM6b6ecn-9u7gFYlyA",
+    "base_url": "http://113.46.219.251:8080/v1",
+    "model_name": "GLM-5",
+    "temperature": 0
+  },
+  "skills": {
+    "kernel_fault_injection": {
+      "path": "~/code/Analysis-SKILL/skills/kernel-fault-injection",
+      "scripts": {
+        "run": "scripts/run_fault_injection.sh"
+      }
+    },
+    "kernel_build": {
+      "path": "~/.claude/skills/kernel-build"
+    },
+    "qemu_test": {
+      "path": "~/.claude/skills/qemu-test"
+    },
+    "vmcore_analyzer": {
+      "path": "~/.claude/skills/vmcore-analyzer",
+      "mcp_server": "aicrasher"
+    }
+  },
+  "agents": {
+    "validator": {
+      "prompt_file": "prompts/maintenance/validator.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    },
+    "pm": {
+      "prompt_file": "prompts/maintenance/pm.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    },
+    "kernel_expert": {
+      "prompt_file": "prompts/maintenance/kernel_expert.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    },
+    "test_expert": {
+      "prompt_file": "prompts/maintenance/test_expert.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    },
+    "knowledge_base": {
+      "prompt_file": "prompts/maintenance/knowledge_base.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    },
+    "evaluation": {
+      "prompt_file": "prompts/self_test/evaluation.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    },
+    "improvement": {
+      "prompt_file": "prompts/self_test/improvement.md",
+      "model_name": "GLM-5",
+      "temperature": 0
+    }
+  },
+  "tool_experts": [
+    {
+      "type": "knowledge_search",
+      "name": "历史知识库搜索专家",
+      "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
+      "agent": {
+        "prompt_file": "prompts/maintenance/knowledge_search.md",
+        "model_name": "GLM-5",
+        "temperature": 0
+      }
+    },
+    {
+      "type": "crash_analysis",
+      "name": "Crash分析专家",
+      "description": "分析 Crash 日志，定位崩溃原因和调用栈",
+      "agent": {
+        "prompt_file": "prompts/maintenance/crash_analysis.md",
+        "model_name": "GLM-5",
+        "temperature": 0
+      }
+    },
+    {
+      "type": "kernel_log_analysis",
+      "name": "内核日志分析专家",
+      "description": "分析内核日志（dmesg/logcat等），提取关键错误信息和异常模式",
+      "agent": {
+        "prompt_file": "prompts/maintenance/kernel_log_analysis.md",
+        "model_name": "GLM-5",
+        "temperature": 0
+      }
+    }
+  ],
+  "self_test": {
+    "max_iterations": 5,
+    "target_score": 90,
+    "output_dir": "self_test_reports",
+    "fault_types": ["nullptr", "softlockup", "deadlock"]
+  },
+  "workflow": {
+    "max_test_attempts": 3
+  }
+}

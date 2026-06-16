@@ -1,6 +1,7 @@
 from langchain_core.messages import HumanMessage, SystemMessage
+from pathlib import Path
 
-from agents.llm_display import call_llm_with_display
+from agents.llm_display import call_llm_with_persistence
 from config import get_llm_with_config, load_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
@@ -20,9 +21,11 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
 
     user_content = f"用户输入:\n{state['user_input']}"
 
-    response = call_llm_with_display(
-        "Validator", "校验输入", llm,
+    # 使用持久化版本，自动保存输出到 outputs/
+    response = call_llm_with_persistence(
+        "validator", "校验输入", llm,
         [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+        persist_dir=Path("outputs"),
     )
 
     text = response.content.strip()
