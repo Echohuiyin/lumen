@@ -2,12 +2,11 @@
 
 Provides LangChain StructuredTool wrappers for aicrasher CrashSessionManager,
 enabling crash_analysis and lock_analysis experts to execute real crash commands.
+
+Note: aicrasher path is already added to sys.path in config.py.
 """
 
 from typing import List, Any
-
-import sys
-sys.path.insert(0, "/home/liumingrui/code/Analysis-SKILL/src")
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel

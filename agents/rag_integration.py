@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
+
 
 def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0.3) -> dict:
     """执行 RAG 搜索并返回结构化结果。
@@ -32,12 +34,20 @@ def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0
             "error": str (如果失败)
         }
     """
-    # 获取 rag-case-retrieval skill 的脚本路径
-    skill_path = Path.home() / ".claude" / "skills" / "rag-case-retrieval"
+    # 获取 rag-case-retrieval skill 的脚本路径（优先 Analysis-SKILL 子模块）
+    skill_path = resolve_best_skill_path("rag-case-retrieval")
+    if skill_path is None:
+        return {
+            "status": "error",
+            "query": query,
+            "results": [],
+            "error": "rag-case-retrieval skill not found in Analysis-SKILL or ~/.claude/skills"
+        }
+
     script_path = skill_path / "scripts" / "retrieve_cases.py"
 
-    # 使用 Analysis-SKILL 的 venv（包含 chromadb）
-    venv_python = Path.home() / "code" / "Analysis-SKILL" / ".venv" / "bin" / "python"
+    # 使用 Analysis-SKILL 子模块的 venv（包含 chromadb）
+    venv_python = ANALYSIS_SKILL_PATH / ".venv" / "bin" / "python"
 
     if not script_path.exists():
         return {

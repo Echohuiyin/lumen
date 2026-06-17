@@ -109,15 +109,25 @@ def build_user_input_node(state: SelfTestIterationState) -> dict:
         # 故障生成失败，返回错误信息
         user_input = f"故障生成失败: {state['fault_generation_error']}"
     else:
-        # 对于 mock 模式，使用预定义的内核路径
-        # 真实模式则指向实际编译的内核
+        # 自测试模式：自动使用故障生成输出的 vmlinux
+        # 故障生成器会将 vmlinux 复制到与 vmcore 同一目录
+        vmlinux_path = state.get("generated_vmlinux", "")
+
+        # 如果故障生成没有提供 vmlinux，尝试从 vmcore 同目录查找
+        if not vmlinux_path and execution_mode == "real" and vmcore_path:
+            from pathlib import Path
+            vmcore_dir = Path(vmcore_path).parent
+            candidate_vmlinux = vmcore_dir / "vmlinux"
+            if candidate_vmlinux.exists():
+                vmlinux_path = str(candidate_vmlinux)
+
+        # Mock 模式：使用配置中的 vmlinux（可选）
         if execution_mode == "mock":
-            # mock 模式：使用 OLK-6.6 的预编译内核（即使不存在，说明是模拟测试）
-            vmlinux_path = "/home/liumingrui/code/OLK-6.6/vmlinux"
+            if not vmlinux_path:
+                config = state.get("config", {})
+                vmlinux_path = config.get("self_test", {}).get("vmlinux_path", "")
             mode_note = "（模拟测试数据，boot.log 包含真实 panic 日志模式）"
         else:
-            # 真实模式：使用实际生成的内核
-            vmlinux_path = "/home/liumingrui/code/OLK-6.6/vmlinux"
             mode_note = ""
 
         # 读取 boot.log 内容

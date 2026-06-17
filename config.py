@@ -5,13 +5,12 @@ from pathlib import Path
 from langchain_openai import ChatOpenAI
 
 from agents.backends import CLIBackend, HTTPBackend
+from paths import PROJECT_ROOT, resolve_aicrasher_path
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-
-# Add aicrasher to Python path for crash session management
-AICRASHER_PATH = "/home/liumingrui/code/Analysis-SKILL/src"
-if AICRASHER_PATH not in sys.path:
-    sys.path.insert(0, AICRASHER_PATH)
+# Add aicrasher to Python path for crash session management (from submodule)
+aicrasher_path = str(resolve_aicrasher_path())
+if aicrasher_path not in sys.path:
+    sys.path.insert(0, aicrasher_path)
 
 # Agents that run in automated workflow and must NOT use CLI backend
 AUTOMATION_AGENTS = [
@@ -23,6 +22,29 @@ AUTOMATION_AGENTS = [
     "evaluation",
     "improvement",
 ]
+
+
+def load_claude_settings() -> dict:
+    """Load Claude Code settings from ~/.claude/settings.json.
+
+    Returns env vars that can be used as LLM configuration fallback.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    if not settings_path.exists():
+        return {}
+
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        env = settings.get("env", {})
+
+        # Map Claude settings env vars to LLM config format
+        return {
+            "api_key": env.get("ANTHROPIC_AUTH_TOKEN", ""),
+            "base_url": env.get("ANTHROPIC_BASE_URL", ""),
+            "model_name": env.get("ANTHROPIC_MODEL", ""),
+        }
+    except Exception:
+        return {}
 
 
 def validate_agent_backend(agent_name: str, backend: str) -> None:
@@ -89,10 +111,51 @@ def load_prompt_from_file(path: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def load_config(config_path: str) -> dict:
-    """Load maintenance configuration JSON file."""
+def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> dict:
+    """Load maintenance configuration JSON file.
+
+    If config file has empty api_key/base_url/model_name, fallback to ~/.claude/settings.json.
+
+    Args:
+        config_path: Path to config JSON file
+        fallback_to_claude_settings: Whether to use Claude settings as fallback (default True)
+
+    Returns:
+        Config dict with LLM settings resolved
+    """
     p = Path(config_path) if Path(config_path).is_absolute() else PROJECT_ROOT / config_path
-    return json.loads(p.read_text(encoding="utf-8"))
+
+    if not p.exists():
+        # Config file doesn't exist, try to use Claude settings directly
+        if fallback_to_claude_settings:
+            claude_settings = load_claude_settings()
+            if claude_settings.get("api_key"):
+                return {
+                    "default": {
+                        "backend": "openai",
+                        **claude_settings,
+                        "temperature": 0,
+                    }
+                }
+        return {}
+
+    config = json.loads(p.read_text(encoding="utf-8"))
+
+    # Fill empty LLM config from Claude settings
+    if fallback_to_claude_settings:
+        claude_settings = load_claude_settings()
+        default = config.get("default", {})
+
+        if not default.get("api_key") and claude_settings.get("api_key"):
+            default["api_key"] = claude_settings["api_key"]
+        if not default.get("base_url") and claude_settings.get("base_url"):
+            default["base_url"] = claude_settings["base_url"]
+        if not default.get("model_name") and claude_settings.get("model_name"):
+            default["model_name"] = claude_settings["model_name"]
+
+        config["default"] = default
+
+    return config
 
 
 def resolve_project_path(path: str) -> Path:

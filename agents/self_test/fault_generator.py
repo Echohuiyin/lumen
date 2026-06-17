@@ -16,7 +16,8 @@ from typing import Literal
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_display
-from config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
+from config import get_llm_with_config, load_prompt_from_file
+from paths import PROJECT_ROOT, get_skill_path_candidates
 
 
 # 故障类型及其预期特征
@@ -103,6 +104,7 @@ def fault_generator_node(state: dict) -> dict:
         return {
             "generated_vmcore": result["vmcore_path"],
             "generated_boot_log": result["boot_log_path"],
+            "generated_vmlinux": result.get("vmlinux_path", ""),
             "expected_fault": fault_info,
             "fault_description": fault_info["description"],
             "execution_mode": execution_mode,
@@ -118,12 +120,8 @@ def _run_fault_injection_real(fault_type: str, output_dir: Path) -> dict:
 
     调用 kernel-fault-injection skill 在 QEMU 中真实触发故障。
     """
-    # 查找 skill 路径
-    skill_paths = [
-        Path.home() / ".claude" / "skills" / "kernel-fault-injection",
-        Path.home() / "code" / "Analysis-SKILL" / "skills" / "kernel-fault-injection",
-        Path("/home/liumingrui/code/Analysis-SKILL/skills/kernel-fault-injection"),
-    ]
+    # 查找 skill 路径（优先使用 Analysis-SKILL 子模块）
+    skill_paths = get_skill_path_candidates("kernel-fault-injection")
 
     skill_path = None
     for path in skill_paths:
@@ -171,23 +169,28 @@ def _run_fault_injection_real(fault_type: str, output_dir: Path) -> dict:
         # 检查输出文件
         vmcore_path = output_dir / "vmcore.elf"
         boot_log_path = output_dir / "boot.log"
+        vmlinux_path = output_dir / "vmlinux"  # 脚本会复制 vmlinux 到输出目录
 
-        # 检查可能的其他输出位置
+        # 检查可能的其他输出位置（Analysis-SKILL/test_outputs/）
         if not vmcore_path.exists():
             # 检查 skill 默认输出位置
-            default_output = skill_path.parent.parent / "test_outputs" / f"{fault_type}_x86_64"
+            default_output = SKILLS_PATH.parent / "test_outputs" / f"{fault_type}_x86_64"
             alt_vmcore = default_output / "vmcore.elf"
             alt_boot_log = default_output / "boot.log"
+            alt_vmlinux = default_output / "vmlinux"
 
             if alt_vmcore.exists():
                 vmcore_path = alt_vmcore
                 boot_log_path = alt_boot_log
+            if alt_vmlinux.exists():
+                vmlinux_path = alt_vmlinux
 
         if vmcore_path.exists() or boot_log_path.exists():
             return {
                 "success": True,
                 "vmcore_path": str(vmcore_path) if vmcore_path.exists() else "",
                 "boot_log_path": str(boot_log_path) if boot_log_path.exists() else "",
+                "vmlinux_path": str(vmlinux_path) if vmlinux_path.exists() else "",
                 "stdout": result.stdout[:500],
             }
         else:

@@ -1,28 +1,29 @@
 {
   "version": "1.0",
-  "_comment": "Self-test workflow configuration for iterative agent validation",
+  "_comment": "Self-test workflow configuration for iterative agent validation. Skill paths are dynamically resolved via paths.py module.",
   "default": {
     "backend": "openai",
-    "api_key": "sk-GqNCcM6b6ecn-9u7gFYlyA",
-    "base_url": "http://113.46.219.251:8080/v1",
+    "api_key": "",
+    "base_url": "",
     "model_name": "GLM-5",
     "temperature": 0
   },
+  "_skills_note": "Skill paths are auto-resolved: 1) Analysis-SKILL submodule, 2) ~/.claude/skills, 3) ~/.codebuddy/skills. Set 'path' only if using custom location.",
   "skills": {
     "kernel_fault_injection": {
-      "path": "~/code/Analysis-SKILL/skills/kernel-fault-injection",
+      "_comment": "Auto-resolved from Analysis-SKILL/skills/kernel-fault-injection",
       "scripts": {
         "run": "scripts/run_fault_injection.sh"
       }
     },
     "kernel_build": {
-      "path": "~/.claude/skills/kernel-build"
+      "_comment": "Auto-resolved from Analysis-SKILL/skills/kernel-build"
     },
     "qemu_test": {
-      "path": "~/.claude/skills/qemu-test"
+      "_comment": "Auto-resolved from Analysis-SKILL/skills/qemu-test"
     },
     "vmcore_analyzer": {
-      "path": "~/.claude/skills/vmcore-analyzer",
+      "_comment": "Auto-resolved from Analysis-SKILL/skills/vmcore-analyzer",
       "mcp_server": "aicrasher"
     }
   },
@@ -99,7 +100,8 @@
     "max_iterations": 5,
     "target_score": 90,
     "output_dir": "self_test_reports",
-    "fault_types": ["nullptr", "softlockup", "deadlock"]
+    "fault_types": ["nullptr", "softlockup", "deadlock"],
+    "vmlinux_path": ""
   },
   "workflow": {
     "max_test_attempts": 3
