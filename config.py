@@ -238,6 +238,19 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
             default["api_key"] = claude_settings["api_key"]
         if not default.get("base_url") and claude_settings.get("base_url"):
             default["base_url"] = claude_settings["base_url"]
+            # When base_url is fallback-ed (switching API provider), also fallback model_name
+            # for both default and all agent-level configs
+            if claude_settings.get("model_name"):
+                default["model_name"] = claude_settings["model_name"]
+                # Also update agent-level model_name in agents section
+                for key, agent_cfg in config.get("agents", {}).items():
+                    if isinstance(agent_cfg, dict) and agent_cfg.get("model_name") == "GLM-5":
+                        agent_cfg["model_name"] = claude_settings["model_name"]
+                # tool_experts is a list, each has an "agent" sub-dict
+                for tool_cfg in config.get("tool_experts", []):
+                    agent_cfg = tool_cfg.get("agent", {})
+                    if isinstance(agent_cfg, dict) and agent_cfg.get("model_name") == "GLM-5":
+                        agent_cfg["model_name"] = claude_settings["model_name"]
         if not default.get("model_name") and claude_settings.get("model_name"):
             default["model_name"] = claude_settings["model_name"]
 
