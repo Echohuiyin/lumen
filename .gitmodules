@@ -1,0 +1,3 @@
+[submodule "Analysis-SKILL"]
+	path = Analysis-SKILL
+	url = git@github.com:Echohuiyin/Analysis-SKILL.git
