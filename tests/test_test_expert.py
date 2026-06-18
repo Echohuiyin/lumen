@@ -4,7 +4,7 @@
 测试 test_expert 的工具调用能力，验证：
 1. QEMU 工具是否可用
 2. 工具调用路径的逻辑（kernel_path 条件）
-3. 降级为文本分析的触发条件
+3. kernel 不存在时直接报错
 4. 完整的验证流程
 
 使用方法:
@@ -77,9 +77,9 @@ def test_kernel_path_extraction():
 
 
 def test_execution_mode_logic():
-    """测试执行模式切换逻辑"""
+    """测试执行模式逻辑"""
     print("\n" + "=" * 60)
-    print("[3] 测试执行模式切换逻辑")
+    print("[3] 测试执行模式逻辑")
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
@@ -89,36 +89,22 @@ def test_execution_mode_logic():
     else:
         config = load_config(str(config_path))
 
-    # 测试场景 1: execution_mode = simulation
-    print("\n场景 1: execution_mode = simulation")
-    state = {
-        "user_input": "测试一个内核 panic 问题",
-        "reproduce_case": "创建测试模块",
-        "kernel_diagnosis": "使用 dmesg 检查",
-        "execution_mode": "simulation",
-        "config": config,
-    }
-    print(f"状态: execution_mode={state['execution_mode']}")
-    print("预期: 使用纯文本分析路径")
-
-    # 测试场景 2: execution_mode = real, kernel_path 不存在
-    print("\n场景 2: execution_mode = real, kernel_path 不存在")
+    # 测试场景 1: kernel_path 不存在 → 直接报错
+    print("\n场景 1: kernel_path 不存在 → 直接报错")
     state = {
         "user_input": "测试一个内核 panic 问题（没有提供 vmlinux 路径）",
         "reproduce_case": "创建测试模块",
         "kernel_diagnosis": "使用 dmesg 检查",
-        "execution_mode": "real",
         "config": config,
     }
     kernel_path = _extract_kernel_path(state["user_input"])
     kernel_exists = _check_file_exists(kernel_path)
-    print(f"状态: execution_mode={state['execution_mode']}")
     print(f"kernel_path={kernel_path}")
     print(f"kernel_exists={kernel_exists}")
-    print("预期: 降级为文本分析（因为 kernel_path 不存在）")
+    print("预期: 直接报错（ERROR: Kernel 文件不存在或未指定）")
 
-    # 测试场景 3: execution_mode = real, kernel_path 存在（假设）
-    print("\n场景 3: execution_mode = real, kernel_path 存在（模拟）")
+    # 测试场景 2: kernel_path 存在（模拟）
+    print("\n场景 2: kernel_path 存在 → 使用 QEMU 工具调用")
     # 创建一个临时 vmlinux 文件来测试
     test_kernel_dir = "outputs/test_kernel"
     os.makedirs(test_kernel_dir, exist_ok=True)
@@ -129,12 +115,10 @@ def test_execution_mode_logic():
         "user_input": f"vmlinux 文件: {test_vmlinux}",
         "reproduce_case": "创建测试模块",
         "kernel_diagnosis": "使用 QEMU 验证",
-        "execution_mode": "real",
         "config": config,
     }
     kernel_path = _extract_kernel_path(state["user_input"])
     kernel_exists = _check_file_exists(kernel_path)
-    print(f"状态: execution_mode={state['execution_mode']}")
     print(f"kernel_path={kernel_path}")
     print(f"kernel_exists={kernel_exists}")
     print("预期: 使用 QEMU 工具调用路径")
@@ -142,7 +126,7 @@ def test_execution_mode_logic():
     # 清理临时文件
     os.remove(test_vmlinux)
     os.rmdir(test_kernel_dir)
-    print("\n✓ 执行模式切换逻辑测试完成")
+    print("\n✓ 执行模式逻辑测试完成")
 
 
 def test_qemu_tool_calling(qemu_available: bool):
@@ -216,62 +200,10 @@ def test_qemu_tool_calling(qemu_available: bool):
         print(f"\n✗ QEMU 工具调用失败: {str(e)}")
 
 
-def test_test_expert_node_simulation():
-    """测试 test_expert_node 的 simulation 模式"""
+def test_test_expert_node_no_kernel():
+    """测试 test_expert_node（kernel_path 不存在）→ 直接报错"""
     print("\n" + "=" * 60)
-    print("[5] 测试 test_expert_node - simulation 模式")
-    print("=" * 60)
-
-    # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
-    if not config_path.exists():
-        config = {}
-    else:
-        config = load_config(str(config_path))
-
-    state = {
-        "user_input": "分析一个内核 panic 问题",
-        "reproduce_case": "创建一个简单的测试模块来触发 panic",
-        "kernel_diagnosis": "使用 ftrace 和 kprobe 监控",
-        "kernel_analysis": "完整的分析报告",
-        "execution_mode": "simulation",
-        "config": config,
-        "test_attempts": 0,
-    }
-
-    print("\n输入状态:")
-    print(f"- 用户输入: {state['user_input']}")
-    print(f"- 执行模式: {state['execution_mode']}")
-    print(f"- 验证次数: {state['test_attempts']}")
-
-    print("\n执行 test_expert_node (simulation)...")
-    print("=" * 60)
-
-    try:
-        result = test_expert_node(state)
-
-        print("\n" + "=" * 60)
-        print("test_expert_node 执行完成")
-        print("=" * 60)
-
-        print("\n输出结果:")
-        print(f"- test_result: {result.get('test_result', '')[:300]}...")
-        print(f"- test_passed: {result.get('test_passed', False)}")
-        print(f"- test_attempts: {result.get('test_attempts', 0)}")
-
-        if "final_response" in result:
-            print(f"- final_response: {result['final_response'][:200]}...")
-
-        print("\n✓ simulation 模式测试完成")
-
-    except Exception as e:
-        print(f"\n✗ test_expert_node 失败: {str(e)}")
-
-
-def test_test_expert_node_real_no_kernel():
-    """测试 test_expert_node 的 real 模式（kernel_path 不存在）"""
-    print("\n" + "=" * 60)
-    print("[6] 测试 test_expert_node - real 模式（kernel 不存在）")
+    print("[5] 测试 test_expert_node - kernel 不存在 → 直接报错")
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
@@ -286,7 +218,6 @@ def test_test_expert_node_real_no_kernel():
         "reproduce_case": "创建一个简单的测试模块来触发 panic",
         "kernel_diagnosis": "使用 ftrace 和 kprobe 监控",
         "kernel_analysis": "完整的分析报告",
-        "execution_mode": "real",
         "config": config,
         "test_attempts": 0,
     }
@@ -296,14 +227,13 @@ def test_test_expert_node_real_no_kernel():
 
     print("\n输入状态:")
     print(f"- 用户输入: {state['user_input']}")
-    print(f"- 执行模式: {state['execution_mode']}")
     print(f"- kernel_path: {kernel_path}")
     print(f"- kernel_exists: {kernel_exists}")
     print(f"- 验证次数: {state['test_attempts']}")
 
-    print("\n预期: 降级为文本分析（因为 kernel_path 不存在）")
+    print("\n预期: 直接报错（ERROR: Kernel 文件不存在或未指定）")
 
-    print("\n执行 test_expert_node (real, no kernel)...")
+    print("\n执行 test_expert_node (no kernel)...")
     print("=" * 60)
 
     try:
@@ -318,20 +248,20 @@ def test_test_expert_node_real_no_kernel():
         print(f"- test_passed: {result.get('test_passed', False)}")
         print(f"- test_attempts: {result.get('test_attempts', 0)}")
 
-        # 检查是否降级为文本分析
-        if "无法执行 QEMU" in result.get('test_result', '') or "模拟分析" in result.get('test_result', ''):
-            print("\n✓ 正确降级为文本分析")
+        # 检查是否报错
+        if "ERROR" in result.get('test_result', '') or "不存在" in result.get('test_result', ''):
+            print("\n✓ 正确报错（kernel 不存在）")
 
-        print("\n✓ real 模式（kernel 不存在）测试完成")
+        print("\n✓ kernel 不存在测试完成")
 
     except Exception as e:
         print(f"\n✗ test_expert_node 失败: {str(e)}")
 
 
-def test_test_expert_node_real_with_kernel():
-    """测试 test_expert_node 的 real 模式（kernel_path 存在）"""
+def test_test_expert_node_with_kernel():
+    """测试 test_expert_node（kernel_path 存在）→ 使用 QEMU 工具调用"""
     print("\n" + "=" * 60)
-    print("[7] 测试 test_expert_node - real 模式（kernel 存在）")
+    print("[6] 测试 test_expert_node - kernel 存在 → QEMU 工具调用")
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
@@ -352,7 +282,6 @@ def test_test_expert_node_real_with_kernel():
         "reproduce_case": "创建一个简单的测试模块来触发 panic",
         "kernel_diagnosis": "使用 QEMU 验证",
         "kernel_analysis": "完整的分析报告",
-        "execution_mode": "real",
         "config": config,
         "test_attempts": 0,
     }
@@ -362,7 +291,6 @@ def test_test_expert_node_real_with_kernel():
 
     print("\n输入状态:")
     print(f"- 用户输入: {state['user_input']}")
-    print(f"- 执行模式: {state['execution_mode']}")
     print(f"- kernel_path: {kernel_path}")
     print(f"- kernel_exists: {kernel_exists}")
     print(f"- 验证次数: {state['test_attempts']}")
@@ -372,9 +300,9 @@ def test_test_expert_node_real_with_kernel():
     # 检查 QEMU 是否可用
     qemu_available = check_qemu_available()
     if "可用" not in qemu_available and "available" not in qemu_available.lower():
-        print("\n⚠️ QEMU 不可用，预期会降级或报错")
+        print("\n⚠️ QEMU 不可用，预期会报错")
 
-    print("\n执行 test_expert_node (real, kernel exists)...")
+    print("\n执行 test_expert_node (kernel exists)...")
     print("=" * 60)
 
     try:
@@ -393,7 +321,7 @@ def test_test_expert_node_real_with_kernel():
         if "工具调用" in result.get('test_result', '') or "QEMU" in result.get('test_result', ''):
             print("\n✓ 使用了 QEMU 工具调用")
 
-        print("\n✓ real 模式（kernel 存在）测试完成")
+        print("\n✓ kernel 存在测试完成")
 
     except Exception as e:
         print(f"\n✗ test_expert_node 失败: {str(e)}")
@@ -416,20 +344,17 @@ def main():
         # 测试 2: kernel_path 提取逻辑
         test_kernel_path_extraction()
 
-        # 测试 3: 执行模式切换逻辑
+        # 测试 3: 执行模式逻辑
         test_execution_mode_logic()
 
         # 测试 4: QEMU 工具调用能力（如果可用）
         test_qemu_tool_calling(qemu_available)
 
-        # 测试 5: simulation 模式
-        test_test_expert_node_simulation()
+        # 测试 5: kernel 不存在 → 直接报错
+        test_test_expert_node_no_kernel()
 
-        # 测试 6: real 模式（kernel 不存在）
-        test_test_expert_node_real_no_kernel()
-
-        # 测试 7: real 模式（kernel 存在）
-        test_test_expert_node_real_with_kernel()
+        # 测试 6: kernel 存在 → QEMU 工具调用
+        test_test_expert_node_with_kernel()
 
         print("\n" + "=" * 60)
         print("所有测试完成")

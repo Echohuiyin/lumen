@@ -377,10 +377,6 @@ content="<报告内容>"
 | "检查 boot.log 内容" | 使用 Read 工具读取实际文件 |
 | "分析结果为 SUCCESS" | 基于实际 log 内容判断 |
 
-### simulation mode
-
-当 execution_mode = "simulation" 时，按当前行为执行文本分析。
-
 ## 输出格式
 
 ### 复现成功

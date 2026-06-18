@@ -1,11 +1,7 @@
 """测试专家 agent：根据内核专家给出的复现用例进行问题复现验证。
 
-支持两种执行模式：
-- simulation: 纯文本分析，由 LLM 描述验证流程
-- real: 实际执行测试（通过工具调用执行 QEMU 测试）
-
-real 模式使用工具调用机制，与 tool_expert.py 的 crash_analysis 专家类似，
-通过 LangChain StructuredTool 实现 QEMU 测试验证。
+通过工具调用机制实际执行 QEMU 测试验证，与 tool_expert.py 的 crash_analysis 专家类似，
+使用 LangChain StructuredTool 实现 QEMU 测试。
 """
 
 from pathlib import Path
@@ -167,9 +163,7 @@ def _run_qemu_test_with_tools(
 def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     """测试专家 agent：根据内核专家给出的复现用例进行问题复现验证。
 
-    支持两种执行模式：
-    - simulation: 纯文本分析，由 LLM 描述验证流程
-    - real: 实际执行测试（通过工具调用执行 QEMU 测试）
+    通过工具调用机制实际执行 QEMU 测试验证。
     """
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("test_expert", {})
@@ -183,79 +177,51 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     max_attempts = config.get("workflow", {}).get("max_test_attempts", 3)
     is_last_attempt = current_attempts >= max_attempts
 
-    # 获取执行模式（默认为 real）
-    execution_mode = state.get("execution_mode", "real")
-
     # 确保输出目录存在
     ensure_output_dir()
     output_file = get_expert_output_file("test_expert")
 
-    if execution_mode == "real":
-        # === 工具调用路径 ===
-        # 提取 kernel 路径
-        kernel_path = _extract_kernel_path(state.get("user_input", ""))
-        kernel_exists = _check_file_exists(kernel_path)
+    # 提取 kernel 路径
+    kernel_path = _extract_kernel_path(state.get("user_input", ""))
+    kernel_exists = _check_file_exists(kernel_path)
 
-        # 如果 kernel 不存在，降级为文本分析
-        if not kernel_path or not kernel_exists:
-            kernel_status = f"Kernel 文件: {kernel_path} ({'✓ 存在' if kernel_exists else '✗ 不存在'})"
+    # kernel 不存在时直接报错
+    if not kernel_path or not kernel_exists:
+        error_msg = f"ERROR: Kernel 文件不存在或未指定\n"
+        error_msg += f"Kernel 路径: {kernel_path or '未指定'}\n"
+        error_msg += f"状态: {'✗ 不存在' if kernel_path else '未提供'}\n\n"
+        error_msg += "请提供有效的 kernel/vmlinux/Image 文件路径以执行 QEMU 测试验证。\n"
+        error_msg += "示例格式: vmlinux: /path/to/vmlinux"
 
-            user_content = f"""用户输入:
-{state['user_input']}
+        header = _format_agent_header_text("测试专家", "验证失败")
+        footer = _format_agent_footer_text("测试专家")
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(header)
+            f.write(error_msg + "\n")
+            f.write(footer)
 
-## 内核专家构造的复现用例
-{state.get('reproduce_case', '')}
+        # 解析为失败
+        return {
+            "test_result": error_msg,
+            "test_passed": False,
+            "test_attempts": current_attempts,
+            "final_response": error_msg,
+        }
 
-## 内核维测方案
-{state.get('kernel_diagnosis', '')}
-
-⚠️ 注意: {kernel_status}，无法执行 QEMU 工具测试。
-请基于已有文本信息进行模拟分析，并说明需要的补充信息。"""
-
-            response = call_llm_with_display(
-                "测试专家", f"模拟分析（第{current_attempts}次）", llm,
-                [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
-                silent=True,
-                output_file=output_file,
-            )
-        else:
-            # 执行 QEMU 工具调用测试
-            response = _run_qemu_test_with_tools(
-                llm=llm,
-                system_prompt=system_prompt,
-                user_input=state.get("user_input", ""),
-                reproduce_case=state.get("reproduce_case", ""),
-                kernel_diagnosis=state.get("kernel_diagnosis", ""),
-                kernel_path=kernel_path,
-                expert_name="测试专家",
-                output_file=output_file,
-                current_attempts=current_attempts,
-                max_attempts=max_attempts,
-                max_iterations=10,
-            )
-    else:
-        # === 纯文本分析路径 ===
-        user_content = (
-            f"用户输入:\n{state['user_input']}\n\n"
-            f"## 内核专家构造的复现用例\n{state.get('reproduce_case', '')}\n\n"
-            f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
-            f"## 完整内核分析\n{state.get('kernel_analysis', '')}\n\n"
-            f"## 执行模式\n当前执行模式: **{execution_mode}** (纯文本分析)\n\n"
-            f"请根据以上信息验证问题是否可以复现。这是第 {current_attempts} 次验证。"
-        )
-
-        if is_last_attempt:
-            user_content += (
-                f"\n\n**这是最后一次验证机会（共 {max_attempts} 次）。"
-                f"如果仍然无法复现，请给出详细的分析建议，帮助用户改进复现思路。**"
-            )
-
-        # 使用持久化版本
-        response = call_llm_with_persistence(
-            "测试专家", f"复现验证（第{current_attempts}次）", llm,
-            [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
-            persist_dir=Path("outputs"),
-        )
+    # 执行 QEMU 工具调用测试
+    response = _run_qemu_test_with_tools(
+        llm=llm,
+        system_prompt=system_prompt,
+        user_input=state.get("user_input", ""),
+        reproduce_case=state.get("reproduce_case", ""),
+        kernel_diagnosis=state.get("kernel_diagnosis", ""),
+        kernel_path=kernel_path,
+        expert_name="测试专家",
+        output_file=output_file,
+        current_attempts=current_attempts,
+        max_attempts=max_attempts,
+        max_iterations=10,
+    )
 
     text = response.content.strip()
 

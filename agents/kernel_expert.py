@@ -117,14 +117,7 @@ def _run_kernel_expert_with_tools(
 def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     """内核专家 agent：根据工具专家的输出，结合代码分析，构造必现用例并给出内核维测方案。
 
-    支持两种执行模式：
-    - simulation: 纯文本分析，由 LLM 描述复现策略（无实际文件创建）
-    - real: 实际执行工具调用（创建文件、编译验证）
-
-    real 模式使用工具调用机制，能够：
-    - 实际创建目录和文件
-    - 实际编译内核模块
-    - 验证复现器代码正确性
+    通过工具调用机制实际创建文件和编译验证模块。
     """
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("kernel_expert", {})
@@ -133,9 +126,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     system_prompt = load_prompt_from_file(
         agent_config.get("prompt_file", "prompts/maintenance/kernel_expert.md")
     )
-
-    # 获取执行模式（默认为 real）
-    execution_mode = state.get("execution_mode", "real")
 
     # 汇总所有工具专家的分析结果
     expert_results = state.get("expert_results", [])
@@ -162,49 +152,45 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     ensure_output_dir()
     output_file = get_expert_output_file("kernel_expert")
 
-    if execution_mode == "real":
-        # === 工具调用路径 ===
-        # 检查 kernel headers 是否存在
-        kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
-        kernel_headers_exist = os.path.exists(kernel_headers_path)
+    # 检查 kernel headers 是否存在
+    kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
+    kernel_headers_exist = os.path.exists(kernel_headers_path)
 
-        if not kernel_headers_exist:
-            # kernel headers 不存在 → 降级为文本分析
-            kernel_status = f"Kernel Headers: {kernel_headers_path} (✗ 不存在)"
+    # kernel headers 不存在时直接报错
+    if not kernel_headers_exist:
+        error_msg = f"ERROR: Kernel Headers 不存在，无法编译内核模块\n"
+        error_msg += f"Kernel Headers 路径: {kernel_headers_path}\n"
+        error_msg += f"状态: ✗ 不存在\n\n"
+        error_msg += "请安装 kernel headers 以支持内核模块编译验证。\n"
+        error_msg += f"安装命令示例（根据发行版不同）:\n"
+        error_msg += f"  - Ubuntu/Debian: sudo apt install linux-headers-{os.uname().release}\n"
+        error_msg += f"  - CentOS/RHEL: sudo yum install kernel-devel-{os.uname().release}\n"
+        error_msg += f"  - openEuler: sudo yum install kernel-devel"
 
-            user_content_with_warning = user_content + f"""
+        header = _format_agent_header_text("内核专家", "分析失败")
+        footer = _format_agent_footer_text("内核专家")
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(header)
+            f.write(error_msg + "\n")
+            f.write(footer)
 
-## 执行模式
-当前执行模式: **real** (实际文件操作)
-⚠️ 注意: {kernel_status}，无法编译验证模块。
+        # 返回空分析结果
+        return {
+            "kernel_analysis": error_msg,
+            "reproduce_case": "",
+            "kernel_diagnosis": "",
+            "final_response": error_msg,
+        }
 
-请创建复现器代码文件，但注意无法进行编译验证。"""
-
-            response = call_llm_with_persistence(
-                "内核专家", "分析构造用例（降级模式）", llm,
-                [SystemMessage(content=system_prompt), HumanMessage(content=user_content_with_warning)],
-                persist_dir=Path("outputs"),
-            )
-        else:
-            # 执行工具调用
-            response = _run_kernel_expert_with_tools(
-                llm=llm,
-                system_prompt=system_prompt,
-                user_content=user_content,
-                expert_name="内核专家",
-                output_file=output_file,
-                max_iterations=15,
-            )
-    else:
-        # === 纯文本分析路径 ===
-        user_content += f"\n\n## 执行模式\n当前执行模式: **{execution_mode}** (纯文本分析)\n\n"
-        user_content += "请描述复现策略和代码设计思路，不需要实际创建文件。"
-
-        response = call_llm_with_persistence(
-            "内核专家", "分析构造用例", llm,
-            [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
-            persist_dir=Path("outputs"),
-        )
+    # 执行工具调用
+    response = _run_kernel_expert_with_tools(
+        llm=llm,
+        system_prompt=system_prompt,
+        user_content=user_content,
+        expert_name="内核专家",
+        output_file=output_file,
+        max_iterations=15,
+    )
 
     text = response.content.strip()
 
