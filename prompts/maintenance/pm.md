@@ -29,14 +29,22 @@
 - 选择专家要基于问题特征，不要盲目选择所有专家
 - 对于复杂问题，建议选择 2-3 个相关专家
 
+**CRITICAL: crash_analysis vs lock_analysis deduplication rule**:
+Both crash_analysis and lock_analysis use the crash utility to analyze vmcore.
+They MUST NOT both be selected — pick the ONE that best matches the problem:
+- If the problem mentions locks, deadlocks, mutex, or hung tasks → select **lock_analysis** only
+- If the problem is a general crash/panic/oops without lock involvement → select **crash_analysis** only
+- This avoids redundant analysis and crash session contention
+
 **典型场景专家组合**：
 
 | 场景 | 推荐专家组合 | 原因 |
 |------|-------------|------|
-| **Soft Lockup / Hard Lockup** | crash_analysis + lock_analysis + knowledge_search | Lockup 通常涉及锁问题，需要 vmcore 分析 |
-| **Hung Task** | crash_analysis + lock_analysis + kernel_log_analysis | 可能是死锁或 IO 阻塞，需多角度分析 |
-| **OOM** | crash_analysis + kernel_log_analysis + knowledge_search | 内存问题需要 vmcore 和日志分析 |
+| **Soft Lockup / Hard Lockup** | lock_analysis + knowledge_search | Lockup 涉及锁问题，lock_analysis 可分析锁依赖 |
+| **Hung Task** | lock_analysis + kernel_log_analysis + knowledge_search | 死锁是主要原因，lock_analysis 直接分析锁状态 |
+| **OOM** | crash_analysis + kernel_log_analysis + knowledge_search | 内存问题使用 crash 分析，不涉及锁 |
 | **Kernel Panic (BUG_ON/NULL ptr)** | crash_analysis + knowledge_search | 主要依赖 vmcore 分析 |
+| **Deadlock** | lock_analysis + kernel_log_analysis + knowledge_search | 锁问题专属，crash_analysis 冗余 |
 | **未知问题** | knowledge_search + kernel_log_analysis | 先搜索历史案例，再分析日志 |
 
 ### 问题类型识别
@@ -45,14 +53,14 @@
 
 | 问题类型 | 关键词 | 推荐专家 |
 |----------|--------|----------|
-| Soft Lockup | "soft lockup", "CPU stuck", "watchdog" | crash_analysis, lock_analysis |
-| Hard Lockup | "hard lockup", "NMI watchdog" | crash_analysis, lock_analysis |
-| Hung Task | "hung task", "blocked for more than", "D state" | crash_analysis, lock_analysis |
+| Soft Lockup | "soft lockup", "CPU stuck", "watchdog" | lock_analysis, knowledge_search |
+| Hard Lockup | "hard lockup", "NMI watchdog" | lock_analysis, knowledge_search |
+| Hung Task | "hung task", "blocked for more than", "D state" | lock_analysis, kernel_log_analysis |
 | OOM | "Out of memory", "oom-killer", "memory" | crash_analysis, kernel_log_analysis |
-| Deadlock | "deadlock", "mutex", "spinlock", "锁" | lock_analysis, crash_analysis |
+| Deadlock | "deadlock", "mutex", "spinlock", "lock" | lock_analysis, kernel_log_analysis |
 | Panic | "panic", "oops", "crash", "BUG" | crash_analysis |
 | NULL Pointer | "NULL pointer", "unable to handle" | crash_analysis |
-| Kernel Log | "dmesg", "log", "报错", "异常" | kernel_log_analysis |
+| Kernel Log | "dmesg", "log", "error", "warning" | kernel_log_analysis |
 
 ## Issue 创建格式
 

@@ -107,7 +107,7 @@ def _run_tool_calling_analysis(
     Creates crash session, binds tools to LLM, runs tool-calling loop,
     and returns final AIMessage with analysis.
     """
-    from agents.crash_tools import create_crash_tools
+    from agents.crash_tools import create_crash_tools, get_or_create_crash_session, release_crash_session
     from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 
     # Write initial header
@@ -119,8 +119,9 @@ def _run_tool_calling_analysis(
 
     session = None
     try:
-        # Create crash session
-        session = create_crash_session(vmcore_path, vmlinux_path)
+        # Create or reuse shared crash session (prevents concurrent
+        # crash processes competing for the same vmcore binary)
+        session = get_or_create_crash_session(vmcore_path, vmlinux_path)
 
         # Create session-bound tools
         crash_tools = create_crash_tools(session)
@@ -249,10 +250,11 @@ Report format:
         return AIMessage(content=error_msg)
 
     finally:
-        # Ensure session cleanup
+        # Release shared session reference (stops crash process
+        # only when no more experts are using it)
         if session is not None:
             try:
-                session.stop()
+                release_crash_session(vmcore_path, vmlinux_path)
             except Exception:
                 pass  # Ignore cleanup errors
 
@@ -434,33 +436,32 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
                 f.write(f"Vmlinux: {vmlinux_path}\n\n")
 
             try:
-                from agents.crash_tools import create_crash_tools
-                session = create_crash_session(vmcore_path, vmlinux_path)
-                crash_tools = create_crash_tools(session)
+                from agents.crash_tools import get_or_create_crash_session, release_crash_session
+                session = get_or_create_crash_session(vmcore_path, vmlinux_path)
 
-                # 执行 log 命令提取内核日志
+                # Execute log command to extract kernel log
                 log_result = session.run_command("log")
-                log_content = log_result.output if log_result.success else "无法提取内核日志"
+                log_content = log_result.output if log_result.success else "Cannot extract kernel log"
 
-                # 构建 context，包含提取的日志
-                context_info = f"""内核日志已从 vmcore 提取:
+                # Build context with extracted log
+                context_info = f"""Kernel log extracted from vmcore:
 
-## 内核日志内容（来自 crash log 命令）
+## Kernel log content (from crash log command)
 ```
 {log_content[:8000]}
 ```
 
-请分析以上内核日志，提取关键错误信息、异常模式和时序关系。"""
+Analyze the kernel log above, extracting key error information, anomaly patterns, and timing relationships."""
 
                 messages = [
                     SystemMessage(content=system_prompt),
-                    HumanMessage(content=f"用户输入:\n{user_input}\n\n{context_info}"),
+                    HumanMessage(content=f"User input:\n{user_input}\n\n{context_info}"),
                 ]
 
                 response = llm.invoke(messages)
                 _write_tool_call_output(output_file, response.content, expert_name)
 
-                session.stop()
+                release_crash_session(vmcore_path, vmlinux_path)
 
                 return {
                     "expert_results": [ToolExpertResult(

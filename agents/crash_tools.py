@@ -4,12 +4,142 @@ Provides LangChain StructuredTool wrappers for aicrasher CrashSessionManager,
 enabling crash_analysis and lock_analysis experts to execute real crash commands.
 
 Note: aicrasher path is already added to sys.path in config.py.
+
+Shared session management:
+  Uses a global registry to share crash sessions across experts that
+  target the same vmcore+vmlinux, avoiding concurrent crash processes
+  competing for the same binary.
 """
 
-from typing import List, Any
+import re
+import threading
+from pathlib import Path
+from typing import Any, Dict, List
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
+
+# ---------------------------------------------------------------------------
+# Shared session registry — prevents multiple concurrent crash processes
+# ---------------------------------------------------------------------------
+_session_registry: Dict[str, Any] = {}
+_session_lock = threading.Lock()
+
+
+def get_or_create_crash_session(vmcore_path: str, vmlinux_path: str) -> Any:
+    """Return an existing shared session or create a new one.
+
+    Sessions are keyed by (vmcore_path, vmlinux_path) so experts that
+    target the same vmcore reuse the same crash process.
+    """
+    from aicrasher.crash_session import CrashSessionManager
+    from aicrasher.config import AppConfig
+
+    vmcore = Path(vmcore_path)
+    vmlinux = Path(vmlinux_path)
+
+    if not vmcore.exists():
+        raise FileNotFoundError(f"vmcore not found: {vmcore_path}")
+    if not vmlinux.exists():
+        raise FileNotFoundError(f"vmlinux not found: {vmlinux_path}")
+
+    key = f"{vmcore.resolve()}|{vmlinux.resolve()}"
+
+    with _session_lock:
+        if key in _session_registry:
+            session, refcount = _session_registry[key]
+            _session_registry[key] = (session, refcount + 1)
+            return session
+
+        config = AppConfig()
+        session = CrashSessionManager(
+            vmcore_path=vmcore,
+            vmlinux_path=vmlinux,
+            config=config,
+        )
+        session.start()
+        _session_registry[key] = (session, 1)
+        return session
+
+
+def release_crash_session(vmcore_path: str, vmlinux_path: str) -> None:
+    """Release a reference to a shared session. Stops it when refcount hits 0."""
+    vmcore = Path(vmcore_path)
+    vmlinux = Path(vmlinux_path)
+    key = f"{vmcore.resolve()}|{vmlinux.resolve()}"
+
+    with _session_lock:
+        if key not in _session_registry:
+            return
+        session, refcount = _session_registry[key]
+        refcount -= 1
+        if refcount <= 0:
+            try:
+                session.stop()
+            except Exception:
+                pass
+            del _session_registry[key]
+        else:
+            _session_registry[key] = (session, refcount)
+
+
+# ---------------------------------------------------------------------------
+# Crash command validation
+# ---------------------------------------------------------------------------
+
+# Shell features that crash's internal pipe handling may not support well.
+# Commands matching these patterns get sanitised or warned about.
+_UNSAFE_SHELL_PATTERNS = [
+    # grep with escaped pipe alternation (crash shell may not handle \|)
+    (r'grep\s+.*\\\|', "grep with \\| alternation may not work in crash shell"),
+    # Shell redirects (crash doesn't support >, >>, 2>, etc.)
+    (r'(?<![|&])\s*[<>]+\s*\S', "shell redirect (<, >, >>) is unsupported in crash"),
+    # Backtick command substitution
+    (r'`[^`]+`', "backtick command substitution is unsupported in crash"),
+    # $(...) command substitution
+    (r'\$\([^)]+\)', "$(...) command substitution is unsupported in crash"),
+    # Shell variables
+    (r'\$\{?[A-Za-z_]', "shell variable expansion may not work in crash"),
+]
+
+
+def sanitize_crash_command(command: str) -> tuple[str, list[str]]:
+    """Check and sanitize a crash command.
+
+    Returns (sanitized_command, warnings_list).
+    Crash8 supports simple pipes (|) and head/tail/wc/etc, but not
+    full shell syntax like redirects, variable expansion, or grep \\|.
+
+    Args:
+        command: Raw command string from LLM tool call
+
+    Returns:
+        (sanitized_command, list_of_warning_strings)
+    """
+    warnings = []
+    sanitized = command.strip()
+
+    for pattern, warning in _UNSAFE_SHELL_PATTERNS:
+        if re.search(pattern, sanitized):
+            warnings.append(warning)
+
+    return sanitized, warnings
+
+
+def build_sanitized_description(warnings: list[str]) -> str:
+    """Build a warning suffix to prepend to tool output if needed."""
+    if not warnings:
+        return ""
+    lines = ["[WARNING: potential shell syntax issues detected]"]
+    for w in warnings:
+        lines.append(f"  - {w}")
+    lines.append("  If the command produced no output, try without these shell features.")
+    return "\n".join(lines) + "\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Tool input schemas
+# ---------------------------------------------------------------------------
 
 
 class RunCrashCommandInput(BaseModel):
@@ -32,6 +162,11 @@ class GetHistoryInput(BaseModel):
     pass
 
 
+# ---------------------------------------------------------------------------
+# Session-bound tool functions
+# ---------------------------------------------------------------------------
+
+
 def create_session_bound_tools(session: Any) -> dict:
     """Create session-bound tool functions.
 
@@ -45,12 +180,14 @@ def create_session_bound_tools(session: Any) -> dict:
     """
     def run_crash_command(command: str) -> str:
         """Execute a single crash command and return output."""
+        sanitized, warnings = sanitize_crash_command(command)
         try:
-            result = session.run_command(command)
+            result = session.run_command(sanitized)
+            prefix = build_sanitized_description(warnings)
             if result.success:
-                return result.output
+                return prefix + result.output
             else:
-                return f"Error: {result.output}"
+                return prefix + f"Error: {result.output}"
         except Exception as e:
             return f"Error executing '{command}': {str(e)}"
 
@@ -121,7 +258,10 @@ def create_crash_tools(session: Any) -> List[StructuredTool]:
             description=(
                 "Execute a single crash command in the active session. "
                 "Returns command output as text. "
-                "Examples: 'bt', 'sys', 'log | tail -n 100', 'kmem -i', 'ps', 'foreach bt'"
+                "Valid examples: 'bt', 'sys', 'log', 'ps', 'kmem -i', "
+                "'bt <pid>', 'struct mutex.owner <addr>', 'dis <symbol>'. "
+                "Simple pipes work: 'bt -a | grep panic'. "
+                "Do NOT use: shell redirects, variable expansion, grep \\| alternation."
             ),
             func=tool_funcs["run_crash_command"],
             args_schema=RunCrashCommandInput,

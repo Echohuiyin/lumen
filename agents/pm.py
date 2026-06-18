@@ -73,6 +73,11 @@ def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:
         valid_types = {exp["type"] for exp in experts_config}
         return [e for e in experts if e in valid_types]
 
+    # Deduplication: crash_analysis and lock_analysis both use crash sessions.
+    # If both are selected, keep only lock_analysis (it produces better lock analysis).
+    if "crash_analysis" in experts and "lock_analysis" in experts:
+        experts.remove("crash_analysis")
+
     # 回退：根据关键词匹配
     valid_types = {exp["type"] for exp in experts_config}
     found = []

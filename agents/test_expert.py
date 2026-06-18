@@ -192,6 +192,33 @@ Do not describe what you would do — call the tools.""")
                 verbose=False,
             )
 
+        # Check response quality — if empty or short, force a summary
+        content = response.content or ""
+        tool_calls_remaining = getattr(response, "tool_calls", None) or []
+
+        needs_summary = (
+            len(content) < 200
+            or bool(tool_calls_remaining)
+            or not content.strip()
+        )
+
+        if needs_summary:
+            summary_messages = list(messages) + [
+                HumanMessage(content="""Based on the QEMU tool results above, generate a verification summary.
+
+Report in this format:
+- QEMU status: (available or not)
+- Tools executed: (which tools were called and their results)
+- Verification result: REPRODUCE: SUCCESS if kernel booted and issue was reproduced, or REPRODUCE: FAILED with reason
+- Key findings: (specific observations from tool outputs)
+- Recommendations: (next steps if verification failed)
+
+Be CONCISE and reference actual tool output data."""),
+            ]
+            summary_response = llm.invoke(summary_messages)
+            _write_tool_call_output(output_file, summary_response.content, expert_name)
+            return summary_response
+
         # Write final output
         _write_tool_call_output(output_file, response.content, expert_name)
 
