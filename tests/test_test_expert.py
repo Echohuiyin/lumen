@@ -83,7 +83,7 @@ def test_execution_mode_logic():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -156,7 +156,7 @@ def test_qemu_tool_calling(qemu_available: bool):
         return
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -223,7 +223,7 @@ def test_test_expert_node_simulation():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -275,7 +275,7 @@ def test_test_expert_node_real_no_kernel():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -335,7 +335,7 @@ def test_test_expert_node_real_with_kernel():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:

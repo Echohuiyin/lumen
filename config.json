@@ -1,0 +1,40 @@
+{
+  "default": {
+    "backend": "openai",
+    "api_key": "sk-c02cca80a61f4e76b53f4c8ebea87cbd",
+    "base_url": "https://api.deepseek.com/v1",
+    "model_name": "deepseek-chat",
+    "temperature": 0.0
+  },
+  "agents": {
+    "kernel_expert": {
+      "backend": "openai",
+      "api_key": "sk-c02cca80a61f4e76b53f4c8ebea87cbd",
+      "base_url": "https://api.deepseek.com/v1",
+      "model_name": "deepseek-chat",
+      "temperature": 0.0,
+      "prompt_file": "prompts/maintenance/kernel_expert.md"
+    },
+    "test_expert": {
+      "backend": "openai",
+      "api_key": "sk-c02cca80a61f4e76b53f4c8ebea87cbd",
+      "base_url": "https://api.deepseek.com/v1",
+      "model_name": "deepseek-chat",
+      "temperature": 0.0,
+      "prompt_file": "prompts/maintenance/test_expert.md"
+    },
+    "tool_expert": {
+      "crash_analysis": {
+        "backend": "openai",
+        "api_key": "sk-c02cca80a61f4e76b53f4c8ebea87cbd",
+        "base_url": "https://api.deepseek.com/v1",
+        "model_name": "deepseek-chat",
+        "temperature": 0.0,
+        "prompt_file": "prompts/maintenance/crash_analysis.md"
+      }
+    }
+  },
+  "workflow": {
+    "max_test_attempts": 3
+  }
+}

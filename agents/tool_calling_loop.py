@@ -80,6 +80,10 @@ def execute_tool_calling_loop(
             for tc in tool_calls:
                 print(f"  - {tc['name']}({tc['args']})")
 
+        # IMPORTANT: Append AIMessage with tool_calls to message list FIRST
+        # This is required for ToolMessage to have a preceding message with tool_calls
+        current_messages.append(response)
+
         # Execute each tool call
         for tool_call in tool_calls:
             tool_name = tool_call.get("name", "unknown")

@@ -172,7 +172,7 @@ def test_kernel_expert_tool_calling():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         # 如果没有配置文件，使用空配置
         config = {}
@@ -253,7 +253,7 @@ def test_kernel_expert_node():
     from agents.kernel_expert import kernel_expert_node
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = Path(__file__).parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
