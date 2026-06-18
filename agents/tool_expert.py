@@ -22,9 +22,9 @@ def _extract_vmcore_paths(user_input: str) -> tuple[str | None, str | None]:
     """
     import re
 
-    # 支持中文冒号 `：` 和英文冒号 `:`, 以及 `~` 开头的路径
-    vmcore_pattern = r'vmcore\s*(?:文件)?[：:\s]+([~/\w\-\.]+)'
-    vmlinux_pattern = r'vmlinux\s*(?:文件)?[：:\s]+([~/\w\-\.]+)'
+    # Support both Chinese and English keywords before the path
+    vmcore_pattern = r'vmcore\s*(?:文件|file)?\s*[：:]\s*([~/\w\-\.]+)'
+    vmlinux_pattern = r'vmlinux\s*(?:文件|file)?\s*[：:]\s*([~/\w\-\.]+)'
 
     vmcore_match = re.search(vmcore_pattern, user_input, re.IGNORECASE)
     vmlinux_match = re.search(vmlinux_pattern, user_input, re.IGNORECASE)

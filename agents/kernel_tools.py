@@ -94,7 +94,7 @@ def compile_module(module_dir: str, kernel_dir: Optional[str] = None) -> str:
         else:
             kdir = f"/lib/modules/{os.uname().release}/build"
 
-        cmd = ["make", "-C", kdir, f"M={expanded_dir}", "modules"]
+        cmd = ["make", "-C", kdir, f"M={expanded_dir}", "modules", "CONFIG_WERROR=n"]
 
         result = subprocess.run(
             cmd,

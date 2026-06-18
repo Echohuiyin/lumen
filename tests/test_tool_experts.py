@@ -24,9 +24,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.tool_expert import tool_expert_node, _extract_vmcore_paths, _resolve_vmcore_path
+from agents.tool_expert import tool_expert_node, _extract_vmcore_paths, _resolve_file_path
 from agents.llm_display import get_expert_output_file, ensure_output_dir
-from config import load_config, create_crash_session, get_llm_with_config, load_prompt_from_file
+from config import load_config, get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
 
 # 默认测试文件路径
@@ -85,7 +85,7 @@ def test_path_extraction():
 
     for input_text in test_inputs:
         vmcore_path, _ = _extract_vmcore_paths(input_text)
-        resolved = _resolve_vmcore_path(vmcore_path)
+        resolved = _resolve_file_path(vmcore_path)
         print(f"\n输入: {input_text}")
         print(f"提取: {vmcore_path}")
         print(f"解析: {resolved}")
@@ -111,7 +111,8 @@ def test_crash_session():
         return False
 
     try:
-        session = create_crash_session(str(vmcore), str(vmlinux))
+        from agents.crash_tools import get_or_create_crash_session, release_crash_session
+        session = get_or_create_crash_session(vmcore, vmlinux)
         print("\n✓ Crash session 创建成功")
 
         # 执行测试命令
@@ -119,7 +120,7 @@ def test_crash_session():
         print(f"\nsys 命令输出预览:")
         print(result.output[:500] + "...")
 
-        session.stop()
+        release_crash_session(vmcore, vmlinux)
         print("\n✓ Session 停止成功")
         return True
 
