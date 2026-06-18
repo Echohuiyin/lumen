@@ -56,12 +56,12 @@ def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_nam
 
 
 def _write_tool_call_output(output_file: str, content: str, expert_name: str):
-    """Write final tool-calling output to file."""
-    header = _format_agent_header_text(expert_name, "验证完成")
+    """Write final tool-calling output to file, preserving tool call logs."""
     footer = _format_agent_footer_text(expert_name)
 
-    with open(output_file, "w", encoding="utf-8") as f:
-        f.write(header)
+    with open(output_file, "a", encoding="utf-8") as f:
+        # Append final result after tool call logs
+        f.write("\n\n## 最终结果\n\n")
         f.write(content + "\n")
         f.write(footer)
 
