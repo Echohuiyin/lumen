@@ -22,8 +22,9 @@ def _extract_vmcore_paths(user_input: str) -> tuple[str | None, str | None]:
     """
     import re
 
-    vmcore_pattern = r'vmcore\s*(?:文件)?[:\s]+([/\w\-\.]+)'
-    vmlinux_pattern = r'vmlinux\s*(?:文件)?[:\s]+([/\w\-\.]+)'
+    # 支持中文冒号 `：` 和英文冒号 `:`, 以及 `~` 开头的路径
+    vmcore_pattern = r'vmcore\s*(?:文件)?[：:\s]+([~/\w\-\.]+)'
+    vmlinux_pattern = r'vmlinux\s*(?:文件)?[：:\s]+([~/\w\-\.]+)'
 
     vmcore_match = re.search(vmcore_pattern, user_input, re.IGNORECASE)
     vmlinux_match = re.search(vmlinux_pattern, user_input, re.IGNORECASE)
@@ -35,10 +36,40 @@ def _extract_vmcore_paths(user_input: str) -> tuple[str | None, str | None]:
 
 
 def _check_file_exists(path: str | None) -> bool:
-    """检查文件是否存在（用于 MCP 工具智能判断）。"""
+    """检查文件是否存在（用于 MCP 工具智能判断）。
+
+    支持 ~ 符号展开，并尝试 vmcore.elf 后缀作为备选。
+    """
     if path is None:
         return False
-    return os.path.exists(path)
+    expanded_path = os.path.expanduser(path)
+    if os.path.exists(expanded_path):
+        return True
+    # 尝试添加 .elf 后缀（vmcore 文件常见格式）
+    if expanded_path.endswith('vmcore') and not expanded_path.endswith('.elf'):
+        elf_path = expanded_path + '.elf'
+        if os.path.exists(elf_path):
+            return True
+    return False
+
+
+def _resolve_vmcore_path(path: str | None) -> str | None:
+    """解析 vmcore 路径，处理 ~ 展开和 .elf 后缀。
+
+    Returns:
+        实际存在的路径，或 None
+    """
+    if path is None:
+        return None
+    expanded_path = os.path.expanduser(path)
+    if os.path.exists(expanded_path):
+        return expanded_path
+    # 尝试添加 .elf 后缀
+    if expanded_path.endswith('vmcore') and not expanded_path.endswith('.elf'):
+        elf_path = expanded_path + '.elf'
+        if os.path.exists(elf_path):
+            return elf_path
+    return expanded_path  # 返回展开后的路径，即使不存在
 
 
 def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_name: str):
@@ -120,8 +151,47 @@ def _run_tool_calling_analysis(
             tools=crash_tools,
             max_iterations=max_iterations,
             on_tool_call=lambda name, args: _log_tool_call(output_file, name, args, expert_name),
-            verbose=False,
+            verbose=True,  # 启用 verbose 以便调试
         )
+
+        # 检查是否需要强制生成总结
+        # 条件1: 响应内容过短（<500字符）
+        # 条件2: 响应仍包含 tool_calls（LLM 还想调用工具）
+        # 条件3: 内容包含描述性语句而非实际分析
+        needs_summary = False
+        content = response.content or ""
+
+        if len(content) < 500:
+            needs_summary = True
+
+        # 检查是否还在尝试调用工具
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if tool_calls:
+            needs_summary = True
+
+        # 检查内容是否是描述性而非分析性
+        if any(phrase in content for phrase in ["让我开始", "我需要先", "首先调用", "执行分析流程", "阶段零"]):
+            needs_summary = True
+
+        if needs_summary:
+            # 强制要求 LLM 生成分析总结
+            # 注意：messages 已包含所有 ToolMessage（工具调用结果）
+            summary_messages = list(messages) + [
+                HumanMessage(content="""基于以上工具调用收集的数据，请立即生成完整的问题分析报告。
+
+要求：
+1. 不要再调用任何工具
+2. 直接输出分析结论
+3. 报告格式：
+   - Crash 类型判定
+   - 关键调用栈分析
+   - 锁持有关系（如有）
+   - 根因分析
+   - 初步结论""")
+            ]
+            summary_response = llm.invoke(summary_messages)
+            _write_tool_call_output(output_file, summary_response.content, expert_name)
+            return summary_response
 
         # Write final output
         _write_tool_call_output(output_file, response.content, expert_name)
@@ -221,12 +291,17 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     elif expert_type in ("crash_analysis", "lock_analysis"):
         # Crash/锁分析专家：使用工具调用执行 crash 命令
-        vmcore_path, vmlinux_path = _extract_vmcore_paths(user_input)
-        vmcore_exists = _check_file_exists(vmcore_path)
-        vmlinux_exists = _check_file_exists(vmlinux_path)
+        vmcore_path_raw, vmlinux_path_raw = _extract_vmcore_paths(user_input)
+
+        # 解析路径（展开 ~ 并尝试 .elf 后缀）
+        vmcore_path = _resolve_vmcore_path(vmcore_path_raw)
+        vmlinux_path = _resolve_vmcore_path(vmlinux_path_raw) if vmlinux_path_raw else None
+
+        vmcore_exists = _check_file_exists(vmcore_path_raw)
+        vmlinux_exists = _check_file_exists(vmlinux_path_raw)
 
         # 检查必要文件是否存在
-        if not vmcore_path or not vmlinux_path:
+        if not vmcore_path_raw or not vmlinux_path_raw:
             # 缺少路径信息，降级为文本分析
             file_status = "未识别到 vmcore 或 vmlinux 文件路径"
             user_content = f"""用户输入:
@@ -253,8 +328,8 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
         if not vmcore_exists or not vmlinux_exists:
             # 文件不存在，降级为文本分析
             file_status = f"""
-vmcore 文件: {vmcore_path} ({'✓ 存在' if vmcore_exists else '✗ 不存在'})
-vmlinux 文件: {vmlinux_path} ({'✓ 存在' if vmlinux_exists else '✗ 不存在'})
+vmcore 文件: {vmcore_path_raw} → {vmcore_path} ({'✓ 存在' if vmcore_exists else '✗ 不存在'})
+vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_exists else '✗ 不存在'})
 
 ⚠️ 注意: 必要文件不存在，无法执行 crash 工具分析。"""
             user_content = f"""用户输入:
@@ -284,8 +359,8 @@ vmlinux 文件: {vmlinux_path} ({'✓ 存在' if vmlinux_exists else '✗ 不存
             llm=llm,
             system_prompt=system_prompt,
             user_input=user_input,
-            vmcore_path=vmcore_path,
-            vmlinux_path=vmlinux_path,
+            vmcore_path=vmcore_path,  # 使用展开后的路径
+            vmlinux_path=vmlinux_path,  # 使用展开后的路径
             expert_name=expert_name,
             output_file=output_file,
             max_iterations=15,
@@ -298,6 +373,88 @@ vmlinux 文件: {vmlinux_path} ({'✓ 存在' if vmlinux_exists else '✗ 不存
                 analysis_output=response.content.strip(),
             )],
         }
+
+    elif expert_type == "kernel_log_analysis":
+        # 内核日志分析专家：如果有 vmcore，使用 crash 提取日志
+        vmcore_path_raw, vmlinux_path_raw = _extract_vmcore_paths(user_input)
+        vmcore_path = _resolve_vmcore_path(vmcore_path_raw)
+        vmlinux_path = _resolve_vmcore_path(vmlinux_path_raw) if vmlinux_path_raw else None
+        vmcore_exists = _check_file_exists(vmcore_path_raw)
+
+        if vmcore_path_raw and vmlinux_path_raw and vmcore_exists:
+            # 使用 crash 工具提取内核日志
+            header = _format_agent_header_text(expert_name, "分析中 (工具调用)")
+            with open(output_file, "w", encoding="utf-8") as f:
+                f.write(header)
+                f.write(f"Crash Session: {vmcore_path}\n")
+                f.write(f"Vmlinux: {vmlinux_path}\n\n")
+
+            try:
+                from agents.crash_tools import create_crash_tools
+                session = create_crash_session(vmcore_path, vmlinux_path)
+                crash_tools = create_crash_tools(session)
+
+                # 执行 log 命令提取内核日志
+                log_result = session.run_command("log")
+                log_content = log_result.output if log_result.success else "无法提取内核日志"
+
+                # 构建 context，包含提取的日志
+                context_info = f"""内核日志已从 vmcore 提取:
+
+## 内核日志内容（来自 crash log 命令）
+```
+{log_content[:8000]}
+```
+
+请分析以上内核日志，提取关键错误信息、异常模式和时序关系。"""
+
+                messages = [
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=f"用户输入:\n{user_input}\n\n{context_info}"),
+                ]
+
+                response = llm.invoke(messages)
+                _write_tool_call_output(output_file, response.content, expert_name)
+
+                session.stop()
+
+                return {
+                    "expert_results": [ToolExpertResult(
+                        expert_type=expert_type,
+                        expert_name=expert_name,
+                        analysis_output=response.content.strip(),
+                    )],
+                }
+
+            except Exception as e:
+                error_msg = f"从 vmcore 提取日志失败: {str(e)}"
+                _write_tool_call_output(output_file, error_msg, expert_name)
+                return {
+                    "expert_results": [ToolExpertResult(
+                        expert_type=expert_type,
+                        expert_name=expert_name,
+                        analysis_output=error_msg,
+                    )],
+                }
+
+        else:
+            # 没有 vmcore，纯文本分析
+            user_content = f"用户输入:\n{user_input}\n\n请基于用户输入中的内核日志信息进行分析。"
+
+            response = call_llm_with_display(
+                expert_name, "分析中", llm,
+                [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+                silent=True,
+                output_file=output_file,
+            )
+
+            return {
+                "expert_results": [ToolExpertResult(
+                    expert_type=expert_type,
+                    expert_name=expert_name,
+                    analysis_output=response.content.strip(),
+                )],
+            }
 
     else:
         # 其他专家类型：纯文本分析

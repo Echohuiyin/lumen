@@ -1,0 +1,392 @@
+"""QEMU testing tools for LangChain/LangGraph tool calling.
+
+Provides LangChain StructuredTool wrappers for QEMU kernel testing,
+enabling test_expert to execute real QEMU verification in real execution mode.
+
+Uses scripts from Analysis-SKILL/skills/qemu-test/scripts/.
+"""
+
+import subprocess
+import tempfile
+import os
+from pathlib import Path
+from typing import Optional
+
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel
+
+from paths import PROJECT_ROOT, get_skill_path_candidates
+
+
+class CheckQemuInput(BaseModel):
+    """Input schema for check_qemu_available."""
+    arch: str = "x86_64"
+
+
+class CreateInitramfsInput(BaseModel):
+    """Input schema for create_initramfs."""
+    arch: str = "x86_64"
+    test_script_path: Optional[str] = None
+    output_path: Optional[str] = None
+
+
+class BootKernelInput(BaseModel):
+    """Input schema for boot_kernel."""
+    kernel_path: str
+    initramfs_path: str
+    arch: str = "x86_64"
+    timeout: int = 120
+    memory: str = "512M"
+
+
+class AnalyzeLogInput(BaseModel):
+    """Input schema for analyze_boot_log."""
+    log_path: str
+    patterns: Optional[list[str]] = None
+
+
+def find_qemu_script(script_name: str) -> Optional[Path]:
+    """Find QEMU test script in skill directories.
+
+    Args:
+        script_name: Name of script (e.g., 'boot_x86.sh', 'create_initramfs.sh')
+
+    Returns:
+        Path to script or None if not found
+    """
+    skill_paths = get_skill_path_candidates("qemu-test")
+
+    for skill_path in skill_paths:
+        script_path = skill_path / "scripts" / script_name
+        if script_path.exists():
+            return script_path
+
+    return None
+
+
+def check_qemu_available(arch: str = "x86_64") -> str:
+    """Check if QEMU binary is available for the specified architecture.
+
+    Args:
+        arch: Architecture to check (x86_64, arm64, arm32)
+
+    Returns:
+        Status message with QEMU availability info
+    """
+    qemu_map = {
+        "x86_64": "qemu-system-x86_64",
+        "arm64": "qemu-system-aarch64",
+        "arm32": "qemu-system-arm",
+    }
+
+    qemu_binary = qemu_map.get(arch, "qemu-system-x86_64")
+
+    try:
+        result = subprocess.run(
+            ["which", qemu_binary],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            # Get version info
+            version_result = subprocess.run(
+                [qemu_binary, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            version = version_result.stdout.split("\n")[0] if version_result.returncode == 0 else "unknown"
+
+            return f"✓ QEMU available for {arch}\n  Binary: {path}\n  Version: {version}"
+        else:
+            return f"✗ QEMU not found for {arch}\n  Required: {qemu_binary}\n  Install: apt install qemu-system-{arch.replace('arm64', 'arm').replace('arm32', 'arm')}"
+    except Exception as e:
+        return f"Error checking QEMU: {str(e)}"
+
+
+def create_initramfs(
+    arch: str = "x86_64",
+    test_script_path: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> str:
+    """Create minimal initramfs for QEMU kernel testing.
+
+    Args:
+        arch: Target architecture
+        test_script_path: Optional test script to include
+        output_path: Optional output path for initramfs
+
+    Returns:
+        Path to created initramfs or error message
+    """
+    script_path = find_qemu_script("create_initramfs.sh")
+
+    if not script_path:
+        return "Error: create_initramfs.sh not found in qemu-test skill"
+
+    if output_path is None:
+        output_path = str(tempfile.mktemp(suffix=".cpio.gz", prefix="initramfs_"))
+
+    cmd = ["bash", str(script_path), "--arch", arch, "--output", output_path]
+
+    if test_script_path:
+        if not Path(test_script_path).exists():
+            return f"Error: test script not found: {test_script_path}"
+        cmd.extend(["--test-script", test_script_path])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=str(script_path.parent),
+        )
+
+        if result.returncode != 0:
+            return f"Error creating initramfs: {result.stderr[:500]}"
+
+        if Path(output_path).exists():
+            size = Path(output_path).stat().st_size
+            return f"✓ Initramfs created\n  Path: {output_path}\n  Size: {size // 1024} KB\n  Arch: {arch}"
+        else:
+            return f"Error: initramfs not created at {output_path}"
+
+    except subprocess.TimeoutExpired:
+        return "Error: initramfs creation timed out (60s)"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
+def boot_kernel(
+    kernel_path: str,
+    initramfs_path: str,
+    arch: str = "x86_64",
+    timeout: int = 120,
+    memory: str = "512M",
+) -> str:
+    """Boot kernel in QEMU and capture boot log.
+
+    Args:
+        kernel_path: Path to kernel image (vmlinux or Image)
+        initramfs_path: Path to initramfs/initrd
+        arch: Target architecture
+        timeout: Boot timeout in seconds
+        memory: Memory allocation
+
+    Returns:
+        Boot result with log content or error message
+    """
+    # Validate inputs
+    if not Path(kernel_path).exists():
+        return f"Error: kernel not found: {kernel_path}"
+    if not Path(initramfs_path).exists():
+        return f"Error: initramfs not found: {initramfs_path}"
+
+    # Find boot script
+    boot_script_map = {
+        "x86_64": "boot_x86.sh",
+        "arm64": "boot_arm64.sh",
+        "arm32": "boot_arm32.sh",
+    }
+    boot_script_name = boot_script_map.get(arch, "boot_x86.sh")
+    boot_script_path = find_qemu_script(boot_script_name)
+
+    if not boot_script_path:
+        return f"Error: boot script not found: {boot_script_name}"
+
+    # Create temp log file
+    log_path = tempfile.mktemp(suffix=".log", prefix="qemu_boot_")
+
+    try:
+        cmd = [
+            "bash", str(boot_script_path),
+            "--kernel", kernel_path,
+            "--initrd", initramfs_path,
+            "--timeout", str(timeout),
+            "--memory", memory,
+        ]
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout + 30,  # Extra buffer for script overhead
+            cwd=str(boot_script_path.parent),
+        )
+
+        # Combine stdout and stderr as boot log
+        boot_log = result.stdout + "\n" + result.stderr
+
+        # Save log
+        Path(log_path).write_text(boot_log)
+
+        # Analyze boot result
+        exit_status = result.returncode
+
+        if exit_status == 0:
+            status = "✓ Boot completed successfully"
+        elif exit_status == 124 or "Timeout" in boot_log:
+            status = "⚠ Boot timed out"
+        else:
+            status = f"✗ Boot failed (exit: {exit_status})"
+
+        # Extract key info from log
+        kernel_version = ""
+        if "Linux version" in boot_log:
+            for line in boot_log.split("\n"):
+                if "Linux version" in line:
+                    kernel_version = line.strip()
+                    break
+
+        panic_detected = "Kernel panic" in boot_log or "BUG:" in boot_log
+
+        return f"""{status}
+  Kernel: {kernel_path}
+  Initramfs: {initramfs_path}
+  Arch: {arch}
+  Memory: {memory}
+  Timeout: {timeout}s
+
+Boot Log saved to: {log_path}
+Log size: {len(boot_log)} bytes
+
+Kernel Version: {kernel_version}
+
+Panic Detected: {panic_detected}
+
+Last 20 lines:
+{boot_log.split('\n')[-20:] if len(boot_log.split('\n')) > 20 else boot_log}
+"""
+
+    except subprocess.TimeoutExpired:
+        return f"Error: QEMU boot timed out ({timeout}s)"
+    except Exception as e:
+        return f"Error booting kernel: {str(e)}"
+
+
+def analyze_boot_log(
+    log_path: str,
+    patterns: Optional[list[str]] = None,
+) -> str:
+    """Analyze QEMU boot log for errors and patterns.
+
+    Args:
+        log_path: Path to boot log file
+        patterns: Optional list of patterns to search
+
+    Returns:
+        Analysis summary
+    """
+    if not Path(log_path).exists():
+        return f"Error: log file not found: {log_path}"
+
+    try:
+        log_content = Path(log_path).read_text()
+    except Exception as e:
+        return f"Error reading log: {str(e)}"
+
+    # Default patterns for kernel errors
+    default_patterns = [
+        "Kernel panic",
+        "BUG:",
+        "Oops:",
+        "NULL pointer",
+        "soft lockup",
+        "blocked for more than",
+        "hung task",
+        "stack-overflow",
+        "Call Trace:",
+    ]
+
+    search_patterns = patterns or default_patterns
+
+    findings = []
+    for pattern in search_patterns:
+        matches = []
+        for line in log_content.split("\n"):
+            if pattern.lower() in line.lower():
+                matches.append(line.strip())
+
+        if matches:
+            findings.append(f"\n### {pattern}\n{matches[0]}")
+            if len(matches) > 1:
+                findings.append(f"  ... and {len(matches) - 1} more matches")
+
+    if findings:
+        return f"""Boot Log Analysis
+Log: {log_path}
+Size: {len(log_content)} bytes
+
+Key Findings:
+{''.join(findings)}
+
+Summary:
+- Total lines: {len(log_content.split('\\n'))}
+- Error patterns found: {len(findings)}
+"""
+    else:
+        return f"""Boot Log Analysis
+Log: {log_path}
+Size: {len(log_content)} bytes
+
+No error patterns detected.
+Boot appears successful.
+"""
+
+
+def create_qemu_tools() -> list[StructuredTool]:
+    """Create LangChain StructuredTool instances for QEMU testing.
+
+    Returns:
+        List of StructuredTool instances for bind_tools()
+    """
+    tools = [
+        StructuredTool(
+            name="check_qemu_available",
+            description=(
+                "Check if QEMU is installed and available for the specified architecture. "
+                "Use before attempting to boot kernels in QEMU. "
+                "Returns QEMU path and version info."
+            ),
+            func=check_qemu_available,
+            args_schema=CheckQemuInput,
+        ),
+        StructuredTool(
+            name="create_initramfs",
+            description=(
+                "Create minimal initramfs for QEMU kernel testing. "
+                "Includes busybox and essential init scripts. "
+                "Optionally includes a test script for automated testing. "
+                "Returns path to created initramfs."
+            ),
+            func=create_initramfs,
+            args_schema=CreateInitramfsInput,
+        ),
+        StructuredTool(
+            name="boot_kernel",
+            description=(
+                "Boot a kernel in QEMU with specified initramfs. "
+                "Captures boot log and detects kernel panics or errors. "
+                "Returns boot status and log analysis. "
+                "Use for verifying kernel functionality or reproducing issues."
+            ),
+            func=boot_kernel,
+            args_schema=BootKernelInput,
+        ),
+        StructuredTool(
+            name="analyze_boot_log",
+            description=(
+                "Analyze QEMU boot log for kernel errors, panics, and patterns. "
+                "Searches for common kernel error patterns like panic, Oops, soft lockup. "
+                "Returns summary of findings."
+            ),
+            func=analyze_boot_log,
+            args_schema=AnalyzeLogInput,
+        ),
+    ]
+
+    return tools

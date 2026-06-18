@@ -49,13 +49,13 @@ class MaintenanceWorkflowState(TypedDict):
     final_response: str
 
 
-def make_initial_state(user_input: str = "", config_path: str = "maintenance_config.json", execution_mode: str = "simulation") -> dict:
+def make_initial_state(user_input: str = "", config_path: str = "maintenance_config.json", execution_mode: str = "real") -> dict:
     """Create a MaintenanceWorkflowState dict with sensible defaults.
 
     Args:
         user_input: 用户输入的问题描述
         config_path: 配置文件路径
-        execution_mode: 执行模式 - "simulation"（文本分析）或 "real"（实际执行）
+        execution_mode: 执行模式 - "real"（实际执行，默认）或 "simulation"（纯文本分析）
     """
     return {
         "messages": [],

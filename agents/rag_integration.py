@@ -9,13 +9,13 @@ from typing import Any
 from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
 
 
-def retrieve_similar_cases(query: str, top_k: int = 3, min_similarity: float = 0.3) -> dict:
+def retrieve_similar_cases(query: str, top_k: int = 5, min_similarity: float = 0.5) -> dict:
     """执行 RAG 搜索并返回结构化结果。
 
     Args:
         query: 搜索查询文本
-        top_k: 返回结果数量
-        min_similarity: 最小相似度阈值
+        top_k: 返回结果数量（默认5，返回更多候选）
+        min_similarity: 最小相似度阈值（默认0.5，过滤低相关性结果）
 
     Returns:
         包含检索结果的字典，格式：
@@ -178,10 +178,11 @@ def format_rag_results_for_prompt(results: dict) -> str:
     return output
 
 
-def get_rag_context_for_query(query: str, top_k: int = 3) -> str:
+def get_rag_context_for_query(query: str, top_k: int = 5, min_similarity: float = 0.5) -> str:
     """便捷函数：执行 RAG 搜索并返回格式化上下文。
 
     用于在 tool_expert 中直接获取 RAG 结果并嵌入分析。
+    默认使用更高的相似度阈值(0.5)确保结果相关性。
     """
-    results = retrieve_similar_cases(query, top_k=top_k)
+    results = retrieve_similar_cases(query, top_k=top_k, min_similarity=min_similarity)
     return format_rag_results_for_prompt(results)
