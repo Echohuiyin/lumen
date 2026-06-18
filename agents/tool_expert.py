@@ -125,17 +125,26 @@ def _run_tool_calling_analysis(
         # Create session-bound tools
         crash_tools = create_crash_tools(session)
 
-        # Build context info for LLM
-        context_info = f"""Crash 分析环境已就绪:
+        # Build context info for LLM — emphasize data-driven analysis
+        context_info = f"""Crash analysis environment ready:
 - vmcore: {vmcore_path}
 - vmlinux: {vmlinux_path}
 
-你拥有以下 crash 分析工具:
-- run_crash_command: 执行单个 crash 命令 (如 'bt', 'sys', 'log')
-- run_crash_commands: 执行多个命令批量收集信息
-- collect_baseline: 收集基线诊断信息 (sys + bt + log)
+Available tools:
+- collect_baseline: collect sys + bt + log (call FIRST)
+- run_crash_command: execute a single crash command
+- run_crash_commands: batch execute multiple commands
 
-请首先调用 collect_baseline 收集基本信息，然后根据需要执行其他命令进行深入分析。"""
+INSTRUCTIONS:
+1. Call collect_baseline first to get system state, backtraces, and kernel log
+2. Identify D-state (UN) processes from ps output — record their REAL PIDs and names
+3. For each D-state process, get its backtrace (bt <pid>)
+4. If backtraces show mutex_lock or similar, examine the mutex struct to find owners
+5. Decode mutex.owner: counter & ~0x7 gives the task_struct pointer
+6. Cross-reference: verify that the owner task from mutex matches an actual task in ps output
+
+CRITICAL: Your final analysis MUST reference specific PIDs, addresses, function names,
+and module names from the tool outputs. Never fabricate data."""
 
         # Create messages for tool-calling loop
         messages = create_tool_call_messages(
@@ -174,20 +183,23 @@ def _run_tool_calling_analysis(
             needs_summary = True
 
         if needs_summary:
-            # 强制要求 LLM 生成分析总结
-            # 注意：messages 已包含所有 ToolMessage（工具调用结果）
+            # Force LLM to generate data-driven analysis summary
             summary_messages = list(messages) + [
-                HumanMessage(content="""基于以上工具调用收集的数据，请立即生成完整的问题分析报告。
+                HumanMessage(content="""Based on the crash tool data collected above, generate a data-driven analysis report.
 
-要求：
-1. 不要再调用任何工具
-2. 直接输出分析结论
-3. 报告格式：
-   - Crash 类型判定
-   - 关键调用栈分析
-   - 锁持有关系（如有）
-   - 根因分析
-   - 初步结论""")
+CRITICAL RULES:
+1. Do NOT call any more tools
+2. Every claim MUST cite specific data from the tool outputs above (PIDs, addresses, function names, module names)
+3. Do NOT fabricate PIDs, process names, or call stacks that don't appear in the tool outputs
+4. If the data shows PID 106 (insmod) and PID 107 (deadlock_thread), analyze THOSE processes — not systemd or jbd2
+5. Use actual addresses from the tool output, not made-up ones
+
+Report format:
+- Crash type: (based on sys/log output)
+- Key call stacks: (quote actual bt output, include real PIDs and function names)
+- Lock analysis: (if mutex data collected, show actual owner PIDs decoded from owner.counter & ~0x7)
+- Root cause: (based on the actual evidence, not speculation)
+- Conclusion: (data-supported finding)""")
             ]
             summary_response = llm.invoke(summary_messages)
             _write_tool_call_output(output_file, summary_response.content, expert_name)
