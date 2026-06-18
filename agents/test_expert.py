@@ -24,11 +24,19 @@ def _extract_kernel_path(user_input: str) -> str | None:
     """
     import re
 
-    # 支持中文冒号和英文冒号，以及 ~ 开头的路径
-    kernel_pattern = r'(?:vmlinux|kernel|Image)\s*(?:文件)?[：:\s]+([~/\w\-\.]+)'
+    # 优先匹配带"文件"关键词的模式，确保捕获的是路径而非版本号
+    # 格式: "vmlinux/kernel/Image 文件 ~/path" 或 "vmlinux 文件：~/path"
+    kernel_pattern = r'(?:vmlinux|kernel|Image)\s*文件\s+[：:]?\s*([~/][^\s]+)'
     match = re.search(kernel_pattern, user_input, re.IGNORECASE)
 
-    return match.group(1) if match else None
+    if match:
+        return match.group(1)
+
+    # 备用模式：不带"文件"关键词，但路径必须以 / 或 ~ 开头
+    kernel_pattern2 = r'(?:vmlinux|kernel|Image)\s+[：:]?\s*([~/][^\s]+)'
+    match2 = re.search(kernel_pattern2, user_input, re.IGNORECASE)
+
+    return match2.group(1) if match2 else None
 
 
 def _check_file_exists(path: str | None) -> bool:
