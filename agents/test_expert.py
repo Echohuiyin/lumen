@@ -40,11 +40,32 @@ def _extract_kernel_path(user_input: str) -> str | None:
 
 
 def _check_file_exists(path: str | None) -> bool:
-    """检查文件是否存在。"""
+    """Check if a file exists."""
     if path is None:
         return False
     expanded_path = os.path.expanduser(path)
     return os.path.exists(expanded_path)
+
+
+def _detect_kernel_type(kernel_path: str) -> str:
+    """Detect whether a kernel image is bootable (bzImage) or ELF debug symbols.
+
+    Returns 'elf', 'bzimage', or 'unknown'.
+    """
+    try:
+        with open(kernel_path, "rb") as f:
+            header = f.read(4)
+        if header[:2] == b"\x7fELF":
+            return "elf"
+        if header[:2] == b"MZ":
+            # bzImage starts with a DOS MZ header (the 16-bit setup stub)
+            return "bzimage"
+        # Check for raw bzImage without setup header (starts with HdrS)
+        if header == b"HdrS":
+            return "bzimage"
+        return "unknown"
+    except Exception:
+        return "unknown"
 
 
 def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_name: str):
@@ -106,24 +127,34 @@ def _run_qemu_test_with_tools(
         else:
             kernel_info = "- Kernel: 未指定 (需要用户提供)\n"
 
+        home_dir = os.path.expanduser("~")
         context_info = f"""QEMU test verification environment:
 
+- Home directory: {home_dir} (use this in paths, NOT /root)
 {kernel_info}
 
 You MUST use the following QEMU testing tools that are bound to you:
-- check_qemu_available: Check if QEMU is installed. Call this FIRST.
-- create_initramfs: Create minimal initramfs for testing.
+- check_qemu_available: Check if QEMU is installed. Call this FIRST and ONLY ONCE.
+- create_initramfs: Create minimal initramfs for testing. Call ONCE and reuse the path.
 - boot_kernel: Boot a kernel in QEMU and capture boot log. THIS IS THE KEY TOOL.
-- analyze_boot_log: Analyze QEMU boot log for errors and patterns.
+- analyze_boot_log: Analyze QEMU boot log for errors and patterns. Call ONCE per log.
 
 You are in REAL execution mode. These tools execute actual commands and return real results.
 Do NOT say you "cannot execute QEMU" — you CAN, by calling these tools.
-Do NOT skip tool calls — the tools are your only way to produce a valid result.
+
+EFFICIENCY RULES:
+- Call each tool ONCE with the correct arguments. Do NOT retry with different args.
+- Use the initramfs path returned by create_initramfs() directly in boot_kernel().
+- If boot_kernel fails, check whether the kernel is a bootable bzImage or an ELF
+  vmlinux (debug symbols only, not bootable). QEMU requires bzImage for x86_64.
+- If the kernel is ELF vmlinux, report REPRODUCE: FAILED immediately — do not
+  retry multiple times. Explain that a bootable bzImage is needed.
+- Do NOT call create_initramfs more than once — use the first result.
 
 REQUIRED execution flow:
-1. Call check_qemu_available() to verify QEMU is installed
-2. Use kernel_path={kernel_path or 'N/A'} and create an initramfs with create_initramfs()
-3. Call boot_kernel() with the kernel and initramfs
+1. Call check_qemu_available() to verify QEMU
+2. Call create_initramfs() ONCE with default args
+3. Call boot_kernel() with kernel_path={kernel_path or 'N/A'} and the initramfs path
 4. Call analyze_boot_log() on the resulting log
 5. Based on actual tool outputs, determine if issue reproduced
 """
@@ -280,6 +311,36 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
             "test_passed": False,
             "test_attempts": current_attempts,
             "final_response": error_msg,
+        }
+
+    # Check if kernel is a bootable image or ELF debug file before QEMU tools
+    kernel_expanded = os.path.expanduser(kernel_path)
+    kernel_file_type = _detect_kernel_type(kernel_expanded)
+    if kernel_file_type == "elf":
+        skip_msg = (
+            f"KERNEL FORMAT CHECK: vmlinux is an ELF debug-symbols file, "
+            f"NOT a bootable kernel image.\n\n"
+            f"QEMU requires a bootable bzImage (arch/x86/boot/bzImage) for x86_64.\n"
+            f"The ELF vmlinux at {kernel_path} is suitable for crash analysis "
+            f"but cannot be booted directly.\n\n"
+            f"To reproduce this issue:\n"
+            f"1. Build a bootable kernel with CONFIG_HUNG_TASK=y, CONFIG_DETECT_HUNG_TASK=y\n"
+            f"2. Compile the reproducer module against the same kernel\n"
+            f"3. Create an initramfs that loads the module at boot\n"
+            f"4. Re-run with the bootable bzImage path\n\n"
+            f"VERIFICATION STATUS: SKIPPED (no bootable kernel available)"
+        )
+        header = _format_agent_header_text("测试专家", "验证结果")
+        footer = _format_agent_footer_text("测试专家")
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write(header)
+            f.write(skip_msg + "\n")
+            f.write(footer)
+        return {
+            "test_result": skip_msg,
+            "test_passed": False,
+            "test_attempts": current_attempts,
+            "final_response": skip_msg,
         }
 
     # 执行 QEMU 工具调用测试

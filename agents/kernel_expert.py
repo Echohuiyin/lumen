@@ -56,33 +56,36 @@ def _run_kernel_expert_with_tools(
         kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
         kernel_headers_exist = os.path.exists(kernel_headers_path)
 
-        context_info = f"""内核专家工具环境:
+        home_dir = os.path.expanduser("~")
+        context_info = f"""Kernel expert tool environment:
 
-- Kernel Headers: {kernel_headers_path} ({'✓ 存在' if kernel_headers_exist else '✗ 不存在'})
-- 当前内核版本: {os.uname().release}
-- 架构: {os.uname().machine}
+- Home directory: {home_dir} (use this in paths, NOT /root or other guessed paths)
+- Kernel Headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
+- Kernel Version: {os.uname().release}
+- Arch: {os.uname().machine}
 
-你拥有以下文件操作和编译工具:
-- create_directory: 创建目录（用于创建复现器目录）
-- write_file: 写入文件内容（用于创建源代码、Makefile、README等）
-- read_file: 读取文件内容（用于检查已创建的文件）
-- compile_module: 编译内核模块（用于验证复现器代码）
-- check_file_exists: 检查文件是否存在（用于验证文件创建）
+You have these file and compilation tools:
+- create_directory: create a directory for the reproducer
+- write_file: write source code, Makefile, README, etc.
+- read_file: read file contents to verify
+- compile_module: compile a kernel module (.ko)
+- check_file_exists: verify file existence
+- bash: run shell commands for additional operations
 
-建议执行流程:
-1. 分析问题根因，确定复现策略
-2. 使用 create_directory 创建复现器目录（建议: outputs/<bug_type>_reproducer）
-3. 使用 write_file 创建复现器源代码（.c 文件）
-4. 使用 write_file 创建 Makefile
-5. 使用 write_file 创建 README.md（使用说明）
-6. 使用 compile_module 尝试编译验证（如果 kernel headers 存在）
-7. 如果编译成功，说明复现器代码正确；如果失败，分析错误并修正代码
-8. 输出最终的 REPRODUCE_CASE 和 KERNEL_DIAGNOSIS
+Suggested workflow:
+1. Analyze the root cause and plan the reproducer strategy
+2. Create reproducer directory: outputs/<bug_type>_reproducer
+3. Write reproducer source code (.c) based on the vmcore analysis findings
+4. Write Makefile with correct kernel build system integration
+5. If kernel headers exist, compile the module to verify correctness
+6. If compilation fails, read the error output, fix the code, and recompile
+7. Output FINAL_REPRODUCER code, build steps, and expected behavior
 
-注意事项:
-- 源代码必须使用正确的内核 API（如 DECLARE_RWSEM 而不是 DEFINE_RWSEM）
-- Makefile 必须使用正确的格式（Tab 缩进，不是空格）
-- 编译失败时，分析错误信息并修正代码后重新编译
+Notes:
+- Use the actual home directory ({home_dir}) in all paths
+- Use correct kernel APIs (kthread_run, mutex_lock, etc.)
+- Makefile MUST use Tab indentation (not spaces)
+- The vmcore data provides the ground truth — reference real PIDs/addresses
 """
 
         # Create messages for tool-calling loop
