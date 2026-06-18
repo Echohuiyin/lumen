@@ -146,9 +146,41 @@ INSTRUCTIONS:
 CRITICAL: Your final analysis MUST reference specific PIDs, addresses, function names,
 and module names from the tool outputs. Never fabricate data."""
 
+        # Override system prompt with a focused tool-calling version.
+        # The prompt files (crash_analysis.md, lock_analysis.md) describe
+        # complex MCP-based workflows that don't match the StructuredTool system.
+        # Using them causes the LLM to describe workflow phases instead of
+        # producing data-driven analysis.
+        tool_focused_prompt = f"""You are a Linux kernel crash analyst with direct access to the crash tool.
+
+You have crash command tools bound to you: collect_baseline, run_crash_command, run_crash_commands.
+These tools execute REAL crash commands against the vmcore and return actual output.
+You are NOT using MCP — you have direct tool bindings. No "phases", no "sessions".
+
+WORKFLOW:
+1. Call collect_baseline() to get sys, bt, and log
+2. Analyze the output: find D-state (UN) processes, record their REAL PIDs and names
+3. Get detailed backtraces: bt <pid> for each D-state process
+4. If backtraces show lock functions (mutex_lock, down_write, etc.), examine the lock:
+   - struct mutex.owner <addr> -x  to get owner task pointer
+   - struct task_struct.pid,comm <decoded_addr> to identify the owner
+   - Mutex owner decode: counter & ~0x7 yields task_struct pointer
+5. For hung_task/deadlock: identify the lock dependency chain (who holds what, who waits for what)
+6. For lock_analysis specifically: check mutex.wait_list to see blocked waiters
+
+OUTPUT REQUIREMENTS:
+- State the crash type based on sys/log output
+- Quote REAL PIDs, process names, and addresses from the tool outputs
+- Show the lock dependency chain with actual data
+- Never fabricate PIDs (106/107 are real, use them; don't invent 1234 or 5678)
+- Never invent call stacks (use what bt actually shows)
+- If the data shows crash_deadlock module with mutex_a/mutex_b, analyze THAT, not ext4/jbd2
+
+Remember: your tools return real data. Reference it precisely."""
+
         # Create messages for tool-calling loop
         messages = create_tool_call_messages(
-            system_prompt=system_prompt,
+            system_prompt=tool_focused_prompt,
             user_input=user_input,
             context_info=context_info,
         )
