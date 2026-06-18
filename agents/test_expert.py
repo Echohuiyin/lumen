@@ -106,38 +106,44 @@ def _run_qemu_test_with_tools(
         else:
             kernel_info = "- Kernel: 未指定 (需要用户提供)\n"
 
-        context_info = f"""QEMU 测试验证环境:
+        context_info = f"""QEMU test verification environment:
 
 {kernel_info}
 
-你拥有以下 QEMU 测试工具:
-- check_qemu_available: 检查 QEMU 是否安装及版本信息
-- create_initramfs: 创建测试所需的 initramfs
-- boot_kernel: 在 QEMU 中启动内核并捕获日志
-- analyze_boot_log: 分析启动日志，检测 panic 和错误
+You MUST use the following QEMU testing tools that are bound to you:
+- check_qemu_available: Check if QEMU is installed. Call this FIRST.
+- create_initramfs: Create minimal initramfs for testing.
+- boot_kernel: Boot a kernel in QEMU and capture boot log. THIS IS THE KEY TOOL.
+- analyze_boot_log: Analyze QEMU boot log for errors and patterns.
 
-建议执行流程:
-1. 首先调用 check_qemu_available 验证 QEMU 环境
-2. 根据 kernel_path 和 reproduce_case 创建测试脚本和 initramfs
-3. 调用 boot_kernel 启动测试
-4. 调用 analyze_boot_log 分析结果
-5. 判断是否成功复现问题
+You are in REAL execution mode. These tools execute actual commands and return real results.
+Do NOT say you "cannot execute QEMU" — you CAN, by calling these tools.
+Do NOT skip tool calls — the tools are your only way to produce a valid result.
+
+REQUIRED execution flow:
+1. Call check_qemu_available() to verify QEMU is installed
+2. Use kernel_path={kernel_path or 'N/A'} and create an initramfs with create_initramfs()
+3. Call boot_kernel() with the kernel and initramfs
+4. Call analyze_boot_log() on the resulting log
+5. Based on actual tool outputs, determine if issue reproduced
 """
 
-        user_content = f"""用户输入:
+        user_content = f"""User input:
 {user_input}
 
-## 内核专家构造的复现用例
+## Kernel expert reproducer case
 {reproduce_case}
 
-## 内核维测方案
+## Kernel diagnosis plan
 {kernel_diagnosis}
 
-## 执行模式
-当前执行模式: **real** (实际 QEMU 测试验证)
-验证次数: 第 {current_attempts} 次（共 {max_attempts} 次机会）
+## Execution mode
+Mode: **real** — you have real QEMU tools bound for execution.
+Attempt: {current_attempts}/{max_attempts}
 
-请使用 QEMU 工具执行实际的验证测试。"""
+CRITICAL: You MUST call at least check_qemu_available() as your very first action.
+Do not reply with text about what you "would" do — actually call the tools.
+Do not say you "cannot execute" — the tools give you that ability."""
 
         # Create messages for tool-calling loop
         messages = create_tool_call_messages(
@@ -155,6 +161,36 @@ def _run_qemu_test_with_tools(
             on_tool_call=lambda name, args: _log_tool_call(output_file, name, args, expert_name),
             verbose=False,
         )
+
+        # Check if any tools were actually called by checking for ToolMessage in messages
+        from langchain_core.messages import ToolMessage as TM
+        has_tool_calls = any(isinstance(m, TM) for m in messages)
+
+        if not has_tool_calls:
+            # LLM did not call any tools — force execute at minimum check_qemu_available
+            from agents.qemu_tools import check_qemu_available as check_qemu
+            qemu_status = check_qemu("x86_64")
+            messages.append(AIMessage(content=""))
+            messages.append(TM(content=qemu_status, tool_call_id="forced", name="check_qemu_available"))
+
+            force_msg = HumanMessage(content=f"""QEMU availability check result:
+
+{qemu_status}
+
+Based on this result, you MUST now proceed with the verification.
+If QEMU is available, use boot_kernel() to test the kernel.
+If QEMU is not available, report REPRODUCE: FAILED with the reason.
+Do not describe what you would do — call the tools.""")
+
+            messages.append(force_msg)
+            response = execute_tool_calling_loop(
+                llm=llm,
+                messages=messages,
+                tools=qemu_tools,
+                max_iterations=max_iterations,
+                on_tool_call=lambda name, args: _log_tool_call(output_file, name, args, expert_name),
+                verbose=False,
+            )
 
         # Write final output
         _write_tool_call_output(output_file, response.content, expert_name)
@@ -258,38 +294,43 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
 
 
 def _generate_improvement_suggestions(state: MaintenanceWorkflowState, test_result: str) -> str:
-    """根据已有分析结果生成改进建议。"""
+    """Generate improvement suggestions based on analysis results."""
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("test_expert", {})
     default_config = config.get("default", {})
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="test_expert")
-    system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/maintenance/test_expert.md")
-    )
+
+    # Use a focused system prompt for improvement suggestions, not the full skill workflow
+    improvement_prompt = """You are a kernel testing expert. Based on the analysis and test results provided,
+generate CONCISE improvement suggestions. Focus on actionable recommendations.
+
+Output format:
+1. Environment: missing configs or conditions
+2. Information: what additional data is needed
+3. Analysis: alternative approaches to try
+4. Debugging: additional instrumentation to add
+
+Keep each section to 2-3 bullet points. Be specific and actionable. Do NOT describe what you "would do" - just give the recommendations."""
 
     expert_results = state.get("expert_results", [])
     expert_summaries = []
     for result in expert_results:
         expert_summaries.append(
-            f"### {result['expert_name']}（{result['expert_type']}）\n{result['analysis_output']}"
+            f"### {result['expert_name']}（{result['expert_type']}）\n{result['analysis_output'][:2000]}"
         )
 
     user_content = (
-        f"用户原始输入:\n{state['user_input']}\n\n"
-        f"## 工具专家分析结果\n" + "\n\n".join(expert_summaries) + "\n\n"
-        f"## 内核专家分析\n{state.get('kernel_analysis', '')}\n\n"
-        f"## 复现用例\n{state.get('reproduce_case', '')}\n\n"
-        f"## 最后一次测试结果\n{test_result}\n\n"
-        f"经过多次尝试仍无法复现该问题。请从以下角度给出详细的改进建议：\n"
-        f"1. 环境方面：可能缺少哪些环境条件或配置\n"
-        f"2. 信息方面：还需要补充哪些信息才能更好地定位问题\n"
-        f"3. 分析思路：建议调整哪些分析方向或尝试其他方法\n"
-        f"4. 维测方案：建议添加哪些额外的调试手段"
+        f"Original problem:\n{state['user_input'][:500]}\n\n"
+        f"## Expert analysis\n" + "\n\n".join(expert_summaries) + "\n\n"
+        f"## Kernel expert analysis (summary)\n{state.get('kernel_analysis', '')[:2000]}\n\n"
+        f"## Last test result\n{test_result[:2000]}\n\n"
+        f"The issue could not be reproduced after multiple attempts. "
+        f"Give concise, actionable improvement suggestions."
     )
 
     response = call_llm_with_persistence(
         "测试专家", "生成改进建议", llm,
-        [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+        [SystemMessage(content=improvement_prompt), HumanMessage(content=user_content)],
         persist_dir=Path("outputs"),
     )
 

@@ -35,41 +35,41 @@ def _extract_vmcore_paths(user_input: str) -> tuple[str | None, str | None]:
     return vmcore_path, vmlinux_path
 
 
-def _check_file_exists(path: str | None) -> bool:
-    """检查文件是否存在（用于 MCP 工具智能判断）。
+def _resolve_file_path(path: str | None, try_suffixes: list[str] | None = None) -> str | None:
+    """Resolve a file path, handling ~ expansion and optional suffix fallbacks.
 
-    支持 ~ 符号展开，并尝试 vmcore.elf 后缀作为备选。
-    """
-    if path is None:
-        return False
-    expanded_path = os.path.expanduser(path)
-    if os.path.exists(expanded_path):
-        return True
-    # 尝试添加 .elf 后缀（vmcore 文件常见格式）
-    if expanded_path.endswith('vmcore') and not expanded_path.endswith('.elf'):
-        elf_path = expanded_path + '.elf'
-        if os.path.exists(elf_path):
-            return True
-    return False
-
-
-def _resolve_vmcore_path(path: str | None) -> str | None:
-    """解析 vmcore 路径，处理 ~ 展开和 .elf 后缀。
+    Args:
+        path: Raw path (may contain ~, may be None)
+        try_suffixes: Optional list of suffixes to try if path doesn't exist
+                      (e.g. ['.elf'] for vmcore files that may have .elf extension)
 
     Returns:
-        实际存在的路径，或 None
+        Resolved absolute path, or None if path is None.
+        Returns the first existing path found, or the expanded path if none exist.
     """
     if path is None:
         return None
-    expanded_path = os.path.expanduser(path)
-    if os.path.exists(expanded_path):
-        return expanded_path
-    # 尝试添加 .elf 后缀
-    if expanded_path.endswith('vmcore') and not expanded_path.endswith('.elf'):
-        elf_path = expanded_path + '.elf'
-        if os.path.exists(elf_path):
-            return elf_path
-    return expanded_path  # 返回展开后的路径，即使不存在
+    expanded = os.path.expanduser(path)
+    if os.path.exists(expanded):
+        return expanded
+    if try_suffixes:
+        for suffix in try_suffixes:
+            if not expanded.endswith(suffix):
+                candidate = expanded + suffix
+                if os.path.exists(candidate):
+                    return candidate
+    return expanded
+
+
+def _check_file_exists(path: str | None) -> bool:
+    """Check if a file exists, trying .elf suffix for vmcore files.
+
+    Shares resolution logic with _resolve_file_path.
+    """
+    if path is None:
+        return False
+    resolved = _resolve_file_path(path, try_suffixes=[".elf"])
+    return os.path.exists(resolved)
 
 
 def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_name: str):
@@ -293,9 +293,9 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
         # Crash/锁分析专家：使用工具调用执行 crash 命令
         vmcore_path_raw, vmlinux_path_raw = _extract_vmcore_paths(user_input)
 
-        # 解析路径（展开 ~ 并尝试 .elf 后缀）
-        vmcore_path = _resolve_vmcore_path(vmcore_path_raw)
-        vmlinux_path = _resolve_vmcore_path(vmlinux_path_raw) if vmlinux_path_raw else None
+        # Resolve paths (expand ~ and try .elf suffix for vmcore)
+        vmcore_path = _resolve_file_path(vmcore_path_raw, try_suffixes=[".elf"])
+        vmlinux_path = _resolve_file_path(vmlinux_path_raw) if vmlinux_path_raw else None
 
         vmcore_exists = _check_file_exists(vmcore_path_raw)
         vmlinux_exists = _check_file_exists(vmlinux_path_raw)
@@ -377,8 +377,8 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
     elif expert_type == "kernel_log_analysis":
         # 内核日志分析专家：如果有 vmcore，使用 crash 提取日志
         vmcore_path_raw, vmlinux_path_raw = _extract_vmcore_paths(user_input)
-        vmcore_path = _resolve_vmcore_path(vmcore_path_raw)
-        vmlinux_path = _resolve_vmcore_path(vmlinux_path_raw) if vmlinux_path_raw else None
+        vmcore_path = _resolve_file_path(vmcore_path_raw, try_suffixes=[".elf"])
+        vmlinux_path = _resolve_file_path(vmlinux_path_raw) if vmlinux_path_raw else None
         vmcore_exists = _check_file_exists(vmcore_path_raw)
 
         if vmcore_path_raw and vmlinux_path_raw and vmcore_exists:

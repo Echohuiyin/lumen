@@ -130,8 +130,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # 汇总所有工具专家的分析结果
     expert_results = state.get("expert_results", [])
 
-    # 统一展示所有工具专家的输出（从文件读取）
-    display_expert_outputs(expert_results)
+    # Only display expert outputs on first invocation (not on retries after test failures)
+    if state.get("test_attempts", 0) == 0:
+        display_expert_outputs(expert_results)
     expert_summaries = []
     for result in expert_results:
         expert_summaries.append(
