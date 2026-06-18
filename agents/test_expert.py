@@ -200,6 +200,9 @@ Do not describe what you would do — call the tools.""")
             len(content) < 200
             or bool(tool_calls_remaining)
             or not content.strip()
+            # Detect when LLM returns raw tool-call XML instead of analysis
+            or "</invoke>" in content
+            or "<｜｜DSML｜｜tool_calls>" in content
         )
 
         if needs_summary:

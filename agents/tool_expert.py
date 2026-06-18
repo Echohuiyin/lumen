@@ -211,8 +211,12 @@ Remember: your tools return real data. Reference it precisely."""
         if tool_calls:
             needs_summary = True
 
-        # 检查内容是否是描述性而非分析性
+        # Check if content is descriptive rather than analytical
         if any(phrase in content for phrase in ["让我开始", "我需要先", "首先调用", "执行分析流程", "阶段零"]):
+            needs_summary = True
+
+        # Detect raw tool-call XML in response (LLM returned syntax instead of analysis)
+        if "</invoke>" in content or "<｜｜DSML｜｜tool_calls>" in content:
             needs_summary = True
 
         if needs_summary:
@@ -443,7 +447,25 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
                 log_result = session.run_command("log")
                 log_content = log_result.output if log_result.success else "Cannot extract kernel log"
 
-                # Build context with extracted log
+                # Build context with extracted log.
+                # Override system prompt — the prompt file describes MCP-based
+                # workflows that don't match direct crash session use.
+                # Force the LLM to analyze the provided log content directly.
+                log_analysis_prompt = """You are a kernel log analysis expert.
+The crash tool has already extracted the kernel log from the vmcore for you.
+The log content is provided below. Analyze it DIRECTLY — do NOT describe
+how you would use MCP or crash tools, because the data is already in front of you.
+
+Your task:
+1. Extract key error messages, warnings, and anomalies from the log
+2. Identify timing relationships between events
+3. Match log entries to the reported hung task problem
+4. Identify which processes are mentioned, what they were doing
+5. Provide a data-driven analysis citing specific log lines
+
+OUTPUT: Direct analysis of the log content. Reference specific timestamps,
+process names, and error messages from the log."""
+
                 context_info = f"""Kernel log extracted from vmcore:
 
 ## Kernel log content (from crash log command)
@@ -454,7 +476,7 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
 Analyze the kernel log above, extracting key error information, anomaly patterns, and timing relationships."""
 
                 messages = [
-                    SystemMessage(content=system_prompt),
+                    SystemMessage(content=log_analysis_prompt),
                     HumanMessage(content=f"User input:\n{user_input}\n\n{context_info}"),
                 ]
 
