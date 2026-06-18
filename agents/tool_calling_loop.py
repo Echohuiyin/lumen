@@ -57,7 +57,9 @@ def execute_tool_calling_loop(
     llm_with_tools = llm.bind_tools(tools)
 
     iteration = 0
-    current_messages = list(messages)  # Copy to avoid mutating original
+    # Mutate caller's messages list in-place so they can access full
+    # tool-call history for summary generation after the loop returns.
+    current_messages = messages
 
     while iteration < max_iterations:
         # Invoke LLM with current message history

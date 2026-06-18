@@ -24,9 +24,9 @@ def _extract_kernel_path(user_input: str) -> str | None:
     """
     import re
 
-    # 优先匹配带"文件"关键词的模式，确保捕获的是路径而非版本号
-    # 格式: "vmlinux/kernel/Image 文件 ~/path" 或 "vmlinux 文件：~/path"
-    kernel_pattern = r'(?:vmlinux|kernel|Image)\s*文件\s+[：:]?\s*([~/][^\s]+)'
+    # Match patterns like "vmlinux 文件: ~/path" or "vmlinux 文件：~/path"
+    # The colon may or may not have spaces around it; full-width colon (：) also supported
+    kernel_pattern = r'(?:vmlinux|kernel|Image)\s*文件[：:\s]+([~/][^\s]+)'
     match = re.search(kernel_pattern, user_input, re.IGNORECASE)
 
     if match:
