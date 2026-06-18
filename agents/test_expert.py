@@ -55,7 +55,7 @@ def _detect_kernel_type(kernel_path: str) -> str:
     try:
         with open(kernel_path, "rb") as f:
             header = f.read(4)
-        if header[:2] == b"\x7fELF":
+        if header[:4] == b"\x7fELF":
             return "elf"
         if header[:2] == b"MZ":
             # bzImage starts with a DOS MZ header (the 16-bit setup stub)
