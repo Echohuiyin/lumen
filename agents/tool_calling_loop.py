@@ -5,6 +5,7 @@ Implements the standard LLM tool-calling pattern:
     -> messages.append() -> Loop until no tool_calls
 """
 
+import uuid
 from typing import Any, Callable, List, Optional
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
@@ -78,7 +79,10 @@ def execute_tool_calling_loop(
         if verbose:
             print(f"[Tool Loop] Tool calls: {len(tool_calls)}")
             for tc in tool_calls:
-                print(f"  - {tc['name']}({tc['args']})")
+                tc_id = tc.get("id", "") if isinstance(tc, dict) else "N/A"
+                tc_name = tc.get("name", "?") if isinstance(tc, dict) else str(tc)[:80]
+                tc_keys = list(tc.keys()) if isinstance(tc, dict) else type(tc).__name__
+                print(f"  - {tc_name}(id={tc_id}, keys={tc_keys})")
 
         # IMPORTANT: Append AIMessage with tool_calls to message list FIRST
         # This is required for ToolMessage to have a preceding message with tool_calls
@@ -88,7 +92,13 @@ def execute_tool_calling_loop(
         for tool_call in tool_calls:
             tool_name = tool_call.get("name", "unknown")
             tool_args = tool_call.get("args", {})
-            tool_call_id = tool_call.get("id", "")
+            # Some model providers don't include "id" in tool_calls.
+            # Generate a UUID and inject it back into the tool_call dict
+            # so the AIMessage and ToolMessage share the same id.
+            tool_call_id = tool_call.get("id")
+            if not tool_call_id:
+                tool_call_id = str(uuid.uuid4())
+                tool_call["id"] = tool_call_id
 
             # Callback for logging
             if on_tool_call:

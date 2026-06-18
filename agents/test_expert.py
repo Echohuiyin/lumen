@@ -167,22 +167,22 @@ Do not say you "cannot execute" — the tools give you that ability."""
         has_tool_calls = any(isinstance(m, TM) for m in messages)
 
         if not has_tool_calls:
-            # LLM did not call any tools — force execute at minimum check_qemu_available
+            # LLM did not call any tools — force execute check_qemu_available
+            # and inject result as HumanMessage (NOT ToolMessage, which would
+            # require a matching AIMessage tool_calls that the API would reject)
             from agents.qemu_tools import check_qemu_available as check_qemu
             qemu_status = check_qemu("x86_64")
-            messages.append(AIMessage(content=""))
-            messages.append(TM(content=qemu_status, tool_call_id="forced", name="check_qemu_available"))
 
-            force_msg = HumanMessage(content=f"""QEMU availability check result:
+            force_msg = HumanMessage(content=f"""QEMU availability was checked automatically:
 
 {qemu_status}
 
-Based on this result, you MUST now proceed with the verification.
-If QEMU is available, use boot_kernel() to test the kernel.
+Based on this result, you MUST now proceed with the verification by calling the tools.
+If QEMU is available, use create_initramfs() then boot_kernel() to test the kernel.
 If QEMU is not available, report REPRODUCE: FAILED with the reason.
 Do not describe what you would do — call the tools.""")
-
             messages.append(force_msg)
+
             response = execute_tool_calling_loop(
                 llm=llm,
                 messages=messages,
