@@ -502,6 +502,8 @@ ANALYSIS:
 
 
 
+
+
 ### 影响范围
 <问题的影响范围和严重程度>
 
@@ -522,6 +524,12 @@ ANALYSIS:
   - `/kernel-build` 编译带复现器的内核
   - `/qemu-test` 在 QEMU 中测试复现
   - `/kernel-test-validator` 综合验证
+
+
+
+
+
+
 
 
 
