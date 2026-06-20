@@ -57,6 +57,9 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
 
 def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:
     """从 PM 输出中解析需要的专家类型列表。"""
+    valid_types = {exp["type"] for exp in experts_config}
+    experts: list[str] = []
+
     # 尝试从 REQUIRED_EXPERTS: 标记后解析
     marker = "REQUIRED_EXPERTS:"
     if marker in text:
@@ -69,22 +72,24 @@ def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:
                 rest = rest[:end_idx]
         # 解析为列表
         experts = [e.strip().strip("-").strip() for e in rest.split("\n") if e.strip()]
-        # 验证专家类型是否在配置中
-        valid_types = {exp["type"] for exp in experts_config}
-        return [e for e in experts if e in valid_types]
+    else:
+        # 回退：根据关键词匹配
+        for exp in experts_config:
+            exp_type = exp["type"]
+            if exp_type in text:
+                experts.append(exp_type)
 
     # Deduplication: crash_analysis and lock_analysis both use crash sessions.
     # If both are selected, keep only lock_analysis (it produces better lock analysis).
     if "crash_analysis" in experts and "lock_analysis" in experts:
         experts.remove("crash_analysis")
 
-    # 回退：根据关键词匹配
-    valid_types = {exp["type"] for exp in experts_config}
-    found = []
-    for exp_type in valid_types:
-        if exp_type in text:
-            found.append(exp_type)
-    return found if found else [experts_config[0]["type"]] if experts_config else []
+    filtered = []
+    for expert in experts:
+        if expert in valid_types and expert not in filtered:
+            filtered.append(expert)
+
+    return filtered if filtered else [experts_config[0]["type"]] if experts_config else []
 
 
 def _create_issue_stub(user_input: str) -> tuple[str, str]:

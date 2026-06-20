@@ -64,13 +64,22 @@ def _run_kernel_expert_with_tools(
 - Kernel Version: {os.uname().release}
 - Arch: {os.uname().machine}
 
-You have these file and compilation tools:
+You have these tools:
 - create_directory: create a directory for the reproducer
 - write_file: write source code, Makefile, README, etc.
 - read_file: read file contents to verify
 - compile_module: compile a kernel module (.ko)
 - check_file_exists: verify file existence
-- bash: run shell commands for additional operations
+- list_directory: inspect generated files or source directories
+- search_files: search source and generated files with ripgrep
+- bash: run controlled shell commands for inspection/build operations
+
+Tool use rules:
+- Use write_file for file creation. Do not use bash heredocs for generated source files.
+- Use compile_module for kernel module builds before trying bash make commands.
+- Use search_files for code search before using bash grep/find.
+- Use bash only when the dedicated tools do not cover the operation.
+- The bash tool blocks dangerous commands and system-path writes; keep commands read-only or build-focused.
 
 Suggested workflow:
 1. Analyze the root cause and plan the reproducer strategy

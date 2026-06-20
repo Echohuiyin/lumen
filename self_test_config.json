@@ -86,6 +86,16 @@
       }
     },
     {
+      "type": "lock_analysis",
+      "name": "锁分析专家",
+      "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
+      "agent": {
+        "prompt_file": "prompts/maintenance/lock_analysis.md",
+        "model_name": "GLM-5",
+        "temperature": 0
+      }
+    },
+    {
       "type": "kernel_log_analysis",
       "name": "内核日志分析专家",
       "description": "分析内核日志（dmesg/logcat等），提取关键错误信息和异常模式",

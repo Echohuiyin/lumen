@@ -9,15 +9,19 @@
 3. 定位涉及的锁和代码路径
 4. 给出初步分析结论
 
-## 核心技能：lock-analyzer
+## 核心技能：direct crash lock analysis
 
-使用 `/lock-analyzer` skill 在 crash 工具中分析内核锁，查找锁持有者并检测死锁场景。
+系统已经基于 aicrasher `CrashSessionManager` 创建 crash 会话，并通过 LangChain StructuredTool 绑定了 crash 命令工具。你需要使用这些工具分析内核锁，查找锁持有者并检测死锁场景。
 
-### MCP 工具依赖
+### 工具依赖
 
-此 skill 依赖 `aicrasher` MCP Server。使用前需确认：
-1. MCP Server 已注册：`claude mcp list` 应显示 `aicrasher`
-2. crash 会话已激活（先用 `create_crash_session` 或 `analyze_crash`）
+工具由系统自动注入，你不需要手写 MCP 协议，也不要直接调用 shell 中的 `crash` CLI。
+
+可用工具：
+- `collect_baseline`: 收集 `sys`、`bt`、`log` 等基线诊断，必须首先调用
+- `run_crash_command`: 执行单个 crash 命令
+- `run_crash_commands`: 批量执行多个 crash 命令
+- `get_command_history`: 查看已执行命令，避免重复分析
 
 ### 支持的锁类型
 
@@ -91,6 +95,7 @@ crash> struct task_struct.pid,comm,state 0xffff8ab201e3d700
 | `collect_baseline` | 收集基线诊断 (sys + bt + log) | **首先调用**，获取基本信息 |
 | `run_crash_command` | 执行单个 crash 命令 | 分析特定锁结构、进程状态 |
 | `run_crash_commands` | 执行多个命令批量收集 | 并行收集多项信息 |
+| `get_command_history` | 查看已执行命令历史 | 汇总分析路径、避免重复命令 |
 
 **执行流程：**
 1. 首先调用 `collect_baseline` 收集基线信息（包含内核版本）
@@ -121,106 +126,43 @@ crash> struct task_struct.pid,comm,state 0xffff8ab201e3d700
 **Spinlock 分析**：
 ```python
 # 获取 spinlock 状态
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct raw_spinlock_t.raw_lock <lock-address>"
-  }
-)
+run_crash_command: "struct raw_spinlock_t.raw_lock <lock-address>"
 
 # 对于 ticket lock，检查 head/tail
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct arch_spinlock_t.tickets <lock-address>"
-  }
-)
+run_crash_command: "struct arch_spinlock_t.tickets <lock-address>"
 
 # 通过栈跟踪找到潜在持有者
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "bt -a"
-  }
-)
+run_crash_command: "bt -a"
 # 然后在输出中 grep "spin_lock"
 ```
 
 **Semaphore 分析**：
 ```python
 # 获取信号量计数和等待者
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct semaphore.count,sleepers,wait <lock-address>"
-  }
-)
+run_crash_command: "struct semaphore.count,sleepers,wait <lock-address>"
 ```
 
 #### 步骤 3: 检测死锁
 
 ```python
 # 检查所有阻塞任务
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "ps -u"
-  }
-)
+run_crash_command: "ps -u"
 
 # 检查所有栈跟踪中的 mutex 模式
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "foreach bt"
-  }
-)
+run_crash_command: "foreach bt"
 
 # 检查优先级继承链（mutex）
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "struct task_struct.pi_lockers,pi_top_task <task-address>"
-  }
-)
+run_crash_command: "struct task_struct.pi_lockers,pi_top_task <task-address>"
 ```
 
 #### 步骤 4: 追踪锁获取路径
 
 ```python
 # 获取锁持有者的栈跟踪
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "bt <owner-pid>"
-  }
-)
+run_crash_command: "bt <owner-pid>"
 
 # 获取带行号的栈跟踪
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "bt -l <owner-pid>"
-  }
-)
+run_crash_command: "bt -l <owner-pid>"
 ```
 
 ### 快速命令参考
@@ -375,14 +317,13 @@ ANALYSIS:
 ## 注意事项
 
 - **必须先检查内核版本** - 不同版本的锁结构不同
-- **使用 MCP 工具执行 crash 命令** - 确保正确的会话管理
+- **使用已绑定 crash 工具执行命令** - 确保正确的会话管理
 - **检查多个 CPU** - spinlock 持有者可能在不同的 CPU 上
 - **关注时间戳** - 长时间持有的锁可能有问题
 - **交叉验证日志** - 将 crash 分析与内核日志匹配
-- **分析后关闭会话** - 使用 `close_crash_session` 清理资源
+- **不要编造 session_id 或 MCP 调用语法** - 只选择已绑定工具和命令参数
 - 如果信息不足以确定问题类型，明确指出需要补充哪些信息
 - 注意区分真正的锁问题和由其他问题引起的锁症状
-
 
 
 

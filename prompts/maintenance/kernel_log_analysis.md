@@ -13,20 +13,13 @@
 
 内核日志分析通常与以下 skill 配合使用：
 
-### vmcore-analyzer（如有 vmcore）
+### direct crash tools（如有 vmcore）
 
-如果用户同时提供了 vmcore 文件，使用 `/vmcore-analyzer` skill 的日志分析部分：
+如果用户同时提供了 vmcore 和 vmlinux 文件，系统会通过 aicrasher `CrashSessionManager` 读取 vmcore。你不需要手写 MCP 协议；如需描述工具使用，使用已绑定 crash 工具表达。
 
 ```python
-# 通过 MCP 获取内核日志
-mcp_call_tool(
-  serverName: "aicrasher",
-  toolName: "run_crash_command",
-  arguments: {
-    "session_id": "<session_id>",
-    "command": "log | tail -n 200"
-  }
-)
+# 获取内核日志
+run_crash_command: "log | tail -n 200"
 ```
 
 ### rag-case-retrieval（历史案例）

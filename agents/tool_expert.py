@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from agents.llm_display import call_llm_with_display, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.rag_integration import get_rag_context_for_query
-from config import get_llm_with_config, load_prompt_from_file, create_crash_session
+from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
 
 
@@ -430,8 +430,9 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
         vmcore_path = _resolve_file_path(vmcore_path_raw, try_suffixes=[".elf"])
         vmlinux_path = _resolve_file_path(vmlinux_path_raw) if vmlinux_path_raw else None
         vmcore_exists = _check_file_exists(vmcore_path_raw)
+        vmlinux_exists = _check_file_exists(vmlinux_path_raw)
 
-        if vmcore_path_raw and vmlinux_path_raw and vmcore_exists:
+        if vmcore_path_raw and vmlinux_path_raw and vmcore_exists and vmlinux_exists:
             # 使用 crash 工具提取内核日志
             header = _format_agent_header_text(expert_name, "分析中 (工具调用)")
             with open(output_file, "w", encoding="utf-8") as f:

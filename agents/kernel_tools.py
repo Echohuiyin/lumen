@@ -8,14 +8,65 @@
 - read_file: 读取文件内容
 - compile_module: 编译内核模块
 - check_file_exists: 检查文件是否存在
+- list_directory: 列出目录内容
+- search_files: 使用 rg 搜索源码/输出文件
+- bash: 运行受控 shell 命令
 """
 
 from pathlib import Path
 from typing import Optional
 import os
+import re
+import shlex
 import subprocess
 
 from langchain_core.tools import StructuredTool
+
+from paths import PROJECT_ROOT
+
+
+MAX_OUTPUT_CHARS = 20000
+MAX_BASH_TIMEOUT = 300
+
+BLOCKED_BASH_PATTERNS = [
+    r"\bsudo\b",
+    r"\bsu\s",
+    r"\brm\s+-[^;&|]*r[^;&|]*f\b",
+    r"\bdd\s+.*\bof=",
+    r"\bmkfs(?:\.\w+)?\b",
+    r"\bmount\b",
+    r"\bumount\b",
+    r"\breboot\b",
+    r"\bshutdown\b",
+    r"\bpoweroff\b",
+    r"\bcurl\b.*\|\s*(?:sh|bash)",
+    r"\bwget\b.*\|\s*(?:sh|bash)",
+    r">\s*/(?:etc|boot|usr|bin|sbin|lib|lib64|proc|sys|dev)/",
+    r">>\s*/(?:etc|boot|usr|bin|sbin|lib|lib64|proc|sys|dev)/",
+]
+
+
+def _truncate_output(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n... <truncated {len(text) - limit} chars>"
+
+
+def _resolve_workdir(workdir: str | None = None) -> Path:
+    """Resolve a command workdir and keep relative paths under PROJECT_ROOT."""
+    if not workdir:
+        return PROJECT_ROOT
+    expanded = Path(os.path.expanduser(workdir))
+    if not expanded.is_absolute():
+        expanded = PROJECT_ROOT / expanded
+    return expanded.resolve()
+
+
+def _is_blocked_command(command: str) -> str | None:
+    for pattern in BLOCKED_BASH_PATTERNS:
+        if re.search(pattern, command):
+            return pattern
+    return None
 
 
 def create_directory(path: str) -> str:
@@ -137,6 +188,126 @@ def check_file_exists(file_path: str) -> str:
         return f"✗ Error checking file {file_path}: {str(e)}"
 
 
+def list_directory(path: str = ".", max_entries: int = 200) -> str:
+    """List directory contents.
+
+    Args:
+        path: Directory path to list
+        max_entries: Maximum number of entries to return
+
+    Returns:
+        Directory listing or error description
+    """
+    try:
+        target = _resolve_workdir(path)
+        if not target.exists():
+            return f"✗ Directory not found: {target}"
+        if not target.is_dir():
+            return f"✗ Not a directory: {target}"
+
+        entries = sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+        lines = [f"Directory: {target}"]
+        for entry in entries[:max_entries]:
+            kind = "dir " if entry.is_dir() else "file"
+            size = "" if entry.is_dir() else f" {entry.stat().st_size} bytes"
+            lines.append(f"{kind:4} {entry.name}{size}")
+        if len(entries) > max_entries:
+            lines.append(f"... <truncated {len(entries) - max_entries} entries>")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"✗ Error listing directory {path}: {str(e)}"
+
+
+def search_files(pattern: str, path: str = ".", file_glob: Optional[str] = None, max_results: int = 100) -> str:
+    """Search files using ripgrep.
+
+    Args:
+        pattern: Text or regex pattern to search
+        path: Directory or file path to search
+        file_glob: Optional rg glob, e.g. '*.c'
+        max_results: Maximum matching lines to return
+
+    Returns:
+        Search results or error description
+    """
+    try:
+        search_path = _resolve_workdir(path)
+        if not search_path.exists():
+            return f"✗ Search path not found: {search_path}"
+
+        cmd = ["rg", "-n", "--no-heading", "--color", "never"]
+        if file_glob:
+            cmd.extend(["-g", file_glob])
+        cmd.extend([pattern, str(search_path)])
+
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        output = result.stdout if result.stdout else result.stderr
+        if result.returncode == 1:
+            return f"No matches for {pattern!r} in {search_path}"
+        if result.returncode != 0:
+            return f"✗ rg failed (exit {result.returncode}):\n{_truncate_output(output)}"
+
+        lines = output.splitlines()
+        limited = "\n".join(lines[:max_results])
+        if len(lines) > max_results:
+            limited += f"\n... <truncated {len(lines) - max_results} matches>"
+        return _truncate_output(limited)
+    except subprocess.TimeoutExpired:
+        return "✗ Search timeout (>30s)"
+    except FileNotFoundError:
+        return "✗ rg not found; install ripgrep or use bash with grep as fallback"
+    except Exception as e:
+        return f"✗ Error searching files: {str(e)}"
+
+
+def bash(command: str, workdir: str = ".", timeout: int = 60) -> str:
+    """Run a controlled shell command.
+
+    Args:
+        command: Shell command to run
+        workdir: Working directory, project-relative by default
+        timeout: Timeout in seconds, capped at 300
+
+    Returns:
+        Command output with return code, stdout, and stderr
+    """
+    blocked = _is_blocked_command(command)
+    if blocked:
+        return f"✗ Command blocked by safety policy (pattern: {blocked})"
+
+    try:
+        cwd = _resolve_workdir(workdir)
+        if not cwd.exists() or not cwd.is_dir():
+            return f"✗ Invalid working directory: {cwd}"
+
+        safe_timeout = max(1, min(int(timeout), MAX_BASH_TIMEOUT))
+        result = subprocess.run(
+            ["bash", "-lc", command],
+            cwd=str(cwd),
+            capture_output=True,
+            text=True,
+            timeout=safe_timeout,
+        )
+
+        output = (
+            f"Command: {command}\n"
+            f"Workdir: {cwd}\n"
+            f"Return code: {result.returncode}\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+        return _truncate_output(output)
+    except subprocess.TimeoutExpired:
+        return f"✗ Command timeout (>{timeout}s): {command}"
+    except Exception as e:
+        return f"✗ Error running command {shlex.quote(command)}: {str(e)}"
+
+
 def create_kernel_tools() -> list:
     """Create kernel expert tool set.
 
@@ -168,6 +339,25 @@ def create_kernel_tools() -> list:
             name="check_file_exists",
             func=check_file_exists,
             description="Check if file exists",
+        ),
+        StructuredTool.from_function(
+            name="list_directory",
+            func=list_directory,
+            description="List directory contents with stable, truncated output",
+        ),
+        StructuredTool.from_function(
+            name="search_files",
+            func=search_files,
+            description="Search files using ripgrep; prefer this over bash grep for code search",
+        ),
+        StructuredTool.from_function(
+            name="bash",
+            func=bash,
+            description=(
+                "Run a controlled shell command for inspection or build operations. "
+                "Prefer dedicated tools for file writes and module compilation. "
+                "Dangerous commands such as sudo, rm -rf, mount, reboot, mkfs, and system-path writes are blocked."
+            ),
         ),
     ]
     return tools
