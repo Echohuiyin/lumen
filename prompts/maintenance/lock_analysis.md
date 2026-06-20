@@ -261,7 +261,7 @@ struct task_struct.pi_top_task <task_addr>  # 优先级继承
 
 ### 与其他 Skill 的集成
 
-- 使用 `/vmcore-analyzer` skill 进行完整的 vmcore 分析工作流
+- 使用 crash_analysis 的 direct crash tools 进行完整的 vmcore 分析工作流
 - 使用 `/kernel-build` skill 编译带特定锁补丁的内核
 - 使用 `/qemu-test` 测试带特定锁补丁的内核
 
@@ -324,7 +324,6 @@ ANALYSIS:
 - **不要编造 session_id 或 MCP 调用语法** - 只选择已绑定工具和命令参数
 - 如果信息不足以确定问题类型，明确指出需要补充哪些信息
 - 注意区分真正的锁问题和由其他问题引起的锁症状
-
 
 
 

@@ -36,13 +36,13 @@
 <knowledge_search expert 的关键发现，包括相似案例和参考价值>
 
 #### Crash 分析
-<crash_analysis expert 使用 /vmcore-analyzer 的分析结果>
+<crash_analysis expert 使用已绑定 crash 工具得到的分析结果>
 - Panic 类型：<识别的类型>
 - 根因分类：<内核缺陷 / 非内核缺陷 / 存疑>
 - 关键调用栈：<提取的核心调用栈>
 
 #### 锁分析
-<lock_analysis expert 使用 /lock-analyzer 的分析结果>
+<lock_analysis expert 使用已绑定 crash 工具得到的分析结果>
 - 锁问题类型：<死锁/竞争/顺序/泄漏>
 - 涉及的锁：<锁类型和地址>
 - 死锁链条：<如果存在>
@@ -165,4 +165,4 @@ python ~/.claude/skills/rag-case-retrieval/scripts/import_from_zip.py --zip know
 - 触发条件链必须具体到应用/业务层面
 - 内核参数建议必须经过因果有效性验证
 - 区分"内核缺陷"和"非内核缺陷"，影响后续搜索和归档方向
-- 包含所有 skill 的关键输出（vmcore-analyzer、lock-analyzer、kernel-testcase-generator 等）
+- 包含所有专家的关键输出（crash_analysis、lock_analysis、kernel_expert、test_expert 等）

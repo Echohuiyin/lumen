@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -70,8 +71,13 @@ def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:
             end_idx = rest.find(end_marker)
             if end_idx > 0:
                 rest = rest[:end_idx]
-        # 解析为列表
-        experts = [e.strip().strip("-").strip() for e in rest.split("\n") if e.strip()]
+        # 支持逐行、逗号分隔、JSON-like 列表等常见输出形式。
+        raw_experts = re.split(r"[\n,，]+", rest)
+        experts = [
+            e.strip().strip("-*[]`'\"").strip()
+            for e in raw_experts
+            if e.strip().strip("-*[]`'\"").strip()
+        ]
     else:
         # 回退：根据关键词匹配
         for exp in experts_config:

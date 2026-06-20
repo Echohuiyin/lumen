@@ -243,6 +243,8 @@ def boot_kernel(
                     break
 
         panic_detected = "Kernel panic" in boot_log or "BUG:" in boot_log
+        boot_log_lines = boot_log.splitlines()
+        last_lines = "\n".join(boot_log_lines[-20:]) if len(boot_log_lines) > 20 else boot_log
 
         return f"""{status}
   Kernel: {kernel_path}
@@ -259,7 +261,7 @@ Kernel Version: {kernel_version}
 Panic Detected: {panic_detected}
 
 Last 20 lines:
-{boot_log.split('\n')[-20:] if len(boot_log.split('\n')) > 20 else boot_log}
+{last_lines}
 """
 
     except subprocess.TimeoutExpired:
@@ -317,6 +319,7 @@ def analyze_boot_log(
                 findings.append(f"  ... and {len(matches) - 1} more matches")
 
     if findings:
+        total_lines = len(log_content.splitlines())
         return f"""Boot Log Analysis
 Log: {log_path}
 Size: {len(log_content)} bytes
@@ -325,7 +328,7 @@ Key Findings:
 {''.join(findings)}
 
 Summary:
-- Total lines: {len(log_content.split('\\n'))}
+- Total lines: {total_lines}
 - Error patterns found: {len(findings)}
 """
     else:

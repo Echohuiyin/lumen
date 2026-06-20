@@ -27,6 +27,7 @@ from paths import PROJECT_ROOT
 
 MAX_OUTPUT_CHARS = 20000
 MAX_BASH_TIMEOUT = 300
+PROTECTED_ABSOLUTE_PATHS = ("/etc", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/proc", "/sys", "/dev")
 
 BLOCKED_BASH_PATTERNS = [
     r"\bsudo\b",
@@ -41,6 +42,8 @@ BLOCKED_BASH_PATTERNS = [
     r"\bpoweroff\b",
     r"\bcurl\b.*\|\s*(?:sh|bash)",
     r"\bwget\b.*\|\s*(?:sh|bash)",
+    r"\b(?:touch|cp|mv|chmod|chown|ln|mkdir|rmdir|install|truncate|tee)\b",
+    r"\b(?:python|python3|perl|ruby|node)\b\s+-[ce]",
     r">\s*/(?:etc|boot|usr|bin|sbin|lib|lib64|proc|sys|dev)/",
     r">>\s*/(?:etc|boot|usr|bin|sbin|lib|lib64|proc|sys|dev)/",
 ]
@@ -62,10 +65,21 @@ def _resolve_workdir(workdir: str | None = None) -> Path:
     return expanded.resolve()
 
 
+def _is_relative_to(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
+
+
 def _is_blocked_command(command: str) -> str | None:
     for pattern in BLOCKED_BASH_PATTERNS:
         if re.search(pattern, command):
             return pattern
+    for protected_path in PROTECTED_ABSOLUTE_PATHS:
+        if re.search(rf"(?<![\w.-]){re.escape(protected_path)}(?:/|\b)", command):
+            return f"protected path: {protected_path}"
     return None
 
 
@@ -284,6 +298,8 @@ def bash(command: str, workdir: str = ".", timeout: int = 60) -> str:
         cwd = _resolve_workdir(workdir)
         if not cwd.exists() or not cwd.is_dir():
             return f"✗ Invalid working directory: {cwd}"
+        if not _is_relative_to(cwd, PROJECT_ROOT):
+            return f"✗ Workdir outside project is not allowed for bash: {cwd}"
 
         safe_timeout = max(1, min(int(timeout), MAX_BASH_TIMEOUT))
         result = subprocess.run(

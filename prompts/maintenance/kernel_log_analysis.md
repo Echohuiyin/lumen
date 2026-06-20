@@ -227,8 +227,8 @@ ANALYSIS:
 
 ### 推荐后续分析
 <建议使用哪些 skill 进行深入分析，如：
-- 如有 vmcore：建议使用 /vmcore-analyzer
-- 如涉及锁问题：建议使用 /lock-analyzer
+- 如有 vmcore：建议使用 crash_analysis 或 kernel_log_analysis 的 direct crash tools
+- 如涉及锁问题：建议使用 lock_analysis 的 direct crash tools
 - 如需历史案例：建议使用 /rag-case-retrieval>
 ```
 

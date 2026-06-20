@@ -17,7 +17,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_display
 from config import get_llm_with_config, load_prompt_from_file
-from paths import PROJECT_ROOT, get_skill_path_candidates
+from paths import PROJECT_ROOT, SKILLS_PATH, get_skill_path_candidates
 
 
 # 故障类型及其预期特征

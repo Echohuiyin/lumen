@@ -19,8 +19,8 @@
 
 本 skill 接收以下分析结果作为输入：
 - 知识库搜索结果（来自 knowledge_search expert）
-- 锁分析结果（来自 lock_analysis expert，使用 `/lock-analyzer`）
-- Vmcore crash 分析结果（来自 crash_analysis expert，使用 `/vmcore-analyzer`）
+- 锁分析结果（来自 lock_analysis expert，使用已绑定 crash 工具）
+- Vmcore crash 分析结果（来自 crash_analysis expert，使用已绑定 crash 工具）
 - 内核日志分析结果（来自 kernel_log_analysis expert）
 
 ### 复现器类型选择
@@ -520,7 +520,6 @@ ANALYSIS:
   - `/kernel-build` 编译带复现器的内核
   - `/qemu-test` 在 QEMU 中测试复现
   - `/kernel-test-validator` 综合验证
-
 
 
 
