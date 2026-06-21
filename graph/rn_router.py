@@ -34,9 +34,16 @@ def route_after_pm(state: MaintenanceWorkflowState):
 
 
 def route_after_kernel(state: MaintenanceWorkflowState):
-    """Kernel Expert 后路由：只有产出可测试内容时才进入 Test Expert。"""
+    """Kernel Expert 后路由：结构化契约齐全时才进入 Test Expert。"""
+    contract = state.get("kernel_contract") or {}
+    if contract:
+        required = ("target_arch", "boot_kernel_path", "test_script_path", "expected_signal")
+        if contract.get("status") == "ok" and all(contract.get(field) for field in required):
+            return "test_expert"
+        return "knowledge_base"
+
     if state.get("kernel_ready_for_test") is False:
-        return END
+        return "knowledge_base"
 
     if state.get("final_response") and not state.get("reproduce_case"):
         return END

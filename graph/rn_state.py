@@ -31,6 +31,7 @@ class MaintenanceWorkflowState(TypedDict):
     validation_feedback: str
     # PM 输出
     required_experts: list[str]       # 需要调用的专家类型列表
+    pm_routing_reason: str            # PM 规则化分类原因
     issue_id: str                     # 创建的 issue ID（打桩）
     issue_url: str                    # issue URL（打桩）
     # Fan-out 传参（Send 设置）
@@ -42,6 +43,7 @@ class MaintenanceWorkflowState(TypedDict):
     kernel_diagnosis: str             # 内核维测方案
     kernel_analysis: str              # 完整分析内容
     kernel_ready_for_test: bool        # 内核专家是否产出了可交给测试专家验证的内容
+    kernel_contract: dict              # 结构化内核专家输出（测试交接契约）
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
     boot_kernel_path: str              # QEMU 可启动内核镜像路径（bzImage/Image）
     reproducer_dir: str                # 复现用例目录
@@ -74,6 +76,7 @@ def make_initial_state(user_input: str = "", config_path: str = "config.json") -
         "validation_passed": False,
         "validation_feedback": "",
         "required_experts": [],
+        "pm_routing_reason": "",
         "issue_id": "",
         "issue_url": "",
         "expert_type": "",
@@ -82,6 +85,7 @@ def make_initial_state(user_input: str = "", config_path: str = "config.json") -
         "kernel_diagnosis": "",
         "kernel_analysis": "",
         "kernel_ready_for_test": True,
+        "kernel_contract": {},
         "target_arch": "",
         "boot_kernel_path": "",
         "reproducer_dir": "",

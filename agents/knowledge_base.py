@@ -32,6 +32,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"用户输入:\n{state['user_input']}\n\n"
         f"## 工具专家分析结果\n" + "\n\n".join(expert_summaries) + "\n\n"
         f"## 内核专家分析\n{state.get('kernel_analysis', '')}\n\n"
+        f"## 结构化内核专家契约\n{state.get('kernel_contract', {})}\n\n"
         f"## 复现用例\n{state.get('reproduce_case', '')}\n\n"
         f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
         f"## 结构化测试契约\n"

@@ -1,4 +1,3 @@
-import json
 import re
 from pathlib import Path
 
@@ -16,6 +15,21 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
     2. 创建 issue（打桩）
     """
     config = state.get("config", {})
+    experts_config = config.get("tool_experts", [])
+
+    rule_experts, routing_reason = _select_required_experts_by_rules(
+        state.get("user_input", ""),
+        experts_config,
+    )
+    if rule_experts:
+        issue_id, issue_url = _create_issue_stub(state["user_input"])
+        return {
+            "required_experts": rule_experts,
+            "pm_routing_reason": routing_reason,
+            "issue_id": issue_id,
+            "issue_url": issue_url,
+        }
+
     agent_config = config.get("agents", {}).get("pm", {})
     default_config = config.get("default", {})
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="pm")
@@ -24,7 +38,6 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
     )
 
     # 构建可用专家列表信息
-    experts_config = config.get("tool_experts", [])
     experts_desc = []
     for exp in experts_config:
         experts_desc.append(f"- {exp['type']}: {exp.get('name', exp['type'])} — {exp.get('description', '')}")
@@ -51,9 +64,55 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
 
     return {
         "required_experts": required_experts,
+        "pm_routing_reason": "llm_fallback",
         "issue_id": issue_id,
         "issue_url": issue_url,
     }
+
+
+def _select_required_experts_by_rules(user_input: str, experts_config: list[dict]) -> tuple[list[str], str]:
+    """Select tool experts with deterministic rules before falling back to LLM."""
+    valid_types = {exp["type"] for exp in experts_config}
+    if not valid_types:
+        return [], "no_tool_experts_configured"
+
+    text = user_input.lower()
+    selected: list[str] = []
+    reasons: list[str] = []
+
+    def add(expert_type: str, reason: str) -> None:
+        if expert_type in valid_types and expert_type not in selected:
+            selected.append(expert_type)
+            reasons.append(reason)
+
+    has_vmcore = bool(re.search(r"\bvmcore\b|/proc/vmcore|kdump", text))
+    has_vmlinux = "vmlinux" in text
+    has_log = bool(re.search(r"\bdmesg\b|\bconsole\b|\blog\b|call trace|stack trace|oops", text))
+    lock_issue = bool(re.search(r"deadlock|hung task|blocked for more than|soft lockup|hard lockup|lockdep|mutex|spinlock|rwsem|semaphore|d state", text))
+    crash_issue = bool(re.search(r"panic|oops|null pointer|unable to handle|kernel bug|bug:|crash|segfault|general protection fault", text))
+    memory_issue = bool(re.search(r"oom|out of memory|page fault|slab|kmemleak|use-after-free|uaf|double free", text))
+
+    if lock_issue:
+        add("lock_analysis", "lock_or_hung_task_keywords")
+        add("kernel_log_analysis", "lock_issues_need_log_timeline")
+    if crash_issue or memory_issue or (has_vmcore and has_vmlinux):
+        add("crash_analysis", "crash_or_vmcore_keywords")
+    if has_log or lock_issue or crash_issue:
+        add("kernel_log_analysis", "log_or_stack_keywords")
+
+    add("knowledge_search", "always_include_historical_cases")
+
+    if "crash_analysis" in selected and "lock_analysis" in selected:
+        selected.remove("crash_analysis")
+        reasons.append("dedupe_crash_when_lock_analysis_selected")
+
+    if not selected:
+        for fallback in ("knowledge_search", "kernel_log_analysis", "crash_analysis"):
+            if fallback in valid_types:
+                add(fallback, "conservative_default")
+                break
+
+    return selected, ", ".join(reasons) if reasons else "no_rule_match"
 
 
 def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:

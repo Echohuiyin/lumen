@@ -367,9 +367,8 @@ content="<编译输出>"
 
 ### 输出格式更新
 
-输出必须包含实际创建的文件路径：
+输出必须包含实际创建的文件路径，并以 `KERNEL_CONTRACT` JSON 作为机器可读交接契约。`TARGET_ARCH` 等旧 marker 可以保留，但只能作为兼容信息；真正决定是否进入测试专家的是 `KERNEL_CONTRACT`。
 
-```
 REPRODUCE_CASE:
   source_file: outputs/<bug_id>_reproducer/reproducer.c
   makefile: outputs/<bug_id>_reproducer/Makefile
@@ -387,9 +386,46 @@ REPRODUCER_DIR: outputs/<bug_id>_reproducer
 REPRODUCER_MODULE_PATH: outputs/<bug_id>_reproducer/<name>.ko
 TEST_SCRIPT_PATH: outputs/<bug_id>_reproducer/test.sh
 EXPECTED_SIGNAL: <用于判断复现成功的 boot log 关键字，如 hung task / Kernel panic / BUG>
+
+KERNEL_CONTRACT:
+```json
+{
+  "status": "ok",
+  "target_arch": "x86_64",
+  "vmlinux_path": "",
+  "boot_kernel_path": "/path/to/linux/arch/x86/boot/bzImage",
+  "reproducer_dir": "outputs/<bug_id>_reproducer",
+  "reproducer_module_path": "outputs/<bug_id>_reproducer/<name>.ko",
+  "test_script_path": "outputs/<bug_id>_reproducer/test.sh",
+  "expected_signal": "Kernel panic",
+  "build_status": "passed",
+  "evidence": [],
+  "warnings": [],
+  "blocked_reason": ""
+}
 ```
 
 `test.sh` 必须适配 initramfs 环境：从 `/modules/<name>.ko` 加载模块，输出明确的测试开始、模块加载结果和用于匹配的复现证据；如果测试可以安全结束，打印 `Test completed with status: <code>`。
+
+如果缺少 `boot_kernel_path`、`target_arch`、`test_script_path` 或 `expected_signal`，不要把 `status` 写成 `ok`。使用：
+
+KERNEL_CONTRACT:
+```json
+{
+  "status": "blocked",
+  "target_arch": "",
+  "vmlinux_path": "",
+  "boot_kernel_path": "",
+  "reproducer_dir": "",
+  "reproducer_module_path": "",
+  "test_script_path": "",
+  "expected_signal": "",
+  "build_status": "skipped",
+  "evidence": [],
+  "warnings": [],
+  "blocked_reason": "missing bootable kernel image"
+}
+```
 
 ### 区分：描述 vs 创建
 
@@ -497,6 +533,24 @@ REPRODUCER_DIR: <实际创建的复现目录>
 REPRODUCER_MODULE_PATH: <实际编译出的 .ko 路径；如果编译失败写 N/A>
 TEST_SCRIPT_PATH: <实际创建的 initramfs 测试脚本路径；如果未知写 N/A>
 EXPECTED_SIGNAL: <测试专家应在 QEMU boot log 中查找的复现证据>
+
+KERNEL_CONTRACT:
+```json
+{
+  "status": "ok | blocked | failed | degraded",
+  "target_arch": "x86_64 | arm64 | arm32",
+  "vmlinux_path": "",
+  "boot_kernel_path": "",
+  "reproducer_dir": "",
+  "reproducer_module_path": "",
+  "test_script_path": "",
+  "expected_signal": "",
+  "build_status": "passed | failed | skipped | unknown",
+  "evidence": [],
+  "warnings": [],
+  "blocked_reason": ""
+}
+```
 
 ANALYSIS:
 ### 综合分析

@@ -1,8 +1,11 @@
 from pathlib import Path
+import json
 import os
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
+from agents.contracts import KernelExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_persistence, display_expert_outputs, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.kernel_tools import create_kernel_tools
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
@@ -96,7 +99,28 @@ Notes:
 - Use correct kernel APIs (kthread_run, mutex_lock, etc.)
 - Makefile MUST use Tab indentation (not spaces)
 - The vmcore data provides the ground truth — reference real PIDs/addresses
-- End the response with these machine-readable markers when available:
+- End the response with a KERNEL_CONTRACT JSON object. Marker lines are accepted
+  only as fallback for older prompts.
+
+KERNEL_CONTRACT:
+```json
+{{
+  "status": "ok|blocked|failed|degraded",
+  "target_arch": "x86_64|arm64|arm32",
+  "vmlinux_path": "",
+  "boot_kernel_path": "<bootable bzImage/Image path, not ELF vmlinux>",
+  "reproducer_dir": "<directory containing generated reproducer files>",
+  "reproducer_module_path": "<compiled .ko path>",
+  "test_script_path": "<script that loads/runs the reproducer in initramfs>",
+  "expected_signal": "<boot log pattern proving reproduction>",
+  "build_status": "passed|failed|skipped",
+  "evidence": [],
+  "warnings": [],
+  "blocked_reason": ""
+}}
+```
+
+Fallback marker format:
   TARGET_ARCH: <x86_64|arm64|arm32>
   BOOT_KERNEL_PATH: <bootable bzImage/Image path, not ELF vmlinux>
   REPRODUCER_DIR: <directory containing generated reproducer files>
@@ -201,6 +225,12 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "reproduce_case": "",
             "kernel_diagnosis": "",
             "kernel_ready_for_test": False,
+            "kernel_contract": model_to_dict(KernelExpertOutput(
+                status="blocked",
+                build_status="blocked",
+                blocked_reason=f"kernel headers not found: {kernel_headers_path}",
+                warnings=[error_msg],
+            )),
             "final_response": error_msg,
         }
 
@@ -225,24 +255,37 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     reproducer_module_path = _extract_scalar_marker(text, "REPRODUCER_MODULE_PATH")
     test_script_path = _extract_scalar_marker(text, "TEST_SCRIPT_PATH")
     expected_signal = _extract_scalar_marker(text, "EXPECTED_SIGNAL")
+    kernel_contract = _extract_kernel_contract(text)
+    if not _kernel_contract_has_handoff(kernel_contract):
+        fallback_contract = _kernel_contract_from_markers(
+            target_arch=target_arch,
+            boot_kernel_path=boot_kernel_path,
+            reproducer_dir=reproducer_dir,
+            reproducer_module_path=reproducer_module_path,
+            test_script_path=test_script_path,
+            expected_signal=expected_signal,
+        )
+        kernel_contract = _merge_kernel_contract(kernel_contract, fallback_contract)
+
+    contract_ready = _kernel_contract_ready_for_test(kernel_contract)
 
     return {
         "kernel_analysis": text,
         "reproduce_case": reproduce_case or text,
         "kernel_diagnosis": kernel_diagnosis or "",
-        "kernel_ready_for_test": bool(reproduce_case or text),
-        "target_arch": target_arch,
-        "boot_kernel_path": boot_kernel_path,
-        "reproducer_dir": reproducer_dir,
-        "reproducer_module_path": reproducer_module_path,
-        "test_script_path": test_script_path,
-        "expected_signal": expected_signal,
+        "kernel_ready_for_test": contract_ready,
+        "kernel_contract": model_to_dict(kernel_contract),
+        "target_arch": kernel_contract.target_arch,
+        "boot_kernel_path": kernel_contract.boot_kernel_path,
+        "reproducer_dir": kernel_contract.reproducer_dir,
+        "reproducer_module_path": kernel_contract.reproducer_module_path,
+        "test_script_path": kernel_contract.test_script_path,
+        "expected_signal": kernel_contract.expected_signal,
     }
 
 
 def _extract_section(text: str, marker: str) -> str:
     """从文本中提取标记段落。"""
-    import re
     pattern = rf"{re.escape(marker)}:\s*\n?(.*?)(?:\n[A-Z_]+:|\Z)"
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
@@ -250,7 +293,6 @@ def _extract_section(text: str, marker: str) -> str:
 
 def _extract_scalar_marker(text: str, marker: str) -> str:
     """Extract a one-line marker value and ignore empty placeholders."""
-    import re
     match = re.search(rf"^{re.escape(marker)}:\s*(.+?)\s*$", text, re.MULTILINE)
     if not match:
         return ""
@@ -258,3 +300,109 @@ def _extract_scalar_marker(text: str, marker: str) -> str:
     if not value or value.startswith("<") or value.upper() in {"N/A", "NONE", "UNKNOWN"}:
         return ""
     return value
+
+
+def _model_validate(model_cls, data: dict):
+    if hasattr(model_cls, "model_validate"):
+        return model_cls.model_validate(data)
+    return model_cls.parse_obj(data)
+
+
+def _extract_kernel_contract(text: str) -> KernelExpertOutput:
+    """Extract JSON-first Kernel Expert contract from model output."""
+    candidates: list[str] = []
+    fenced = re.search(
+        r"KERNEL_CONTRACT:\s*```(?:json)?\s*(.*?)\s*```",
+        text,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if fenced:
+        candidates.append(fenced.group(1))
+    marker_idx = text.upper().find("KERNEL_CONTRACT:")
+    if marker_idx >= 0:
+        candidates.append(text[marker_idx + len("KERNEL_CONTRACT:"):])
+
+    for candidate in candidates:
+        try:
+            stripped = candidate.strip()
+            if stripped.startswith("```"):
+                stripped = stripped.strip("`").strip()
+                if stripped.lower().startswith("json"):
+                    stripped = stripped[4:].strip()
+            data, _ = json.JSONDecoder().raw_decode(stripped)
+            return _model_validate(KernelExpertOutput, data)
+        except Exception:
+            continue
+
+    return KernelExpertOutput(
+        status="degraded",
+        blocked_reason="missing or invalid KERNEL_CONTRACT JSON",
+        warnings=["Kernel Expert did not produce a valid KERNEL_CONTRACT JSON object"],
+    )
+
+
+def _kernel_contract_from_markers(
+    *,
+    target_arch: str,
+    boot_kernel_path: str,
+    reproducer_dir: str,
+    reproducer_module_path: str,
+    test_script_path: str,
+    expected_signal: str,
+) -> KernelExpertOutput:
+    missing = [
+        name for name, value in {
+            "target_arch": target_arch,
+            "boot_kernel_path": boot_kernel_path,
+            "test_script_path": test_script_path,
+            "expected_signal": expected_signal,
+        }.items()
+        if not value
+    ]
+    return KernelExpertOutput(
+        status="ok" if not missing else "blocked",
+        target_arch=target_arch,
+        boot_kernel_path=boot_kernel_path,
+        reproducer_dir=reproducer_dir,
+        reproducer_module_path=reproducer_module_path,
+        test_script_path=test_script_path,
+        expected_signal=expected_signal,
+        build_status="unknown",
+        warnings=["parsed from legacy marker lines"],
+        blocked_reason=f"missing test handoff fields: {', '.join(missing)}" if missing else "",
+    )
+
+
+def _merge_kernel_contract(primary: KernelExpertOutput, fallback: KernelExpertOutput) -> KernelExpertOutput:
+    """Fill missing JSON contract fields from legacy marker parsing."""
+    data = model_to_dict(primary)
+    fallback_data = model_to_dict(fallback)
+    for key, value in fallback_data.items():
+        if key in {"warnings", "evidence"}:
+            data[key] = (data.get(key) or []) + (value or [])
+        elif key == "status":
+            if data.get("status") in {"degraded", "blocked"} and value == "ok":
+                data[key] = value
+        elif key == "blocked_reason":
+            if fallback.status == "ok":
+                data[key] = ""
+            else:
+                data[key] = data.get(key) or value
+        elif not data.get(key) and value:
+            data[key] = value
+    return _model_validate(KernelExpertOutput, data)
+
+
+def _kernel_contract_has_handoff(contract: KernelExpertOutput) -> bool:
+    return bool(
+        contract.target_arch
+        and contract.boot_kernel_path
+        and contract.test_script_path
+        and contract.expected_signal
+    )
+
+
+def _kernel_contract_ready_for_test(contract: KernelExpertOutput) -> bool:
+    if contract.status != "ok":
+        return False
+    return _kernel_contract_has_handoff(contract)
