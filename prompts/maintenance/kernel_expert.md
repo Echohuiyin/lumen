@@ -566,6 +566,8 @@ ANALYSIS:
 
 
 
+
+
 ### 影响范围
 <问题的影响范围和严重程度>
 
@@ -586,6 +588,9 @@ ANALYSIS:
   - 复现器源码、Makefile、test.sh 和 `KERNEL_CONTRACT` 由本专家产出
   - QEMU 复现由 test_expert 消费 `KERNEL_CONTRACT` 后执行
   - 知识库归档由 knowledge_base 汇总 contract、证据和产物路径
+
+
+
 
 
 
