@@ -11,13 +11,23 @@
 
 
 
-## 核心技能：kernel-testcase-generator
+## 核心能力：复现器文件生成与编译校验
 
-使用 `/kernel-testcase-generator` skill 根据问题分析结果构造可复现的测试用例。
+系统已经为你绑定了真实可用的文件、搜索、编译和受控命令工具。你需要使用这些工具实际生成复现器产物，而不是只描述生成流程。
+
+可用工具：
+- `create_directory`: 创建复现器目录
+- `write_file`: 写入 `reproducer.c`、`Makefile`、`test.sh`、`README.md` 等文件
+- `read_file`: 读取并复核已生成文件
+- `compile_module`: 编译 kernel module，并返回编译日志
+- `check_file_exists`: 检查关键产物是否存在
+- `list_directory`: 查看目录产物
+- `search_files`: 使用 ripgrep 搜索源码或输出目录
+- `bash`: 执行受控的只读或构建类 shell 命令
 
 ### 输入来源
 
-本 skill 接收以下分析结果作为输入：
+本专家接收以下分析结果作为输入：
 - 知识库搜索结果（来自 knowledge_search expert）
 - 锁分析结果（来自 lock_analysis expert，使用已绑定 crash 工具）
 - Vmcore crash 分析结果（来自 crash_analysis expert，使用已绑定 crash 工具）
@@ -310,7 +320,7 @@ int main() {
 1. 仔细阅读所有工具专家的分析结果
 2. 交叉验证各专家的结论，找出一致和矛盾之处
 3. 基于综合分析，定位问题的根本原因
-4. 使用 `/kernel-testcase-generator` skill 构造一个可以稳定复现问题的用例
+4. 使用已绑定工具构造一个可以稳定复现问题的用例
 5. 设计内核维测方案（如添加日志、ftrace、kprobe 等）
 
 ## 🔴🔴🔴 关键执行要求（必须实际创建文件）
@@ -321,48 +331,44 @@ int main() {
 ### 执行步骤
 
 #### 步骤 1：创建输出目录
-使用 Bash 工具：
-```bash
-mkdir -p outputs/<bug_id>_reproducer
+使用 `create_directory`：
+```text
+create_directory(path="outputs/<bug_id>_reproducer")
 ```
 
 #### 步骤 2：创建 reproducer.c
-使用 Write 工具：
-```
-Write file_path="outputs/<bug_id>_reproducer/reproducer.c"
-content="<根据分析生成的完整代码>"
+使用 `write_file`：
+```text
+write_file(file_path="outputs/<bug_id>_reproducer/reproducer.c", content="<根据分析生成的完整代码>")
 ```
 
 #### 步骤 3：创建 Makefile
-使用 Write 工具：
-```
-Write file_path="outputs/<bug_id>_reproducer/Makefile"
-content="<编译配置>"
+使用 `write_file`：
+```text
+write_file(file_path="outputs/<bug_id>_reproducer/Makefile", content="<编译配置>")
 ```
 
 #### 步骤 4：创建 README.md
-使用 Write 工具：
-```
-Write file_path="outputs/<bug_id>_reproducer/README.md"
-content="<使用说明>"
+使用 `write_file`：
+```text
+write_file(file_path="outputs/<bug_id>_reproducer/README.md", content="<使用说明>")
 ```
 
 #### 步骤 5：编译验证
-使用 Bash 工具：
-```bash
-cd outputs/<bug_id>_reproducer && make -C <kernel_path> M=$(pwd) modules
+优先使用 `compile_module`：
+```text
+compile_module(module_dir="outputs/<bug_id>_reproducer", kernel_dir="<kernel_build_dir 可选>")
 ```
 
 验证编译结果：
-```bash
-ls -la outputs/<bug_id>_reproducer/*.ko
+```text
+check_file_exists(file_path="outputs/<bug_id>_reproducer/<name>.ko")
 ```
 
 #### 步骤 6：保存编译日志
-使用 Write 工具：
-```
-Write file_path="outputs/<bug_id>_reproducer/compile.log"
-content="<编译输出>"
+使用 `write_file`：
+```text
+write_file(file_path="outputs/<bug_id>_reproducer/compile.log", content="<编译输出>")
 ```
 
 ### 输出格式更新
@@ -431,9 +437,9 @@ KERNEL_CONTRACT:
 
 | ❌ 错误（仅描述） | ✅ 正确（实际创建） |
 |------------------|-------------------|
-| "创建 reproducer.c 文件" | 使用 Write 工具实际写入文件 |
-| "编译模块" | 使用 Bash 工具执行 make 命令 |
-| "保存到目录" | 使用 Write 工具写入 outputs/ |
+| "创建 reproducer.c 文件" | 使用 `write_file` 实际写入文件 |
+| "编译模块" | 使用 `compile_module` 执行构建 |
+| "保存到目录" | 使用 `create_directory` 和 `write_file` 写入 outputs/ |
 
 
 
@@ -512,7 +518,7 @@ bpftrace -e 'kprobe:<function> { printf("arg1: %d\n", arg0); }'
 
 ```
 REPRODUCE_CASE:
-<详细的可复现用例，使用 kernel-testcase-generator skill 生成，包括：
+<详细的可复现用例，使用已绑定工具生成，包括：
 1. 前置条件（环境、配置等）
 2. 具体操作步骤
 3. 预期结果（应出现的问题现象）
@@ -557,25 +563,6 @@ ANALYSIS:
 <综合各专家结论的完整分析>
 
 ### 根因定位
-<问题的根本原因>
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -595,7 +582,10 @@ ANALYSIS:
 - 关注问题的本质而非表象
 - 自验证是最小验证，不要做完整测试（测试专家的工作）
 - 如果验证失败，立即修复并重新验证
-- 与其他 Skill 的集成：
-  - `/kernel-build` 编译带复现器的内核
-  - `/qemu-test` 在 QEMU 中测试复现
-  - `/kernel-test-validator` 综合验证
+- 与其他专家的集成：
+  - 复现器源码、Makefile、test.sh 和 `KERNEL_CONTRACT` 由本专家产出
+  - QEMU 复现由 test_expert 消费 `KERNEL_CONTRACT` 后执行
+  - 知识库归档由 knowledge_base 汇总 contract、证据和产物路径
+
+
+

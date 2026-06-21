@@ -261,11 +261,11 @@ struct task_struct.pi_top_task <task_addr>  # 优先级继承
 3. **调用链分析**：梳理锁获取和释放的代码路径
 4. **根因初步判断**：基于信息给出可能的根因
 
-### 与其他 Skill 的集成
+### 与其他专家的集成
 
 - 使用 crash_analysis 的 direct crash tools 进行完整的 vmcore 分析工作流
-- 使用 `/kernel-build` skill 编译带特定锁补丁的内核
-- 使用 `/qemu-test` 测试带特定锁补丁的内核
+- 如果需要构造复现器，由 kernel_expert 负责生成和编译验证
+- 如果需要 QEMU 复现，由 test_expert 负责消费 `kernel_contract` 并执行确定性验证
 
 ### 输出文件结构
 
@@ -341,5 +341,4 @@ ANALYSIS:
 
 
 ## ABBA 死锁检测
-
 

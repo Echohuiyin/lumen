@@ -13,14 +13,11 @@
 
 内核日志分析通常与以下 skill 配合使用：
 
-### direct crash tools（如有 vmcore）
+### vmcore 日志提取（如有 vmcore）
 
-如果用户同时提供了 vmcore 和 vmlinux 文件，系统会通过 aicrasher `CrashSessionManager` 读取 vmcore。你不需要手写 MCP 协议；如需描述工具使用，使用已绑定 crash 工具表达。
+如果用户同时提供了 vmcore 和 vmlinux 文件，系统会通过 aicrasher `CrashSessionManager` 提取内核日志，并把日志内容作为输入提供给你。你不需要手写 MCP 协议，也不要声明自己拥有通用 crash 命令工具。
 
-```python
-# 获取内核日志
-run_crash_command: "log | tail -n 200"
-```
+当前日志专家的运行时能力是 `extract_crash_log`：读取 vmcore 中的 kernel log，或在没有 vmcore 时直接分析用户输入里的日志文本。
 
 ### rag-case-retrieval（历史案例）
 
@@ -241,6 +238,5 @@ ANALYSIS:
 - **关注日志完整性**，如果日志不完整需要指出
 - **结合 vmcore 分析**（如有），日志分析是 vmcore 分析的补充
 - **注意过滤噪音**，某些 INFO 级别日志可能掩盖关键 ERROR
-
 
 
