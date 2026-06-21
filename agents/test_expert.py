@@ -19,26 +19,54 @@ from graph.rn_state import MaintenanceWorkflowState
 
 
 def _extract_kernel_path(user_input: str) -> str | None:
-    """从用户输入中提取 vmlinux/kernel 文件路径。
+    """从用户输入中提取可启动 kernel 文件路径，最后才回退 vmlinux。
 
     Returns:
         kernel_path 或 None
     """
     import re
 
-    # Match patterns like "vmlinux file: ~/path" or "vmlinux 文件：~/path"
-    # Supports both Chinese (文件) and English (file) keywords, both colon types
-    kernel_pattern = r'(?:vmlinux|kernel|Image)\s*(?:文件|file)?\s*[：:]\s*([~/][^\s]+)'
-    match = re.search(kernel_pattern, user_input, re.IGNORECASE)
+    # Prefer bootable image labels over vmlinux, which is usually debug symbols.
+    labels = ["boot_kernel", "boot kernel", "bzImage", "Image", "kernel", "vmlinux"]
+    for label in labels:
+        label_pattern = re.escape(label).replace(r"\ ", r"\s+")
+        patterns = [
+            rf'{label_pattern}\s*(?:文件|file|path)?\s*[：:]\s*([~/][^\s]+)',
+            rf'{label_pattern}\s+[：:]?\s*([~/][^\s]+)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, user_input, re.IGNORECASE)
+            if match:
+                return match.group(1)
 
-    if match:
-        return match.group(1)
+    return None
 
-    # 备用模式：不带"文件"关键词，但路径必须以 / 或 ~ 开头
-    kernel_pattern2 = r'(?:vmlinux|kernel|Image)\s+[：:]?\s*([~/][^\s]+)'
-    match2 = re.search(kernel_pattern2, user_input, re.IGNORECASE)
 
-    return match2.group(1) if match2 else None
+def _extract_target_arch(user_input: str) -> str:
+    """Extract target architecture from user input, defaulting to x86_64."""
+    import re
+    text = user_input.lower()
+    if re.search(r"\b(aarch64|arm64)\b", text):
+        return "arm64"
+    if re.search(r"\b(arm32|armv7|armhf)\b", text):
+        return "arm32"
+    if re.search(r"\b(x86_64|amd64|x64)\b", text):
+        return "x86_64"
+    return "x86_64"
+
+
+def _normalize_target_arch(arch: str | None) -> str:
+    value = (arch or "x86_64").lower()
+    aliases = {
+        "x86": "x86_64",
+        "x64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "arm64",
+        "arm": "arm32",
+        "armv7": "arm32",
+        "armhf": "arm32",
+    }
+    return aliases.get(value, value)
 
 
 def _check_file_exists(path: str | None) -> bool:
@@ -96,6 +124,11 @@ def _run_qemu_test_with_tools(
     reproduce_case: str,
     kernel_diagnosis: str,
     kernel_path: str | None,
+    target_arch: str,
+    test_script_path: str | None,
+    reproducer_dir: str | None,
+    reproducer_module_path: str | None,
+    expected_signal: str | None,
     expert_name: str,
     output_file: str,
     current_attempts: int,
@@ -129,11 +162,30 @@ def _run_qemu_test_with_tools(
         else:
             kernel_info = "- Kernel: 未指定 (需要用户提供)\n"
 
+        test_script_info = ""
+        if test_script_path:
+            test_script_expanded = os.path.expanduser(test_script_path)
+            if os.path.exists(test_script_expanded):
+                test_script_info = f"- Test script: {test_script_path} (✓ 存在)\n"
+            else:
+                test_script_info = f"- Test script: {test_script_path} (✗ 不存在)\n"
+        else:
+            test_script_info = "- Test script: 未提供\n"
+
+        modules_dir = reproducer_dir or ""
+        if not modules_dir and reproducer_module_path:
+            modules_dir = str(Path(os.path.expanduser(reproducer_module_path)).parent)
+
         home_dir = os.path.expanduser("~")
         context_info = f"""QEMU test verification environment:
 
 - Home directory: {home_dir} (use this in paths, NOT /root)
 {kernel_info}
+{test_script_info}
+- Target arch: {target_arch}
+- Modules dir: {modules_dir or '未提供'}
+- Reproducer module: {reproducer_module_path or '未提供'}
+- Expected signal: {expected_signal or '未提供'}
 
 You MUST use the following QEMU testing tools that are bound to you:
 - check_qemu_available: Check if QEMU is installed. Call this FIRST and ONLY ONCE.
@@ -154,11 +206,12 @@ EFFICIENCY RULES:
 - Do NOT call create_initramfs more than once — use the first result.
 
 REQUIRED execution flow:
-1. Call check_qemu_available() to verify QEMU
-2. Call create_initramfs() ONCE with default args
-3. Call boot_kernel() with kernel_path={kernel_path or 'N/A'} and the initramfs path
+1. Call check_qemu_available(arch="{target_arch}") to verify QEMU
+2. Call create_initramfs(arch="{target_arch}") ONCE. If Test script exists, pass test_script_path={test_script_path or 'N/A'}.
+   If Modules dir exists, pass modules_dir={modules_dir or 'N/A'} so the .ko is included in /modules.
+3. Call boot_kernel() with arch="{target_arch}", kernel_path={kernel_path or 'N/A'} and the initramfs path
 4. Call analyze_boot_log() on the resulting log
-5. Based on actual tool outputs, determine if issue reproduced
+5. Based on actual tool outputs and Expected signal, determine if issue reproduced
 """
 
         user_content = f"""User input:
@@ -169,6 +222,14 @@ REQUIRED execution flow:
 
 ## Kernel diagnosis plan
 {kernel_diagnosis}
+
+## Structured test contract
+- Target arch: {target_arch}
+- Boot kernel path: {kernel_path or 'N/A'}
+- Reproducer dir: {reproducer_dir or 'N/A'}
+- Reproducer module path: {reproducer_module_path or 'N/A'}
+- Test script path: {test_script_path or 'N/A'}
+- Expected signal: {expected_signal or 'N/A'}
 
 ## Execution mode
 Mode: **real** — you have real QEMU tools bound for execution.
@@ -204,14 +265,14 @@ Do not say you "cannot execute" — the tools give you that ability."""
             # and inject result as HumanMessage (NOT ToolMessage, which would
             # require a matching AIMessage tool_calls that the API would reject)
             from agents.qemu_tools import check_qemu_available as check_qemu
-            qemu_status = check_qemu("x86_64")
+            qemu_status = check_qemu(target_arch)
 
             force_msg = HumanMessage(content=f"""QEMU availability was checked automatically:
 
 {qemu_status}
 
 Based on this result, you MUST now proceed with the verification by calling the tools.
-If QEMU is available, use create_initramfs() then boot_kernel() to test the kernel.
+If QEMU is available, use create_initramfs(arch="{target_arch}", test_script_path="{test_script_path or ''}", modules_dir="{modules_dir or ''}") then boot_kernel(arch="{target_arch}") to test the kernel.
 If QEMU is not available, report REPRODUCE: FAILED with the reason.
 Do not describe what you would do — call the tools.""")
             messages.append(force_msg)
@@ -288,17 +349,22 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     ensure_output_dir()
     output_file = get_expert_output_file("test_expert")
 
-    # 提取 kernel 路径
-    kernel_path = _extract_kernel_path(state.get("user_input", ""))
+    # 提取 kernel 路径：优先使用内核专家产出的可启动内核路径，再回退用户输入。
+    kernel_path = state.get("boot_kernel_path") or _extract_kernel_path(state.get("user_input", ""))
+    target_arch = _normalize_target_arch(state.get("target_arch") or _extract_target_arch(state.get("user_input", "")))
     kernel_exists = _check_file_exists(kernel_path)
+    test_script_path = state.get("test_script_path", "")
+    reproducer_dir = state.get("reproducer_dir", "")
+    reproducer_module_path = state.get("reproducer_module_path", "")
+    expected_signal = state.get("expected_signal", "")
 
     # kernel 不存在时直接报错
     if not kernel_path or not kernel_exists:
         error_msg = f"ERROR: Kernel 文件不存在或未指定\n"
         error_msg += f"Kernel 路径: {kernel_path or '未指定'}\n"
         error_msg += f"状态: {'✗ 不存在' if kernel_path else '未提供'}\n\n"
-        error_msg += "请提供有效的 kernel/vmlinux/Image 文件路径以执行 QEMU 测试验证。\n"
-        error_msg += "示例格式: vmlinux: /path/to/vmlinux"
+        error_msg += "请提供有效的可启动 kernel/Image/bzImage 文件路径以执行 QEMU 测试验证。\n"
+        error_msg += "示例格式: kernel: /path/to/arch/x86/boot/bzImage"
 
         header = _format_agent_header_text("测试专家", "验证失败")
         footer = _format_agent_footer_text("测试专家")
@@ -311,7 +377,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         return {
             "test_result": error_msg,
             "test_passed": False,
-            "test_attempts": current_attempts,
+            "test_attempts": max_attempts,
             "final_response": error_msg,
         }
 
@@ -341,7 +407,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         return {
             "test_result": skip_msg,
             "test_passed": False,
-            "test_attempts": current_attempts,
+            "test_attempts": max_attempts,
             "final_response": skip_msg,
         }
 
@@ -353,6 +419,11 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         reproduce_case=state.get("reproduce_case", ""),
         kernel_diagnosis=state.get("kernel_diagnosis", ""),
         kernel_path=kernel_path,
+        target_arch=target_arch,
+        test_script_path=test_script_path,
+        reproducer_dir=reproducer_dir,
+        reproducer_module_path=reproducer_module_path,
+        expected_signal=expected_signal,
         expert_name="测试专家",
         output_file=output_file,
         current_attempts=current_attempts,

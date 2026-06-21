@@ -86,15 +86,23 @@ Suggested workflow:
 2. Create reproducer directory: outputs/<bug_type>_reproducer
 3. Write reproducer source code (.c) based on the vmcore analysis findings
 4. Write Makefile with correct kernel build system integration
-5. If kernel headers exist, compile the module to verify correctness
-6. If compilation fails, read the error output, fix the code, and recompile
-7. Output FINAL_REPRODUCER code, build steps, and expected behavior
+5. Write test.sh that loads /modules/<module>.ko and emits clear pass/fail evidence
+6. If kernel headers exist, compile the module to verify correctness
+7. If compilation fails, read the error output, fix the code, and recompile
+8. Output FINAL_REPRODUCER code, build steps, expected behavior, and test metadata
 
 Notes:
 - Use the actual home directory ({home_dir}) in all paths
 - Use correct kernel APIs (kthread_run, mutex_lock, etc.)
 - Makefile MUST use Tab indentation (not spaces)
 - The vmcore data provides the ground truth — reference real PIDs/addresses
+- End the response with these machine-readable markers when available:
+  TARGET_ARCH: <x86_64|arm64|arm32>
+  BOOT_KERNEL_PATH: <bootable bzImage/Image path, not ELF vmlinux>
+  REPRODUCER_DIR: <directory containing generated reproducer files>
+  REPRODUCER_MODULE_PATH: <compiled .ko path>
+  TEST_SCRIPT_PATH: <script that loads/runs the reproducer in initramfs>
+  EXPECTED_SIGNAL: <boot log pattern proving reproduction>
 """
 
         # Create messages for tool-calling loop
@@ -192,6 +200,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "kernel_analysis": error_msg,
             "reproduce_case": "",
             "kernel_diagnosis": "",
+            "kernel_ready_for_test": False,
             "final_response": error_msg,
         }
 
@@ -210,11 +219,24 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # 解析必现用例和维测方案
     reproduce_case = _extract_section(text, "REPRODUCE_CASE")
     kernel_diagnosis = _extract_section(text, "KERNEL_DIAGNOSIS")
+    target_arch = _extract_scalar_marker(text, "TARGET_ARCH")
+    boot_kernel_path = _extract_scalar_marker(text, "BOOT_KERNEL_PATH")
+    reproducer_dir = _extract_scalar_marker(text, "REPRODUCER_DIR")
+    reproducer_module_path = _extract_scalar_marker(text, "REPRODUCER_MODULE_PATH")
+    test_script_path = _extract_scalar_marker(text, "TEST_SCRIPT_PATH")
+    expected_signal = _extract_scalar_marker(text, "EXPECTED_SIGNAL")
 
     return {
         "kernel_analysis": text,
         "reproduce_case": reproduce_case or text,
         "kernel_diagnosis": kernel_diagnosis or "",
+        "kernel_ready_for_test": bool(reproduce_case or text),
+        "target_arch": target_arch,
+        "boot_kernel_path": boot_kernel_path,
+        "reproducer_dir": reproducer_dir,
+        "reproducer_module_path": reproducer_module_path,
+        "test_script_path": test_script_path,
+        "expected_signal": expected_signal,
     }
 
 
@@ -224,3 +246,15 @@ def _extract_section(text: str, marker: str) -> str:
     pattern = rf"{re.escape(marker)}:\s*\n?(.*?)(?:\n[A-Z_]+:|\Z)"
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
+
+
+def _extract_scalar_marker(text: str, marker: str) -> str:
+    """Extract a one-line marker value and ignore empty placeholders."""
+    import re
+    match = re.search(rf"^{re.escape(marker)}:\s*(.+?)\s*$", text, re.MULTILINE)
+    if not match:
+        return ""
+    value = match.group(1).strip().strip("`'\"")
+    if not value or value.startswith("<") or value.upper() in {"N/A", "NONE", "UNKNOWN"}:
+        return ""
+    return value

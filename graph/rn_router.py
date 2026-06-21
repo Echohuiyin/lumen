@@ -33,15 +33,25 @@ def route_after_pm(state: MaintenanceWorkflowState):
     ]
 
 
+def route_after_kernel(state: MaintenanceWorkflowState):
+    """Kernel Expert 后路由：只有产出可测试内容时才进入 Test Expert。"""
+    if state.get("kernel_ready_for_test") is False:
+        return END
+
+    if state.get("final_response") and not state.get("reproduce_case"):
+        return END
+
+    return "test_expert"
+
+
 def route_after_test(state: MaintenanceWorkflowState):
-    """测试专家后路由：复现成功交给知识库生成，失败则回到内核专家重新分析，超限直接结束。"""
+    """测试专家后路由：复现成功或超限失败均归档，否则回到内核专家重新分析。"""
     max_attempts = state.get("config", {}).get("workflow", {}).get("max_test_attempts", 3)
 
     if state.get("test_passed"):
         return "knowledge_base"
 
     if state.get("test_attempts", 0) >= max_attempts:
-        # 超过最大尝试次数，跳过知识库生成，直接结束
-        return END
+        return "knowledge_base"
 
     return "kernel_expert"

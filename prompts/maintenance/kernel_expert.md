@@ -373,13 +373,23 @@ content="<编译输出>"
 REPRODUCE_CASE:
   source_file: outputs/<bug_id>_reproducer/reproducer.c
   makefile: outputs/<bug_id>_reproducer/Makefile
+  test_script: outputs/<bug_id>_reproducer/test.sh
   compiled_module: outputs/<bug_id>_reproducer/<name>.ko
   compile_status: success | failed
   compile_log: outputs/<bug_id>_reproducer/compile.log
 
 KERNEL_DIAGNOSIS:
   ...
+
+TARGET_ARCH: <x86_64 | arm64 | arm32>
+BOOT_KERNEL_PATH: <可由 QEMU 启动的 bzImage/Image 路径；不要填写 ELF vmlinux>
+REPRODUCER_DIR: outputs/<bug_id>_reproducer
+REPRODUCER_MODULE_PATH: outputs/<bug_id>_reproducer/<name>.ko
+TEST_SCRIPT_PATH: outputs/<bug_id>_reproducer/test.sh
+EXPECTED_SIGNAL: <用于判断复现成功的 boot log 关键字，如 hung task / Kernel panic / BUG>
 ```
+
+`test.sh` 必须适配 initramfs 环境：从 `/modules/<name>.ko` 加载模块，输出明确的测试开始、模块加载结果和用于匹配的复现证据；如果测试可以安全结束，打印 `Test completed with status: <code>`。
 
 ### 区分：描述 vs 创建
 
@@ -481,6 +491,13 @@ KERNEL_DIAGNOSIS:
 4. 需要监控的关键变量和状态
 5. 预期的调试输出和判断标准>
 
+TARGET_ARCH: <x86_64 | arm64 | arm32>
+BOOT_KERNEL_PATH: <可由 QEMU 启动的 bzImage/Image 路径；如果未知写 N/A>
+REPRODUCER_DIR: <实际创建的复现目录>
+REPRODUCER_MODULE_PATH: <实际编译出的 .ko 路径；如果编译失败写 N/A>
+TEST_SCRIPT_PATH: <实际创建的 initramfs 测试脚本路径；如果未知写 N/A>
+EXPECTED_SIGNAL: <测试专家应在 QEMU boot log 中查找的复现证据>
+
 ANALYSIS:
 ### 综合分析
 <综合各专家结论的完整分析>
@@ -528,64 +545,3 @@ ANALYSIS:
   - `/kernel-build` 编译带复现器的内核
   - `/qemu-test` 在 QEMU 中测试复现
   - `/kernel-test-validator` 综合验证
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

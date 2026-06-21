@@ -111,6 +111,41 @@ def load_prompt_from_file(path: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
+def _normalize_tool_experts_config(config: dict) -> dict:
+    """Support legacy configs that store tool experts under agents.tool_expert."""
+    if config.get("tool_experts"):
+        return config
+
+    legacy_tool_experts = config.get("agents", {}).get("tool_expert", {})
+    if not isinstance(legacy_tool_experts, dict) or not legacy_tool_experts:
+        return config
+
+    names = {
+        "knowledge_search": "历史知识库搜索专家",
+        "lock_analysis": "锁分析专家",
+        "crash_analysis": "Crash分析专家",
+        "kernel_log_analysis": "内核日志分析专家",
+    }
+    descriptions = {
+        "knowledge_search": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
+        "lock_analysis": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
+        "crash_analysis": "分析 Crash 日志，定位崩溃原因和调用栈",
+        "kernel_log_analysis": "分析内核日志，提取关键错误信息和异常模式",
+    }
+
+    config["tool_experts"] = [
+        {
+            "type": expert_type,
+            "name": names.get(expert_type, expert_type),
+            "description": descriptions.get(expert_type, ""),
+            "agent": agent_config,
+        }
+        for expert_type, agent_config in legacy_tool_experts.items()
+        if isinstance(agent_config, dict)
+    ]
+    return config
+
+
 def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> dict:
     """Load maintenance configuration JSON file.
 
@@ -139,7 +174,7 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
                 }
         return {}
 
-    config = json.loads(p.read_text(encoding="utf-8"))
+    config = _normalize_tool_experts_config(json.loads(p.read_text(encoding="utf-8")))
 
     # Fill empty LLM config from Claude settings
     if fallback_to_claude_settings:

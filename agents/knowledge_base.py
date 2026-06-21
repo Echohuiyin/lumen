@@ -34,6 +34,13 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"## 内核专家分析\n{state.get('kernel_analysis', '')}\n\n"
         f"## 复现用例\n{state.get('reproduce_case', '')}\n\n"
         f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
+        f"## 结构化测试契约\n"
+        f"- Target arch: {state.get('target_arch', '')}\n"
+        f"- Boot kernel: {state.get('boot_kernel_path', '')}\n"
+        f"- Reproducer dir: {state.get('reproducer_dir', '')}\n"
+        f"- Reproducer module: {state.get('reproducer_module_path', '')}\n"
+        f"- Test script: {state.get('test_script_path', '')}\n"
+        f"- Expected signal: {state.get('expected_signal', '')}\n\n"
         f"## 测试验证结果\n{state.get('test_result', '')}\n\n"
         f"请将以上内容总结为知识库文档。"
     )
@@ -53,14 +60,17 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     issue_id = state.get("issue_id", "")
     issue_url = state.get("issue_url", "")
 
+    test_passed = state.get("test_passed", False)
+    status_text = "成功复现" if test_passed else "未成功复现，已归档分析过程和改进建议"
+
     # 构建最终响应
     final_response = (
-        f"问题分析已完成！\n\n"
+        f"问题分析已完成（{status_text}）。\n\n"
         f"Issue: {issue_id} ({issue_url})\n"
         f"知识库文件: {knowledge_file}\n\n"
         f"Chroma 导入: {import_message}\n\n"
         f"共调用 {len(expert_results)} 个工具专家，"
-        f"测试验证 {state.get('test_attempts', 0)} 次后成功复现。"
+        f"测试验证 {state.get('test_attempts', 0)} 次。"
     )
 
     return {

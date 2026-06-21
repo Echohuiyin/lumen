@@ -326,6 +326,13 @@ fi
 - 复现器代码位置 (reproducer_path)
 - 测试脚本/命令 (test_script/test_command)
 - 预期结果 (expected_result)
+- 结构化字段：
+  - `TARGET_ARCH`：QEMU 目标架构，必须是 `x86_64`、`arm64` 或 `arm32`
+  - `BOOT_KERNEL_PATH`：QEMU 可启动内核镜像，不能是 ELF vmlinux
+  - `REPRODUCER_DIR`：包含复现源码、Makefile、.ko 的目录
+  - `REPRODUCER_MODULE_PATH`：待加载的 .ko
+  - `TEST_SCRIPT_PATH`：打入 initramfs 并执行的测试脚本
+  - `EXPECTED_SIGNAL`：boot log 中判定复现成功的关键证据
 
 #### 步骤 2：编译内核模块（如有）
 使用 Bash 工具执行：
@@ -339,16 +346,11 @@ ls -la <reproducer.ko>
 ```
 
 #### 步骤 3：执行 QEMU 测试
-使用 Bash 工具启动 QEMU（或调用 qemu-test skill）：
-
-```bash
-timeout 120 qemu-system-x86_64 \
-    -kernel <bzImage_path> \
-    -initrd <initramfs_path> \
-    -append "console=ttyS0" \
-    -m 512M -smp 2 -nographic \
-    2>&1 | tee boot.log
-```
+使用已绑定 QEMU 工具执行：
+- `check_qemu_available`
+- `create_initramfs`：必须传入 `TARGET_ARCH`；如果 `TEST_SCRIPT_PATH` 存在，必须作为 `test_script_path` 参数传入；如果 `REPRODUCER_DIR` 或 `.ko` 父目录存在，必须作为 `modules_dir` 参数传入
+- `boot_kernel`：必须传入 `TARGET_ARCH`，使用 `BOOT_KERNEL_PATH` 或用户输入中的可启动 kernel/Image/bzImage
+- `analyze_boot_log`
 
 #### 步骤 4：读取并分析实际输出
 使用 Read 工具读取 boot.log：

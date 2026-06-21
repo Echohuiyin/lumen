@@ -29,6 +29,7 @@ build/
 
 # test / runtime artifacts
 _test_tmp.txt
+outputs/
 
 # accidental LLM marker outputs (write_file misuse)
 TASK_PLAN

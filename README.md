@@ -65,9 +65,13 @@ python main.py --input "
 - 进程A持有锁L1，等待锁L2
 - 进程B持有锁L2，等待锁L1
 - vmcore已保存到 /tmp/vmcore
+- vmlinux 文件：/usr/lib/debug/lib/modules/5.10.0/vmlinux
+- boot_kernel 文件：/path/to/linux/arch/x86/boot/bzImage
 - 内核版本: 5.10.0
 " --config maintenance_config.json
 ```
+
+说明：`vmlinux` 用于 crash/vmcore 符号分析；QEMU 验证需要可启动的 `boot_kernel`，例如 x86_64 的 `arch/x86/boot/bzImage` 或 ARM64 的 `arch/arm64/boot/Image`。
 
 **工作流程：**
 

@@ -6,7 +6,7 @@ from agents.pm import pm_node
 from agents.test_expert import test_expert_node
 from agents.tool_expert import tool_expert_node
 from agents.validator import validator_node
-from graph.rn_router import route_after_pm, route_after_test, route_after_validator
+from graph.rn_router import route_after_kernel, route_after_pm, route_after_test, route_after_validator
 from graph.rn_state import MaintenanceWorkflowState
 
 
@@ -35,7 +35,7 @@ def build_maintenance_workflow(*, checkpointer=None):
     builder.add_conditional_edges("validator", route_after_validator)
     builder.add_conditional_edges("pm", route_after_pm)
     builder.add_edge("tool_expert", "kernel_expert")
-    builder.add_edge("kernel_expert", "test_expert")
+    builder.add_conditional_edges("kernel_expert", route_after_kernel)
     builder.add_conditional_edges("test_expert", route_after_test)
     builder.add_edge("knowledge_base", END)
 

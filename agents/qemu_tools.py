@@ -27,6 +27,7 @@ class CreateInitramfsInput(BaseModel):
     """Input schema for create_initramfs."""
     arch: str = "x86_64"
     test_script_path: Optional[str] = None
+    modules_dir: Optional[str] = None
     output_path: Optional[str] = None
 
 
@@ -43,6 +44,28 @@ class AnalyzeLogInput(BaseModel):
     """Input schema for analyze_boot_log."""
     log_path: str
     patterns: Optional[list[str]] = None
+
+
+def _resolve_runtime_path(path: str | Path) -> Path:
+    """Resolve user/model-provided paths before passing them to skill scripts."""
+    p = Path(os.path.expanduser(str(path)))
+    if not p.is_absolute():
+        p = PROJECT_ROOT / p
+    return p.resolve()
+
+
+def _normalize_arch(arch: str | None) -> str:
+    value = (arch or "x86_64").lower()
+    aliases = {
+        "x86": "x86_64",
+        "x64": "x86_64",
+        "amd64": "x86_64",
+        "aarch64": "arm64",
+        "arm": "arm32",
+        "armv7": "arm32",
+        "armhf": "arm32",
+    }
+    return aliases.get(value, value)
 
 
 def find_qemu_script(script_name: str) -> Optional[Path]:
@@ -73,6 +96,7 @@ def check_qemu_available(arch: str = "x86_64") -> str:
     Returns:
         Status message with QEMU availability info
     """
+    arch = _normalize_arch(arch)
     qemu_map = {
         "x86_64": "qemu-system-x86_64",
         "arm64": "qemu-system-aarch64",
@@ -110,6 +134,7 @@ def check_qemu_available(arch: str = "x86_64") -> str:
 def create_initramfs(
     arch: str = "x86_64",
     test_script_path: Optional[str] = None,
+    modules_dir: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
     """Create minimal initramfs for QEMU kernel testing.
@@ -117,11 +142,13 @@ def create_initramfs(
     Args:
         arch: Target architecture
         test_script_path: Optional test script to include
+        modules_dir: Optional directory containing kernel modules to include
         output_path: Optional output path for initramfs
 
     Returns:
         Path to created initramfs or error message
     """
+    arch = _normalize_arch(arch)
     script_path = find_qemu_script("create_initramfs.sh")
 
     if not script_path:
@@ -129,13 +156,24 @@ def create_initramfs(
 
     if output_path is None:
         output_path = str(tempfile.mktemp(suffix=".cpio.gz", prefix="initramfs_"))
+    else:
+        output_path = str(_resolve_runtime_path(output_path))
 
     cmd = ["bash", str(script_path), "--arch", arch, "--output", output_path]
 
     if test_script_path:
-        if not Path(test_script_path).exists():
+        test_script = _resolve_runtime_path(test_script_path)
+        if not test_script.exists():
             return f"Error: test script not found: {test_script_path}"
-        cmd.extend(["--test-script", test_script_path])
+        cmd.extend(["--test-script", str(test_script)])
+
+    if modules_dir:
+        module_path = _resolve_runtime_path(modules_dir)
+        if module_path.is_file() and module_path.suffix == ".ko":
+            module_path = module_path.parent
+        if not module_path.exists() or not module_path.is_dir():
+            return f"Error: modules dir not found: {modules_dir}"
+        cmd.extend(["--modules", str(module_path)])
 
     try:
         result = subprocess.run(
@@ -180,10 +218,15 @@ def boot_kernel(
     Returns:
         Boot result with log content or error message
     """
+    arch = _normalize_arch(arch)
+
     # Validate inputs
-    if not Path(kernel_path).exists():
+    kernel = _resolve_runtime_path(kernel_path)
+    initramfs = _resolve_runtime_path(initramfs_path)
+
+    if not kernel.exists():
         return f"Error: kernel not found: {kernel_path}"
-    if not Path(initramfs_path).exists():
+    if not initramfs.exists():
         return f"Error: initramfs not found: {initramfs_path}"
 
     # Find boot script
@@ -204,8 +247,8 @@ def boot_kernel(
     try:
         cmd = [
             "bash", str(boot_script_path),
-            "--kernel", kernel_path,
-            "--initrd", initramfs_path,
+            "--kernel", str(kernel),
+            "--initrd", str(initramfs),
             "--timeout", str(timeout),
             "--memory", memory,
         ]
@@ -247,8 +290,8 @@ def boot_kernel(
         last_lines = "\n".join(boot_log_lines[-20:]) if len(boot_log_lines) > 20 else boot_log
 
         return f"""{status}
-  Kernel: {kernel_path}
-  Initramfs: {initramfs_path}
+  Kernel: {kernel}
+  Initramfs: {initramfs}
   Arch: {arch}
   Memory: {memory}
   Timeout: {timeout}s
@@ -283,11 +326,12 @@ def analyze_boot_log(
     Returns:
         Analysis summary
     """
-    if not Path(log_path).exists():
+    log_file = _resolve_runtime_path(log_path)
+    if not log_file.exists():
         return f"Error: log file not found: {log_path}"
 
     try:
-        log_content = Path(log_path).read_text()
+        log_content = log_file.read_text()
     except Exception as e:
         return f"Error reading log: {str(e)}"
 
@@ -321,7 +365,7 @@ def analyze_boot_log(
     if findings:
         total_lines = len(log_content.splitlines())
         return f"""Boot Log Analysis
-Log: {log_path}
+Log: {log_file}
 Size: {len(log_content)} bytes
 
 Key Findings:
@@ -333,7 +377,7 @@ Summary:
 """
     else:
         return f"""Boot Log Analysis
-Log: {log_path}
+Log: {log_file}
 Size: {len(log_content)} bytes
 
 No error patterns detected.
@@ -363,7 +407,7 @@ def create_qemu_tools() -> list[StructuredTool]:
             description=(
                 "Create minimal initramfs for QEMU kernel testing. "
                 "Includes busybox and essential init scripts. "
-                "Optionally includes a test script for automated testing. "
+                "Optionally includes a test script and kernel modules for automated testing. "
                 "Returns path to created initramfs."
             ),
             func=create_initramfs,

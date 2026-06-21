@@ -40,6 +40,13 @@ class MaintenanceWorkflowState(TypedDict):
     reproduce_case: str               # 构造的必现用例
     kernel_diagnosis: str             # 内核维测方案
     kernel_analysis: str              # 完整分析内容
+    kernel_ready_for_test: bool        # 内核专家是否产出了可交给测试专家验证的内容
+    target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
+    boot_kernel_path: str              # QEMU 可启动内核镜像路径（bzImage/Image）
+    reproducer_dir: str                # 复现用例目录
+    reproducer_module_path: str        # 编译出的 .ko 路径
+    test_script_path: str              # initramfs 中执行的测试脚本
+    expected_signal: str               # 期望在 boot log 中观察到的复现信号
     # 测试专家输出
     test_result: str                  # 测试结果详情
     test_passed: bool                 # 是否成功复现
@@ -72,6 +79,13 @@ def make_initial_state(user_input: str = "", config_path: str = "maintenance_con
         "reproduce_case": "",
         "kernel_diagnosis": "",
         "kernel_analysis": "",
+        "kernel_ready_for_test": True,
+        "target_arch": "",
+        "boot_kernel_path": "",
+        "reproducer_dir": "",
+        "reproducer_module_path": "",
+        "test_script_path": "",
+        "expected_signal": "",
         "test_result": "",
         "test_passed": False,
         "test_attempts": 0,
