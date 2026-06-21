@@ -11,6 +11,35 @@ from pathlib import Path
 import pytest
 
 
+ONLINE_TEST_NODEIDS = (
+    "tests/test_expert_io_format.py",
+    "tests/test_kernel_expert.py::test_kernel_expert_tool_calling",
+    "tests/test_test_expert.py::test_qemu_tool_calling",
+    "tests/test_tool_expert_mcp.py::test_tool_calling_loop",
+    "tests/test_tool_experts.py::test_expert_direct",
+    "tests/test_tool_experts.py::test_all_experts",
+)
+
+
+def pytest_addoption(parser):
+    parser.addoption(
+        "--run-online",
+        action="store_true",
+        default=False,
+        help="run tests that call live LLM APIs or external crash sessions",
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    skip_online = pytest.mark.skip(reason="online test skipped; use --run-online to run")
+    run_online = config.getoption("--run-online")
+    for item in items:
+        if any(item.nodeid.startswith(pattern) for pattern in ONLINE_TEST_NODEIDS):
+            item.add_marker(pytest.mark.online)
+            if not run_online:
+                item.add_marker(skip_online)
+
+
 @pytest.fixture
 def name() -> str:
     return "test"

@@ -1006,3 +1006,50 @@ PY
 1. 可以保留当前 Anthropic-compatible backend；如果后续希望减少自定义 backend，也可以把 DeepSeek URL 切换到 OpenAI-compatible `/v1` 并继续使用 `ChatOpenAI`。
 2. 把在线 LLM 测试和离线 contract 测试分组，避免网络波动影响本地快速回归。
 3. 对在线 LLM 测试设置更小的样本集或 marker，例如 `pytest -m online`。
+
+## 2026-06-21 测试分组执行记录
+
+### 已完成
+
+1. 增加 pytest `online` marker。
+2. 增加 `--run-online` 选项，默认跳过在线 LLM / 外部 crash session 测试。
+3. 将以下测试归为在线测试：
+   - `tests/test_expert_io_format.py`
+   - `tests/test_kernel_expert.py::test_kernel_expert_tool_calling`
+   - `tests/test_test_expert.py::test_qemu_tool_calling`
+   - `tests/test_tool_expert_mcp.py::test_tool_calling_loop`
+   - `tests/test_tool_experts.py::test_expert_direct`
+   - `tests/test_tool_experts.py::test_all_experts`
+4. 将测试生成目录加入 `.gitignore`：
+   - `knowledge_base/`
+   - `self_test_reports/`
+
+### 验证结果
+
+默认离线测试：
+
+```bash
+.venv/bin/python -m pytest -q
+```
+
+结果：
+
+```text
+44 passed, 18 skipped, 1 warning in 1.81s
+```
+
+完整在线测试：
+
+```bash
+.venv/bin/python -m pytest -q --run-online
+```
+
+结果：
+
+```text
+62 passed, 1 warning in 111.86s
+```
+
+### 影响
+
+本地快速回归不再依赖在线 LLM 服务或外部 crash session。需要验证完整在线链路时显式加 `--run-online`。

@@ -29,5 +29,8 @@ include = ["agents*", "graph*", "tools*"]
 filterwarnings = [
     "ignore::_pytest.warning_types.PytestReturnNotNoneWarning",
 ]
+markers = [
+    "online: tests that call live LLM APIs or external crash sessions",
+]
 testpaths = ["tests"]
 pythonpath = ["."]
