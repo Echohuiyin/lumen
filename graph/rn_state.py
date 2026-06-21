@@ -29,6 +29,7 @@ class MaintenanceWorkflowState(TypedDict):
     # Validator 输出
     validation_passed: bool
     validation_feedback: str
+    validation_contract: dict          # 结构化输入校验结果
     # PM 输出
     required_experts: list[str]       # 需要调用的专家类型列表
     pm_routing_reason: str            # PM 规则化分类原因
@@ -75,6 +76,7 @@ def make_initial_state(user_input: str = "", config_path: str = "config.json") -
         "execution_mode": "real",  # 固定为实际执行模式
         "validation_passed": False,
         "validation_feedback": "",
+        "validation_contract": {},
         "required_experts": [],
         "pm_routing_reason": "",
         "issue_id": "",

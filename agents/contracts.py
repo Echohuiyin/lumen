@@ -59,6 +59,17 @@ class TestResultContract(BaseModel):
     artifacts: dict[str, str] = Field(default_factory=dict)
 
 
+class ValidationResultContract(BaseModel):
+    """Structured input validation result."""
+
+    status: WorkflowStatus
+    validation_passed: bool = False
+    reason: str = ""
+    missing_fields: list[str] = Field(default_factory=list)
+    detected_signals: list[str] = Field(default_factory=list)
+    feedback: str = ""
+
+
 class KernelExpertOutput(BaseModel):
     """Structured Kernel Expert output.
 
