@@ -4,6 +4,8 @@
 使用 LangChain StructuredTool 实现 QEMU 测试。
 """
 
+__test__ = False  # LangGraph node module, not pytest tests
+
 from pathlib import Path
 import os
 

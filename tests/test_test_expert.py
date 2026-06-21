@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from agents.qemu_tools import create_qemu_tools, check_qemu_available, create_initramfs, boot_kernel, analyze_boot_log
-from agents.test_expert import test_expert_node, _extract_kernel_path, _check_file_exists
+from agents.test_expert import test_expert_node as _test_expert_node, _extract_kernel_path, _check_file_exists
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 from config import get_llm_with_config, load_config
 
@@ -237,7 +237,7 @@ def test_test_expert_node_no_kernel():
     print("=" * 60)
 
     try:
-        result = test_expert_node(state)
+        result = _test_expert_node(state)
 
         print("\n" + "=" * 60)
         print("test_expert_node 执行完成")
@@ -306,7 +306,7 @@ def test_test_expert_node_with_kernel():
     print("=" * 60)
 
     try:
-        result = test_expert_node(state)
+        result = _test_expert_node(state)
 
         print("\n" + "=" * 60)
         print("test_expert_node 执行完成")

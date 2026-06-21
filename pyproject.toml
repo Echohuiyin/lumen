@@ -23,3 +23,10 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agents*", "graph*", "tools*"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::_pytest.warning_types.PytestReturnNotNoneWarning",
+]
+testpaths = ["tests"]
+pythonpath = ["."]
