@@ -33,7 +33,7 @@ bash deploy.sh
 
 ### 3. 配置 API Key
 
-编辑 `maintenance_config.json`：
+编辑 `config.json`：
 
 ```json
 {
@@ -57,7 +57,7 @@ bash deploy.sh
 
 ```bash
 # 基础用法
-python main.py --input "问题描述" --config maintenance_config.json
+python main.py --input "问题描述" --config config.json
 
 # 示例：分析死锁问题
 python main.py --input "
@@ -68,10 +68,11 @@ python main.py --input "
 - vmlinux 文件：/usr/lib/debug/lib/modules/5.10.0/vmlinux
 - boot_kernel 文件：/path/to/linux/arch/x86/boot/bzImage
 - 内核版本: 5.10.0
-" --config maintenance_config.json
+" --config config.json
 ```
 
 说明：`vmlinux` 用于 crash/vmcore 符号分析；QEMU 验证需要可启动的 `boot_kernel`，例如 x86_64 的 `arch/x86/boot/bzImage` 或 ARM64 的 `arch/arm64/boot/Image`。
+兼容说明：旧命令中传入 `maintenance_config.json` 时，如果该文件不存在，系统会自动回退到 `config.json`。
 
 **工作流程：**
 
@@ -105,7 +106,7 @@ python self_test_main.py --fault_type nullptr --execution_mode real
 
 ## 配置说明
 
-### 主工作流配置（maintenance_config.json）
+### 主工作流配置（config.json）
 
 ```json
 {
@@ -162,7 +163,7 @@ lumen/
 ├── deploy.sh                  # 一键部署脚本
 ├── config.py                  # 配置加载器
 │
-├── maintenance_config.json    # 主工作流配置
+├── config.json                # 主工作流配置
 ├── self_test_config.json      # 自测试配置
 ├── requirements.txt           # Python依赖
 │

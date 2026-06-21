@@ -17,7 +17,7 @@ logging.getLogger("langchain").setLevel(logging.WARNING)
 def main():
     parser = argparse.ArgumentParser(description="维护接口人工作流")
     parser.add_argument("--input", required=True, help="用户输入的问题描述")
-    parser.add_argument("--config", default="maintenance_config.json", help="工作流配置文件路径")
+    parser.add_argument("--config", default="config.json", help="工作流配置文件路径")
     args = parser.parse_args()
 
     # 加载配置

@@ -23,6 +23,9 @@ AUTOMATION_AGENTS = [
     "improvement",
 ]
 
+DEFAULT_CONFIG_PATH = "config.json"
+LEGACY_CONFIG_PATH = "maintenance_config.json"
+
 
 def load_claude_settings() -> dict:
     """Load Claude Code settings from ~/.claude/settings.json.
@@ -159,6 +162,13 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
         Config dict with LLM settings resolved
     """
     p = Path(config_path) if Path(config_path).is_absolute() else PROJECT_ROOT / config_path
+    if (
+        not p.exists()
+        and not Path(config_path).is_absolute()
+        and config_path == LEGACY_CONFIG_PATH
+        and (PROJECT_ROOT / DEFAULT_CONFIG_PATH).exists()
+    ):
+        p = PROJECT_ROOT / DEFAULT_CONFIG_PATH
 
     if not p.exists():
         # Config file doesn't exist, try to use Claude settings directly

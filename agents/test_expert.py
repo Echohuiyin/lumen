@@ -11,8 +11,10 @@ import os
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from agents.contracts import TestPlan, model_to_dict
 from agents.llm_display import call_llm_with_persistence, call_llm_with_display, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.qemu_tools import create_qemu_tools
+from agents.test_runner import run_qemu_test_plan
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
@@ -43,7 +45,12 @@ def _extract_kernel_path(user_input: str) -> str | None:
 
 
 def _extract_target_arch(user_input: str) -> str:
-    """Extract target architecture from user input, defaulting to x86_64."""
+    """Extract target architecture from user input.
+
+    Return an empty string when unknown. The deterministic runner should not
+    silently guess an architecture because the wrong QEMU binary can turn a
+    contract error into a misleading test failure.
+    """
     import re
     text = user_input.lower()
     if re.search(r"\b(aarch64|arm64)\b", text):
@@ -52,11 +59,11 @@ def _extract_target_arch(user_input: str) -> str:
         return "arm32"
     if re.search(r"\b(x86_64|amd64|x64)\b", text):
         return "x86_64"
-    return "x86_64"
+    return ""
 
 
 def _normalize_target_arch(arch: str | None) -> str:
-    value = (arch or "x86_64").lower()
+    value = (arch or "").lower()
     aliases = {
         "x86": "x86_64",
         "x64": "x86_64",
@@ -115,6 +122,38 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
         f.write("\n\n## 最终结果\n\n")
         f.write(content + "\n")
         f.write(footer)
+
+
+def _format_runner_result(result) -> str:
+    """Format deterministic runner output for human-facing reports."""
+    lines = [
+        f"QEMU TEST STATUS: {result.status}",
+        f"CODE: {result.code}",
+        f"TEST PASSED: {result.test_passed}",
+        f"SUMMARY: {result.summary}",
+        "",
+        "## Test Plan",
+        f"- Target arch: {result.plan.target_arch or 'N/A'}",
+        f"- Boot kernel: {result.plan.boot_kernel_path or 'N/A'}",
+        f"- Reproducer dir: {result.plan.reproducer_dir or 'N/A'}",
+        f"- Reproducer module: {result.plan.reproducer_module_path or 'N/A'}",
+        f"- Test script: {result.plan.test_script_path or 'N/A'}",
+        f"- Expected signal: {result.plan.expected_signal or 'N/A'}",
+        "",
+        "## Steps",
+    ]
+    for step in result.steps:
+        lines.append(f"- {step.name}: {step.status} - {step.message}")
+        if step.artifacts:
+            artifact_text = ", ".join(f"{k}={v}" for k, v in step.artifacts.items())
+            lines.append(f"  artifacts: {artifact_text}")
+        if step.error:
+            lines.append(f"  error: {step.error[:500]}")
+    if result.artifacts:
+        lines.extend(["", "## Artifacts"])
+        for key, value in result.artifacts.items():
+            lines.append(f"- {key}: {value}")
+    return "\n".join(lines)
 
 
 def _run_qemu_test_with_tools(
@@ -334,16 +373,8 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     通过工具调用机制实际执行 QEMU 测试验证。
     """
     config = state.get("config", {})
-    agent_config = config.get("agents", {}).get("test_expert", {})
-    default_config = config.get("default", {})
-    llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="test_expert")
-    system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/maintenance/test_expert.md")
-    )
-
     current_attempts = state.get("test_attempts", 0) + 1
     max_attempts = config.get("workflow", {}).get("max_test_attempts", 3)
-    is_last_attempt = current_attempts >= max_attempts
 
     # 确保输出目录存在
     ensure_output_dir()
@@ -352,107 +383,59 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     # 提取 kernel 路径：优先使用内核专家产出的可启动内核路径，再回退用户输入。
     kernel_path = state.get("boot_kernel_path") or _extract_kernel_path(state.get("user_input", ""))
     target_arch = _normalize_target_arch(state.get("target_arch") or _extract_target_arch(state.get("user_input", "")))
-    kernel_exists = _check_file_exists(kernel_path)
     test_script_path = state.get("test_script_path", "")
     reproducer_dir = state.get("reproducer_dir", "")
     reproducer_module_path = state.get("reproducer_module_path", "")
     expected_signal = state.get("expected_signal", "")
 
-    # kernel 不存在时直接报错
-    if not kernel_path or not kernel_exists:
-        error_msg = f"ERROR: Kernel 文件不存在或未指定\n"
-        error_msg += f"Kernel 路径: {kernel_path or '未指定'}\n"
-        error_msg += f"状态: {'✗ 不存在' if kernel_path else '未提供'}\n\n"
-        error_msg += "请提供有效的可启动 kernel/Image/bzImage 文件路径以执行 QEMU 测试验证。\n"
-        error_msg += "示例格式: kernel: /path/to/arch/x86/boot/bzImage"
-
-        header = _format_agent_header_text("测试专家", "验证失败")
-        footer = _format_agent_footer_text("测试专家")
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(header)
-            f.write(error_msg + "\n")
-            f.write(footer)
-
-        # 解析为失败
-        return {
-            "test_result": error_msg,
-            "test_passed": False,
-            "test_attempts": max_attempts,
-            "final_response": error_msg,
-        }
-
-    # Check if kernel is a bootable image or ELF debug file before QEMU tools
-    kernel_expanded = os.path.expanduser(kernel_path)
-    kernel_file_type = _detect_kernel_type(kernel_expanded)
-    if kernel_file_type == "elf":
-        skip_msg = (
-            f"KERNEL FORMAT CHECK: vmlinux is an ELF debug-symbols file, "
-            f"NOT a bootable kernel image.\n\n"
-            f"QEMU requires a bootable bzImage (arch/x86/boot/bzImage) for x86_64.\n"
-            f"The ELF vmlinux at {kernel_path} is suitable for crash analysis "
-            f"but cannot be booted directly.\n\n"
-            f"To reproduce this issue:\n"
-            f"1. Build a bootable kernel with CONFIG_HUNG_TASK=y, CONFIG_DETECT_HUNG_TASK=y\n"
-            f"2. Compile the reproducer module against the same kernel\n"
-            f"3. Create an initramfs that loads the module at boot\n"
-            f"4. Re-run with the bootable bzImage path\n\n"
-            f"VERIFICATION STATUS: SKIPPED (no bootable kernel available)"
-        )
-        header = _format_agent_header_text("测试专家", "验证结果")
-        footer = _format_agent_footer_text("测试专家")
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(header)
-            f.write(skip_msg + "\n")
-            f.write(footer)
-        return {
-            "test_result": skip_msg,
-            "test_passed": False,
-            "test_attempts": max_attempts,
-            "final_response": skip_msg,
-        }
-
-    # 执行 QEMU 工具调用测试
-    response = _run_qemu_test_with_tools(
-        llm=llm,
-        system_prompt=system_prompt,
-        user_input=state.get("user_input", ""),
-        reproduce_case=state.get("reproduce_case", ""),
-        kernel_diagnosis=state.get("kernel_diagnosis", ""),
-        kernel_path=kernel_path,
+    # Deterministic QEMU execution path. The LLM is no longer responsible for
+    # choosing or ordering QEMU tools.
+    plan = TestPlan(
         target_arch=target_arch,
-        test_script_path=test_script_path,
+        boot_kernel_path=kernel_path or "",
         reproducer_dir=reproducer_dir,
         reproducer_module_path=reproducer_module_path,
+        test_script_path=test_script_path,
         expected_signal=expected_signal,
-        expert_name="测试专家",
-        output_file=output_file,
-        current_attempts=current_attempts,
-        max_attempts=max_attempts,
-        max_iterations=10,
     )
+    runner_result = run_qemu_test_plan(plan, attempt=current_attempts)
+    text = _format_runner_result(runner_result)
 
-    text = response.content.strip()
+    header = _format_agent_header_text("测试专家", f"确定性验证 - 第{current_attempts}次")
+    footer = _format_agent_footer_text("测试专家")
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(header)
+        f.write(text + "\n")
+        f.write(footer)
 
-    # 解析测试结果
-    test_passed = "REPRODUCE: SUCCESS" in text or "复现成功" in text or "✓ TEST PASSED" in text
-
+    terminal_codes = {
+        "BLOCKED_NO_BOOT_KERNEL",
+        "BLOCKED_BOOT_KERNEL_MISSING",
+        "BLOCKED_NOT_BOOTABLE_KERNEL",
+        "SKIPPED_QEMU_MISSING",
+    }
+    recorded_attempts = max_attempts if runner_result.code in terminal_codes else current_attempts
     result = {
         "test_result": text,
-        "test_passed": test_passed,
-        "test_attempts": current_attempts,
+        "test_passed": runner_result.test_passed,
+        "test_attempts": recorded_attempts,
+        "test_contract": model_to_dict(runner_result),
     }
 
     # 超过最大尝试次数且未复现，生成最终建议
-    if is_last_attempt and not test_passed:
-        improvement_suggestions = _generate_improvement_suggestions(state, text)
-        result["final_response"] = (
-            f"问题复现验证已达到最大尝试次数（{max_attempts} 次），未能成功复现。\n\n"
-            f"## 已有分析\n"
-            f"- 工具专家分析: {len(state.get('expert_results', []))} 项\n"
-            f"- 内核专家分析: 已完成\n"
-            f"- 测试验证: {max_attempts} 次均未成功复现\n\n"
-            f"## 改进建议\n{improvement_suggestions}"
-        )
+    if recorded_attempts >= max_attempts and not runner_result.test_passed:
+        if runner_result.status in {"blocked", "skipped"}:
+            result["final_response"] = text
+        else:
+            improvement_suggestions = _generate_improvement_suggestions(state, text)
+            result["final_response"] = (
+                f"问题复现验证已达到最大尝试次数（{max_attempts} 次），未能成功复现。\n\n"
+                f"## 已有分析\n"
+                f"- 工具专家分析: {len(state.get('expert_results', []))} 项\n"
+                f"- 内核专家分析: 已完成\n"
+                f"- 测试验证: {max_attempts} 次均未成功复现\n\n"
+                f"## 改进建议\n{improvement_suggestions}"
+            )
 
     return result
 

@@ -8,6 +8,7 @@
 import os
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from agents.contracts import ToolExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_display, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.rag_integration import get_rag_context_for_query
 from config import get_llm_with_config, load_prompt_from_file
@@ -90,6 +91,32 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
         f.write(header)
         f.write(content + "\n")
         f.write(footer)
+
+
+def _make_tool_result(
+    *,
+    expert_type: str,
+    expert_name: str,
+    analysis_output: str,
+    status: str = "degraded",
+    artifacts: dict | None = None,
+    errors: list[str] | None = None,
+) -> ToolExpertResult:
+    """Build a backward-compatible tool expert result with structured status."""
+    structured = ToolExpertOutput(
+        expert_type=expert_type,
+        expert_name=expert_name,
+        status=status,
+        summary=analysis_output[:1000],
+        artifacts=artifacts or {},
+        errors=errors or [],
+    )
+    return ToolExpertResult(
+        expert_type=expert_type,
+        expert_name=expert_name,
+        analysis_output=analysis_output,
+        structured_output=model_to_dict(structured),
+    )
 
 
 def _run_tool_calling_analysis(
@@ -291,10 +318,12 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     if expert_config is None:
         return {
-            "expert_results": [ToolExpertResult(
+            "expert_results": [_make_tool_result(
                 expert_type=expert_type,
                 expert_name=expert_type,
                 analysis_output=f"未找到类型为 {expert_type} 的工具专家配置。",
+                status="blocked",
+                errors=[f"missing tool expert config: {expert_type}"],
             )],
         }
 
@@ -332,10 +361,11 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
         )
 
         return {
-            "expert_results": [ToolExpertResult(
+            "expert_results": [_make_tool_result(
                 expert_type=expert_type,
                 expert_name=expert_name,
                 analysis_output=response.content.strip(),
+                status="ok",
             )],
         }
 
@@ -368,10 +398,12 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
             )
 
             return {
-                "expert_results": [ToolExpertResult(
+                "expert_results": [_make_tool_result(
                     expert_type=expert_type,
                     expert_name=expert_name,
                     analysis_output=response.content.strip(),
+                    status="degraded",
+                    errors=[file_status],
                 )],
             }
 
@@ -396,10 +428,16 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
             )
 
             return {
-                "expert_results": [ToolExpertResult(
+                "expert_results": [_make_tool_result(
                     expert_type=expert_type,
                     expert_name=expert_name,
                     analysis_output=response.content.strip(),
+                    status="degraded",
+                    artifacts={
+                        "vmcore_path": vmcore_path or "",
+                        "vmlinux_path": vmlinux_path or "",
+                    },
+                    errors=["required crash files missing"],
                 )],
             }
 
@@ -417,10 +455,16 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
         )
 
         return {
-            "expert_results": [ToolExpertResult(
+            "expert_results": [_make_tool_result(
                 expert_type=expert_type,
                 expert_name=expert_name,
                 analysis_output=response.content.strip(),
+                status="ok",
+                artifacts={
+                    "vmcore_path": vmcore_path or "",
+                    "vmlinux_path": vmlinux_path or "",
+                    "output_file": str(output_file),
+                },
             )],
         }
 
@@ -487,10 +531,16 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                 release_crash_session(vmcore_path, vmlinux_path)
 
                 return {
-                    "expert_results": [ToolExpertResult(
+                    "expert_results": [_make_tool_result(
                         expert_type=expert_type,
                         expert_name=expert_name,
                         analysis_output=response.content.strip(),
+                        status="ok",
+                        artifacts={
+                            "vmcore_path": vmcore_path or "",
+                            "vmlinux_path": vmlinux_path or "",
+                            "output_file": str(output_file),
+                        },
                     )],
                 }
 
@@ -498,10 +548,17 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                 error_msg = f"从 vmcore 提取日志失败: {str(e)}"
                 _write_tool_call_output(output_file, error_msg, expert_name)
                 return {
-                    "expert_results": [ToolExpertResult(
+                    "expert_results": [_make_tool_result(
                         expert_type=expert_type,
                         expert_name=expert_name,
                         analysis_output=error_msg,
+                        status="failed",
+                        artifacts={
+                            "vmcore_path": vmcore_path or "",
+                            "vmlinux_path": vmlinux_path or "",
+                            "output_file": str(output_file),
+                        },
+                        errors=[error_msg],
                     )],
                 }
 
@@ -517,10 +574,11 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
             )
 
             return {
-                "expert_results": [ToolExpertResult(
+                "expert_results": [_make_tool_result(
                     expert_type=expert_type,
                     expert_name=expert_name,
                     analysis_output=response.content.strip(),
+                    status="degraded",
                 )],
             }
 
@@ -536,9 +594,10 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
         )
 
         return {
-            "expert_results": [ToolExpertResult(
+            "expert_results": [_make_tool_result(
                 expert_type=expert_type,
                 expert_name=expert_name,
                 analysis_output=response.content.strip(),
+                status="degraded",
             )],
         }

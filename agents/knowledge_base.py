@@ -42,6 +42,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"- Test script: {state.get('test_script_path', '')}\n"
         f"- Expected signal: {state.get('expected_signal', '')}\n\n"
         f"## 测试验证结果\n{state.get('test_result', '')}\n\n"
+        f"## 结构化测试结果\n{state.get('test_contract', {})}\n\n"
         f"请将以上内容总结为知识库文档。"
     )
 

@@ -75,7 +75,7 @@ class SelfTestIterationState(TypedDict):
 def make_self_test_initial_state(
     fault_type: str = "nullptr",
     max_iterations: int = 5,
-    config_path: str = "maintenance_config.json",
+    config_path: str = "config.json",
     execution_mode: str = "mock",
 ) -> dict:
     """创建自迭代验证的初始状态。

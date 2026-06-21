@@ -98,15 +98,15 @@ create_config_files() {
     print_info "创建配置文件..."
 
     # 主工作流配置
-    if [ ! -f "maintenance_config.json" ]; then
+    if [ ! -f "config.json" ]; then
         if [ -f "maintenance_config.example.json" ]; then
-            cp maintenance_config.example.json maintenance_config.json
-            print_success "创建 maintenance_config.json（请编辑API key）"
+            cp maintenance_config.example.json config.json
+            print_success "创建 config.json（请编辑API key）"
         else
-            print_warning "未找到配置模板，请手动创建 maintenance_config.json"
+            print_warning "未找到配置模板，请手动创建 config.json"
         fi
     else
-        print_info "maintenance_config.json 已存在"
+        print_info "config.json 已存在"
     fi
 
     # 自测试配置
@@ -206,7 +206,7 @@ show_usage_examples() {
         echo "   source venv/bin/activate"
         echo ""
         echo -e "${BLUE}2. 运行内核故障分析工作流：${NC}"
-        echo "   python main.py --input \"问题描述\" --config maintenance_config.json"
+        echo "   python main.py --input \"问题描述\" --config config.json"
         echo ""
         echo -e "${BLUE}3. 运行自迭代验证（模拟模式）：${NC}"
         echo "   python self_test_main.py --fault_type deadlock --max_iterations 5"
@@ -215,12 +215,12 @@ show_usage_examples() {
         echo "   langgraph dev"
         echo ""
         echo -e "${YELLOW}下一步：${NC}"
-        echo -e "1. 编辑 ${GREEN}maintenance_config.json${NC} 配置API key"
+        echo -e "1. 编辑 ${GREEN}config.json${NC} 配置API key"
         echo -e "2. 运行示例测试验证系统功能"
         echo ""
     else
         echo -e "${BLUE}1. 运行内核故障分析工作流：${NC}"
-        echo "   python main.py --input \"问题描述\" --config maintenance_config.json"
+        echo "   python main.py --input \"问题描述\" --config config.json"
         echo ""
         echo -e "${BLUE}2. 运行自迭代验证（模拟模式）：${NC}"
         echo "   python self_test_main.py --fault_type deadlock --max_iterations 5"
@@ -229,7 +229,7 @@ show_usage_examples() {
         echo "   langgraph dev"
         echo ""
         echo -e "${YELLOW}下一步：${NC}"
-        echo -e "1. 编辑 ${GREEN}maintenance_config.json${NC} 配置API key"
+        echo -e "1. 编辑 ${GREEN}config.json${NC} 配置API key"
         echo -e "2. 运行示例测试验证系统功能"
         echo ""
     fi

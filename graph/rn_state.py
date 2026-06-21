@@ -9,6 +9,7 @@ class ToolExpertResult(TypedDict):
     expert_type: str           # "knowledge_search" | "lock_analysis" | "crash_analysis" | "kernel_log_analysis"
     expert_name: str
     analysis_output: str
+    structured_output: dict    # 结构化专家输出（状态、证据、artifact、错误）
 
 
 class TestResult(TypedDict):
@@ -51,12 +52,13 @@ class MaintenanceWorkflowState(TypedDict):
     test_result: str                  # 测试结果详情
     test_passed: bool                 # 是否成功复现
     test_attempts: int                # 测试尝试次数
+    test_contract: dict               # 结构化测试结果（状态码、步骤、artifact）
     # 知识库生成输出
     knowledge_file: str               # 知识库文件路径
     final_response: str
 
 
-def make_initial_state(user_input: str = "", config_path: str = "maintenance_config.json") -> dict:
+def make_initial_state(user_input: str = "", config_path: str = "config.json") -> dict:
     """Create a MaintenanceWorkflowState dict with sensible defaults.
 
     Args:
@@ -89,6 +91,7 @@ def make_initial_state(user_input: str = "", config_path: str = "maintenance_con
         "test_result": "",
         "test_passed": False,
         "test_attempts": 0,
+        "test_contract": {},
         "knowledge_file": "",
         "final_response": "",
     }
