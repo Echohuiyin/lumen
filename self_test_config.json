@@ -4,8 +4,8 @@
   "default": {
     "backend": "openai",
     "api_key": "",
-    "base_url": "",
-    "model_name": "GLM-5",
+    "base_url": "https://api.deepseek.com/v1",
+    "model_name": "deepseek-chat",
     "temperature": 0
   },
   "_skills_note": "Skill paths are auto-resolved: 1) Analysis-SKILL submodule, 2) ~/.claude/skills, 3) ~/.codebuddy/skills. Set 'path' only if using custom location.",
@@ -30,37 +30,37 @@
   "agents": {
     "validator": {
       "prompt_file": "prompts/maintenance/validator.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     },
     "pm": {
       "prompt_file": "prompts/maintenance/pm.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     },
     "kernel_expert": {
       "prompt_file": "prompts/maintenance/kernel_expert.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     },
     "test_expert": {
       "prompt_file": "prompts/maintenance/test_expert.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     },
     "knowledge_base": {
       "prompt_file": "prompts/maintenance/knowledge_base.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     },
     "evaluation": {
       "prompt_file": "prompts/self_test/evaluation.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     },
     "improvement": {
       "prompt_file": "prompts/self_test/improvement.md",
-      "model_name": "GLM-5",
+      "model_name": "deepseek-chat",
       "temperature": 0
     }
   },
@@ -71,7 +71,7 @@
       "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
       "agent": {
         "prompt_file": "prompts/maintenance/knowledge_search.md",
-        "model_name": "GLM-5",
+        "model_name": "deepseek-chat",
         "temperature": 0
       }
     },
@@ -81,7 +81,7 @@
       "description": "分析 Crash 日志，定位崩溃原因和调用栈",
       "agent": {
         "prompt_file": "prompts/maintenance/crash_analysis.md",
-        "model_name": "GLM-5",
+        "model_name": "deepseek-chat",
         "temperature": 0
       }
     },
@@ -91,7 +91,7 @@
       "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
       "agent": {
         "prompt_file": "prompts/maintenance/lock_analysis.md",
-        "model_name": "GLM-5",
+        "model_name": "deepseek-chat",
         "temperature": 0
       }
     },
@@ -101,7 +101,7 @@
       "description": "分析内核日志（dmesg/logcat等），提取关键错误信息和异常模式",
       "agent": {
         "prompt_file": "prompts/maintenance/kernel_log_analysis.md",
-        "model_name": "GLM-5",
+        "model_name": "deepseek-chat",
         "temperature": 0
       }
     }
