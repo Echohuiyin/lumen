@@ -101,6 +101,35 @@ def test_parse_input_artifacts_degrades_when_boot_kernel_is_elf():
     assert "boot_kernel_path points to ELF" in contract.errors[0]
 
 
+def test_parse_input_artifacts_identifies_linux_source_tree():
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp)
+        (source / "include" / "linux").mkdir(parents=True)
+        (source / "init").mkdir()
+        (source / "Makefile").write_text("VERSION = 6\n")
+        (source / "Kconfig").write_text("mainmenu \"Linux\"\n")
+        (source / "include" / "linux" / "kernel.h").write_text("#pragma once\n")
+        (source / "init" / "main.c").write_text("int main(void) { return 0; }\n")
+
+        contract = parse_input_artifacts(f"kernel_source: {source}")
+
+    assert contract.status == "ok"
+    checks = [item for item in contract.evidence if item.get("field") == "kernel_source_path"]
+    assert checks
+    assert checks[-1]["is_linux_source_tree"] is True
+
+
+def test_parse_input_artifacts_degrades_for_non_linux_source_dir():
+    with tempfile.TemporaryDirectory() as tmp:
+        source = Path(tmp)
+        (source / "README.md").write_text("not a kernel tree\n")
+
+        contract = parse_input_artifacts(f"kernel_source: {source}")
+
+    assert contract.status == "degraded"
+    assert any("does not look like a Linux source tree" in warning for warning in contract.warnings)
+
+
 if __name__ == "__main__":
     for test in [
         test_empty_input_blocks,
@@ -111,6 +140,8 @@ if __name__ == "__main__":
         test_parse_input_artifacts_extracts_paths_and_arch,
         test_parse_input_artifacts_validates_paths_and_kernel_types,
         test_parse_input_artifacts_degrades_when_boot_kernel_is_elf,
+        test_parse_input_artifacts_identifies_linux_source_tree,
+        test_parse_input_artifacts_degrades_for_non_linux_source_dir,
     ]:
         test()
     print("validator_rules OK")

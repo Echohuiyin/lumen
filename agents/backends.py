@@ -197,7 +197,7 @@ class AnthropicBackend:
         timeout: int = 120,
         max_tokens: int = 2048,
         temperature: float = 0,
-        max_retries: int = 3,
+        max_retries: int = 5,
     ):
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key

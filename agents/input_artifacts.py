@@ -115,6 +115,17 @@ def _validate_path_artifact(
             errors.append("boot_kernel_path points to ELF vmlinux/debug symbols, not a bootable kernel image")
         if field == "vmlinux_path" and kernel_type != "elf":
             warnings.append(f"vmlinux_path does not look like an ELF debug-symbol image: {raw_path}")
+    if field == "kernel_source_path" and is_dir:
+        markers = ["Makefile", "Kconfig", "include/linux/kernel.h", "init/main.c"]
+        missing = [marker for marker in markers if not (resolved / marker).exists()]
+        check["linux_source_markers"] = markers
+        check["missing_linux_source_markers"] = missing
+        check["is_linux_source_tree"] = not missing
+        if missing:
+            warnings.append(
+                "kernel_source_path does not look like a Linux source tree; "
+                f"missing: {', '.join(missing)}"
+            )
     evidence.append(check)
 
 

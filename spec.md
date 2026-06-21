@@ -999,6 +999,48 @@ agent contract check passed
 2. `tool_expert` 和 `test_expert` 中旧解析 fallback 仍存在，后续可以在更多调用方迁移完成后逐步删除。
 3. `kernel_source_path` 只校验目录存在性，尚未识别是否为实际 Linux source tree。
 
+## 2026-06-21 Kernel Source Artifact 校验执行记录
+
+### 已完成
+
+1. `kernel_source_path` 不再只检查目录存在性。
+2. 输入 artifact 校验会检查典型 Linux source tree 标志：
+   - `Makefile`
+   - `Kconfig`
+   - `include/linux/kernel.h`
+   - `init/main.c`
+3. 如果目录存在但不像 Linux source tree，记录 warning 并将 `input_artifacts_contract.status` 降级为 `degraded`。
+4. artifact evidence 中会记录：
+   - `linux_source_markers`
+   - `missing_linux_source_markers`
+   - `is_linux_source_tree`
+5. 为 DeepSeek Anthropic-compatible backend 将临时网络错误重试次数从 3 次提高到 5 次，降低在线测试受 TLS/transport 瞬时错误影响的概率。
+
+### 验证结果
+
+```bash
+.venv/bin/python tests/test_validator_rules.py
+.venv/bin/python -m pytest tests/test_validator_rules.py -q
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/check_agent_contracts.py
+.venv/bin/python -m pytest -q --run-online
+```
+
+结果：
+
+```text
+validator_rules OK
+10 passed
+48 passed, 18 skipped, 1 warning
+agent contract check passed
+66 passed, 1 warning
+```
+
+### 剩余问题
+
+1. Linux source tree 识别目前是启发式软校验，不能替代后续 build adapter 的确定性构建检查。
+2. 在线测试仍依赖 DeepSeek endpoint 稳定性；当前已通过重试降低瞬时连接错误影响。
+
 ## 2026-06-21 在线 LLM 与完整测试执行记录
 
 ### 已完成
