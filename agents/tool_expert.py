@@ -6,6 +6,7 @@
 """
 
 import os
+import re
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from agents.contracts import ToolExpertOutput, model_to_dict
@@ -99,6 +100,7 @@ def _make_tool_result(
     expert_name: str,
     analysis_output: str,
     status: str = "degraded",
+    evidence: list[dict] | None = None,
     artifacts: dict | None = None,
     errors: list[str] | None = None,
 ) -> ToolExpertResult:
@@ -108,6 +110,7 @@ def _make_tool_result(
         expert_name=expert_name,
         status=status,
         summary=analysis_output[:1000],
+        evidence=evidence or [],
         artifacts=artifacts or {},
         errors=errors or [],
     )
@@ -119,16 +122,178 @@ def _make_tool_result(
     )
 
 
+def _result_success(result) -> bool:
+    return bool(getattr(result, "success", False))
+
+
+def _result_output(result) -> str:
+    return str(getattr(result, "output", "") or "")
+
+
+def _run_crash_command_for_evidence(session, command: str) -> dict:
+    """Run one crash command and normalize the result for structured evidence."""
+    try:
+        result = session.run_command(command)
+        return {
+            "command": command,
+            "success": _result_success(result),
+            "output": _result_output(result),
+        }
+    except Exception as exc:
+        return {
+            "command": command,
+            "success": False,
+            "output": "",
+            "error": str(exc),
+        }
+
+
+def _collect_crash_evidence(session, expert_type: str) -> tuple[list[dict], dict, list[str], str]:
+    """Collect a deterministic crash baseline before LLM interpretation."""
+    commands = ["sys", "ps", "bt -a", "log | tail -n 200"]
+    if expert_type == "lock_analysis":
+        commands.extend(["waitq", "foreach bt"])
+
+    command_results = [_run_crash_command_for_evidence(session, command) for command in commands]
+    evidence = [_command_evidence(item) for item in command_results]
+    evidence.extend(_parse_ps_evidence(_output_for(command_results, "ps")))
+    evidence.extend(_parse_bt_evidence(_output_for(command_results, "bt -a")))
+    evidence.extend(_parse_log_evidence(_output_for(command_results, "log | tail -n 200")))
+
+    artifacts = {
+        "crash_commands": ",".join(commands),
+    }
+    errors = [
+        f"{item['command']}: {item.get('error') or item.get('output', '')[:200]}"
+        for item in command_results
+        if not item.get("success")
+    ]
+    prompt_context = _format_evidence_context(command_results, evidence)
+    return evidence, artifacts, errors, prompt_context
+
+
+def _command_evidence(command_result: dict) -> dict:
+    return {
+        "kind": "crash_command",
+        "command": command_result["command"],
+        "success": command_result.get("success", False),
+        "output_excerpt": command_result.get("output", "")[:2000],
+        "error": command_result.get("error", ""),
+    }
+
+
+def _output_for(command_results: list[dict], command: str) -> str:
+    for item in command_results:
+        if item.get("command") == command:
+            return item.get("output", "")
+    return ""
+
+
+def _parse_ps_evidence(ps_output: str) -> list[dict]:
+    evidence = []
+    for line in ps_output.splitlines():
+        match = re.match(
+            r"^\s*>?\s*(?P<pid>\d+)\s+(?P<ppid>\d+)\s+(?P<cpu>\d+)\s+"
+            r"(?P<task>[0-9a-fA-F]+)\s+(?P<state>\S+)\s+.*?\s(?P<comm>\S+)\s*$",
+            line,
+        )
+        if not match:
+            continue
+        state = match.group("state")
+        if state.upper() in {"UN", "RU", "IN"}:
+            evidence.append({
+                "kind": "task",
+                "pid": int(match.group("pid")),
+                "ppid": int(match.group("ppid")),
+                "cpu": int(match.group("cpu")),
+                "task": match.group("task"),
+                "state": state,
+                "comm": match.group("comm"),
+            })
+    return evidence
+
+
+def _parse_bt_evidence(bt_output: str) -> list[dict]:
+    evidence = []
+    current: dict | None = None
+    for line in bt_output.splitlines():
+        pid_match = re.search(r"PID:\s*(\d+).*?COMMAND:\s*\"?([^\"\n]+)\"?", line)
+        if pid_match:
+            if current:
+                evidence.append(current)
+            current = {
+                "kind": "backtrace",
+                "pid": int(pid_match.group(1)),
+                "comm": pid_match.group(2).strip(),
+                "frames": [],
+            }
+            continue
+        if current and re.search(r"#\d+\s+\[", line):
+            current["frames"].append(line.strip())
+    if current:
+        evidence.append(current)
+    for item in evidence:
+        item["frames"] = item.get("frames", [])[:20]
+    return evidence
+
+
+def _parse_log_evidence(log_output: str) -> list[dict]:
+    patterns = [
+        ("kernel_panic", r"kernel panic"),
+        ("oops", r"\boops\b"),
+        ("bug", r"\bBUG:|kernel BUG"),
+        ("null_pointer", r"null pointer|unable to handle"),
+        ("hung_task", r"blocked for more than|hung task"),
+        ("lockdep", r"lockdep|circular locking|deadlock"),
+        ("soft_lockup", r"soft lockup"),
+        ("hard_lockup", r"hard lockup"),
+        ("call_trace", r"call trace"),
+    ]
+    evidence = []
+    for line_no, line in enumerate(log_output.splitlines(), start=1):
+        lowered = line.lower()
+        for event_type, pattern in patterns:
+            if re.search(pattern, lowered, re.IGNORECASE):
+                evidence.append({
+                    "kind": "log_event",
+                    "event_type": event_type,
+                    "line": line_no,
+                    "message": line.strip(),
+                })
+                break
+    return evidence[:100]
+
+
+def _format_evidence_context(command_results: list[dict], evidence: list[dict]) -> str:
+    command_summary = "\n".join(
+        f"- {item['command']}: {'ok' if item.get('success') else 'failed'}"
+        for item in command_results
+    )
+    evidence_summary = "\n".join(
+        f"- {item.get('kind')}: {str(item)[:300]}"
+        for item in evidence[:30]
+    )
+    return f"""Deterministic crash baseline already collected.
+
+Commands:
+{command_summary}
+
+Structured evidence excerpts:
+{evidence_summary}
+"""
+
+
 def _run_tool_calling_analysis(
     llm,
     system_prompt: str,
     user_input: str,
+    expert_type: str,
     vmcore_path: str,
     vmlinux_path: str,
     expert_name: str,
     output_file: str,
     max_iterations: int = 15,
-) -> AIMessage:
+) -> tuple[AIMessage, list[dict], dict, list[str]]:
     """Execute crash analysis with tool calling.
 
     Creates crash session, binds tools to LLM, runs tool-calling loop,
@@ -150,6 +315,8 @@ def _run_tool_calling_analysis(
         # crash processes competing for the same vmcore binary)
         session = get_or_create_crash_session(vmcore_path, vmlinux_path)
 
+        evidence, artifacts, evidence_errors, evidence_context = _collect_crash_evidence(session, expert_type=expert_type)
+
         # Create session-bound tools
         crash_tools = create_crash_tools(session)
 
@@ -163,10 +330,12 @@ Available tools:
 - run_crash_command: execute a single crash command
 - run_crash_commands: batch execute multiple commands
 
+{evidence_context}
+
 INSTRUCTIONS:
-1. Call collect_baseline first to get system state, backtraces, and kernel log
-2. Identify D-state (UN) processes from ps output — record their REAL PIDs and names
-3. For each D-state process, get its backtrace (bt <pid>)
+1. Use the deterministic evidence above as ground truth
+2. Call extra crash commands only when needed to fill gaps
+3. Identify D-state (UN) processes from ps output — record their REAL PIDs and names
 4. If backtraces show mutex_lock or similar, examine the mutex struct to find owners
 5. Decode mutex.owner: counter & ~0x7 gives the task_struct pointer
 6. Cross-reference: verify that the owner task from mutex matches an actual task in ps output
@@ -267,18 +436,18 @@ Report format:
             ]
             summary_response = llm.invoke(summary_messages)
             _write_tool_call_output(output_file, summary_response.content, expert_name)
-            return summary_response
+            return summary_response, evidence, artifacts, evidence_errors
 
         # Write final output
         _write_tool_call_output(output_file, response.content, expert_name)
 
-        return response
+        return response, evidence, artifacts, evidence_errors
 
     except Exception as e:
         # Session creation or execution failed
         error_msg = f"Crash session 执行失败: {str(e)}"
         _write_tool_call_output(output_file, error_msg, expert_name)
-        return AIMessage(content=error_msg)
+        return AIMessage(content=error_msg), [], {}, [error_msg]
 
     finally:
         # Release shared session reference (stops crash process
@@ -443,10 +612,11 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
 
         # === 工具调用路径 ===
         # 文件存在，创建 crash session 并执行工具调用循环
-        response = _run_tool_calling_analysis(
+        response, evidence, evidence_artifacts, evidence_errors = _run_tool_calling_analysis(
             llm=llm,
             system_prompt=system_prompt,
             user_input=user_input,
+            expert_type=expert_type,
             vmcore_path=vmcore_path,  # 使用展开后的路径
             vmlinux_path=vmlinux_path,  # 使用展开后的路径
             expert_name=expert_name,
@@ -460,11 +630,14 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
                 expert_name=expert_name,
                 analysis_output=response.content.strip(),
                 status="ok",
+                evidence=evidence,
                 artifacts={
                     "vmcore_path": vmcore_path or "",
                     "vmlinux_path": vmlinux_path or "",
                     "output_file": str(output_file),
+                    **evidence_artifacts,
                 },
+                errors=evidence_errors,
             )],
         }
 
@@ -490,7 +663,13 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
 
                 # Execute log command to extract kernel log
                 log_result = session.run_command("log")
-                log_content = log_result.output if log_result.success else "Cannot extract kernel log"
+                log_content = _result_output(log_result) if _result_success(log_result) else "Cannot extract kernel log"
+                evidence = [_command_evidence({
+                    "command": "log",
+                    "success": _result_success(log_result),
+                    "output": log_content,
+                })]
+                evidence.extend(_parse_log_evidence(log_content))
 
                 # Build context with extracted log.
                 # Override system prompt — the prompt file describes MCP-based
@@ -536,6 +715,7 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                         expert_name=expert_name,
                         analysis_output=response.content.strip(),
                         status="ok",
+                        evidence=evidence,
                         artifacts={
                             "vmcore_path": vmcore_path or "",
                             "vmlinux_path": vmlinux_path or "",
@@ -565,6 +745,7 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
         else:
             # 没有 vmcore，纯文本分析
             user_content = f"用户输入:\n{user_input}\n\n请基于用户输入中的内核日志信息进行分析。"
+            evidence = _parse_log_evidence(user_input)
 
             response = call_llm_with_display(
                 expert_name, "分析中", llm,
@@ -579,6 +760,7 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                     expert_name=expert_name,
                     analysis_output=response.content.strip(),
                     status="degraded",
+                    evidence=evidence,
                 )],
             }
 
