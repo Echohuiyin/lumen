@@ -380,13 +380,26 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     ensure_output_dir()
     output_file = get_expert_output_file("test_expert")
 
-    # 提取 kernel 路径：优先使用内核专家产出的可启动内核路径，再回退用户输入。
-    kernel_path = state.get("boot_kernel_path") or _extract_kernel_path(state.get("user_input", ""))
-    target_arch = _normalize_target_arch(state.get("target_arch") or _extract_target_arch(state.get("user_input", "")))
-    test_script_path = state.get("test_script_path", "")
-    reproducer_dir = state.get("reproducer_dir", "")
-    reproducer_module_path = state.get("reproducer_module_path", "")
-    expected_signal = state.get("expected_signal", "")
+    artifacts = state.get("input_artifacts_contract") or {}
+    kernel_contract = state.get("kernel_contract") or {}
+
+    # 提取 kernel 路径：优先使用内核专家产出的可启动内核路径，再回退统一输入解析结果和旧文本解析。
+    kernel_path = (
+        kernel_contract.get("boot_kernel_path")
+        or state.get("boot_kernel_path")
+        or artifacts.get("boot_kernel_path")
+        or _extract_kernel_path(state.get("user_input", ""))
+    )
+    target_arch = _normalize_target_arch(
+        kernel_contract.get("target_arch")
+        or state.get("target_arch")
+        or artifacts.get("target_arch")
+        or _extract_target_arch(state.get("user_input", ""))
+    )
+    test_script_path = kernel_contract.get("test_script_path") or state.get("test_script_path", "")
+    reproducer_dir = kernel_contract.get("reproducer_dir") or state.get("reproducer_dir", "")
+    reproducer_module_path = kernel_contract.get("reproducer_module_path") or state.get("reproducer_module_path", "")
+    expected_signal = kernel_contract.get("expected_signal") or state.get("expected_signal", "")
 
     # Deterministic QEMU execution path. The LLM is no longer responsible for
     # choosing or ordering QEMU tools.

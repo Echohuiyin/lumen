@@ -7,7 +7,6 @@ project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
 from agents.pm import _select_required_experts_by_rules
-from config import load_config
 
 
 FULL_EXPERTS = [
@@ -41,8 +40,10 @@ def test_panic_with_vmcore_selects_crash_and_log():
 
 
 def test_legacy_config_with_only_crash_still_routes():
-    config = load_config("config.json", fallback_to_claude_settings=False)
-    experts, reason = _select_required_experts_by_rules("未知内核问题", config.get("tool_experts", []))
+    experts, reason = _select_required_experts_by_rules(
+        "未知内核问题",
+        [{"type": "crash_analysis"}],
+    )
     assert experts == ["crash_analysis"]
     assert reason
 

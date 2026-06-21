@@ -1,5 +1,6 @@
 import shlex
 import subprocess
+import time
 
 import httpx
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -183,3 +184,95 @@ class HTTPBackend:
             else:
                 return str(current)
         return str(current) if current else ""
+
+
+class AnthropicBackend:
+    """Minimal Anthropic-compatible Messages API backend."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        model_name: str,
+        timeout: int = 120,
+        max_tokens: int = 2048,
+        temperature: float = 0,
+        max_retries: int = 3,
+    ):
+        self._base_url = base_url.rstrip("/")
+        self._api_key = api_key
+        self._model_name = model_name
+        self._timeout = timeout
+        self._max_tokens = max_tokens
+        self._temperature = temperature
+        self._max_retries = max_retries
+
+    def invoke(self, messages: list[BaseMessage]) -> AIMessage:
+        url = f"{self._base_url}/v1/messages"
+        payload = self._build_payload(messages)
+        headers = {
+            "x-api-key": self._api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        last_error: Exception | None = None
+        for attempt in range(1, self._max_retries + 1):
+            try:
+                resp = httpx.post(url, json=payload, headers=headers, timeout=self._timeout)
+                resp.raise_for_status()
+                break
+            except httpx.TimeoutException as exc:
+                last_error = exc
+                if attempt >= self._max_retries:
+                    raise RuntimeError(f"Anthropic backend timed out after {self._timeout}s") from exc
+            except httpx.TransportError as exc:
+                last_error = exc
+                if attempt >= self._max_retries:
+                    raise RuntimeError(f"Anthropic backend transport error: {exc}") from exc
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                if status not in {408, 409, 429, 500, 502, 503, 504, 529} or attempt >= self._max_retries:
+                    raise RuntimeError(
+                        f"Anthropic backend error {status}: {exc.response.text[:1000]}"
+                    ) from exc
+                last_error = exc
+            time.sleep(min(2 ** (attempt - 1), 8))
+        else:
+            raise RuntimeError(f"Anthropic backend failed: {last_error}")
+
+        data = resp.json()
+        content = self._extract_content(data)
+        if not content:
+            raise RuntimeError(f"Anthropic backend returned empty content: {str(data)[:500]}")
+        return AIMessage(content=content)
+
+    def stream(self, messages: list[BaseMessage]):
+        result = self.invoke(messages)
+        yield result
+
+    def _build_payload(self, messages: list[BaseMessage]) -> dict:
+        system_parts = []
+        formatted = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage) or msg.type == "system":
+                system_parts.append(str(msg.content))
+                continue
+            role = "assistant" if msg.type == "ai" else "user"
+            formatted.append({"role": role, "content": str(msg.content)})
+        payload = {
+            "model": self._model_name,
+            "max_tokens": self._max_tokens,
+            "temperature": self._temperature,
+            "messages": formatted or [{"role": "user", "content": ""}],
+        }
+        if system_parts:
+            payload["system"] = "\n\n".join(system_parts)
+        return payload
+
+    @staticmethod
+    def _extract_content(data: dict) -> str:
+        parts = []
+        for item in data.get("content", []):
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(item.get("text", ""))
+        return "".join(parts).strip()

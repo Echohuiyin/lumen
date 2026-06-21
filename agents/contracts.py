@@ -70,6 +70,21 @@ class ValidationResultContract(BaseModel):
     feedback: str = ""
 
 
+class InputArtifactsContract(BaseModel):
+    """Deterministically extracted artifacts from user input."""
+
+    status: WorkflowStatus = "inconclusive"
+    vmcore_path: str = ""
+    vmlinux_path: str = ""
+    boot_kernel_path: str = ""
+    target_arch: str = ""
+    kernel_source_path: str = ""
+    reproducer_path: str = ""
+    log_excerpt: str = ""
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 class KernelExpertOutput(BaseModel):
     """Structured Kernel Expert output.
 

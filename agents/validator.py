@@ -3,6 +3,7 @@ from pathlib import Path
 import re
 
 from agents.contracts import ValidationResultContract, model_to_dict
+from agents.input_artifacts import parse_input_artifacts
 from agents.llm_display import call_llm_with_persistence
 from config import get_llm_with_config, load_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
@@ -14,12 +15,14 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
     只负责判断信息是否完整，不完整则要求用户补充，完整则交给 PM。
     """
     config = load_config(state["config_path"])
+    input_artifacts = parse_input_artifacts(state.get("user_input", ""))
     rule_result = _validate_input_by_rules(state.get("user_input", ""))
     if rule_result.status in {"ok", "blocked"}:
         return {
             "validation_passed": rule_result.validation_passed,
             "validation_feedback": rule_result.feedback,
             "validation_contract": model_to_dict(rule_result),
+            "input_artifacts_contract": model_to_dict(input_artifacts),
             "config": config,
         }
 
@@ -53,6 +56,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
             "validation_passed": True,
             "validation_feedback": "",
             "validation_contract": model_to_dict(contract),
+            "input_artifacts_contract": model_to_dict(input_artifacts),
             "config": config,
         }
     else:
@@ -75,6 +79,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
             "validation_passed": False,
             "validation_feedback": feedback,
             "validation_contract": model_to_dict(contract),
+            "input_artifacts_contract": model_to_dict(input_artifacts),
             "config": config,
         }
 

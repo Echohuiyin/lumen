@@ -37,6 +37,15 @@ def _extract_vmcore_paths(user_input: str) -> tuple[str | None, str | None]:
     return vmcore_path, vmlinux_path
 
 
+def _vmcore_paths_from_state(state: MaintenanceWorkflowState) -> tuple[str | None, str | None]:
+    artifacts = state.get("input_artifacts_contract") or {}
+    vmcore_path = artifacts.get("vmcore_path") or None
+    vmlinux_path = artifacts.get("vmlinux_path") or None
+    if vmcore_path or vmlinux_path:
+        return vmcore_path, vmlinux_path
+    return _extract_vmcore_paths(state.get("user_input", ""))
+
+
 def _resolve_file_path(path: str | None, try_suffixes: list[str] | None = None) -> str | None:
     """Resolve a file path, handling ~ expansion and optional suffix fallbacks.
 
@@ -540,7 +549,7 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     elif expert_type in ("crash_analysis", "lock_analysis"):
         # Crash/锁分析专家：使用工具调用执行 crash 命令
-        vmcore_path_raw, vmlinux_path_raw = _extract_vmcore_paths(user_input)
+        vmcore_path_raw, vmlinux_path_raw = _vmcore_paths_from_state(state)
 
         # Resolve paths (expand ~ and try .elf suffix for vmcore)
         vmcore_path = _resolve_file_path(vmcore_path_raw, try_suffixes=[".elf"])
@@ -643,7 +652,7 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
 
     elif expert_type == "kernel_log_analysis":
         # 内核日志分析专家：如果有 vmcore，使用 crash 提取日志
-        vmcore_path_raw, vmlinux_path_raw = _extract_vmcore_paths(user_input)
+        vmcore_path_raw, vmlinux_path_raw = _vmcore_paths_from_state(state)
         vmcore_path = _resolve_file_path(vmcore_path_raw, try_suffixes=[".elf"])
         vmlinux_path = _resolve_file_path(vmlinux_path_raw) if vmlinux_path_raw else None
         vmcore_exists = _check_file_exists(vmcore_path_raw)

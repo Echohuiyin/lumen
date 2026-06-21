@@ -1,39 +1,84 @@
 {
   "default": {
-    "backend": "openai",
+    "backend": "anthropic",
     "api_key": "",
-    "base_url": "https://api.deepseek.com/v1",
-    "model_name": "deepseek-chat",
+    "settings_file": "~/.claude/settings.json_ds",
+    "base_url": "",
+    "model_name": "deepseek-v4-flash",
     "temperature": 0.0
   },
   "agents": {
     "kernel_expert": {
-      "backend": "openai",
+      "backend": "anthropic",
       "api_key": "",
-      "base_url": "https://api.deepseek.com/v1",
-      "model_name": "deepseek-chat",
+      "base_url": "",
+      "model_name": "",
       "temperature": 0.0,
       "prompt_file": "prompts/maintenance/kernel_expert.md"
     },
     "test_expert": {
-      "backend": "openai",
+      "backend": "anthropic",
       "api_key": "",
-      "base_url": "https://api.deepseek.com/v1",
-      "model_name": "deepseek-chat",
+      "base_url": "",
+      "model_name": "",
       "temperature": 0.0,
       "prompt_file": "prompts/maintenance/test_expert.md"
-    },
-    "tool_expert": {
-      "crash_analysis": {
-        "backend": "openai",
+    }
+  },
+  "tool_experts": [
+    {
+      "type": "knowledge_search",
+      "name": "历史知识库搜索专家",
+      "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
+      "agent": {
+        "backend": "anthropic",
         "api_key": "",
-        "base_url": "https://api.deepseek.com/v1",
-        "model_name": "deepseek-chat",
+        "base_url": "",
+        "model_name": "",
+        "temperature": 0.0,
+        "prompt_file": "prompts/maintenance/knowledge_search.md"
+      }
+    },
+    {
+      "type": "lock_analysis",
+      "name": "锁分析专家",
+      "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
+      "agent": {
+        "backend": "anthropic",
+        "api_key": "",
+        "base_url": "",
+        "model_name": "",
+        "temperature": 0.0,
+        "prompt_file": "prompts/maintenance/lock_analysis.md"
+      }
+    },
+    {
+      "type": "crash_analysis",
+      "name": "Crash分析专家",
+      "description": "分析 vmcore/crash 日志，定位崩溃原因和调用栈",
+      "agent": {
+        "backend": "anthropic",
+        "api_key": "",
+        "base_url": "",
+        "model_name": "",
         "temperature": 0.0,
         "prompt_file": "prompts/maintenance/crash_analysis.md"
       }
+    },
+    {
+      "type": "kernel_log_analysis",
+      "name": "内核日志分析专家",
+      "description": "分析内核日志，提取关键错误信息和异常模式",
+      "agent": {
+        "backend": "anthropic",
+        "api_key": "",
+        "base_url": "",
+        "model_name": "",
+        "temperature": 0.0,
+        "prompt_file": "prompts/maintenance/kernel_log_analysis.md"
+      }
     }
-  },
+  ],
   "workflow": {
     "max_test_attempts": 3
   }

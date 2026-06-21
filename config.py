@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
-from agents.backends import CLIBackend, HTTPBackend
+from agents.backends import AnthropicBackend, CLIBackend, HTTPBackend
 from paths import PROJECT_ROOT, resolve_aicrasher_path
 
 # Add aicrasher to Python path for crash session management (from submodule)
@@ -27,12 +27,15 @@ DEFAULT_CONFIG_PATH = "config.json"
 LEGACY_CONFIG_PATH = "maintenance_config.json"
 
 
-def load_claude_settings() -> dict:
+def load_claude_settings(settings_file: str | None = None) -> dict:
     """Load Claude Code settings from ~/.claude/settings.json.
 
     Returns env vars that can be used as LLM configuration fallback.
     """
-    settings_path = Path.home() / ".claude" / "settings.json"
+    if settings_file:
+        settings_path = Path(settings_file).expanduser()
+    else:
+        settings_path = Path.home() / ".claude" / "settings.json"
     if not settings_path.exists():
         return {}
 
@@ -41,10 +44,17 @@ def load_claude_settings() -> dict:
         env = settings.get("env", {})
 
         # Map Claude settings env vars to LLM config format
+        model_name = (
+            env.get("ANTHROPIC_MODEL", "")
+            or settings.get("model", "")
+            or env.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "")
+            or env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "")
+            or env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "")
+        )
         return {
             "api_key": env.get("ANTHROPIC_AUTH_TOKEN", ""),
             "base_url": env.get("ANTHROPIC_BASE_URL", ""),
-            "model_name": env.get("ANTHROPIC_MODEL", ""),
+            "model_name": model_name,
         }
     except Exception:
         return {}
@@ -67,7 +77,7 @@ def validate_agent_backend(agent_name: str, backend: str) -> None:
 def get_llm_with_config(agent_config: dict, *, default_config: dict | None = None, agent_name: str = ""):
     """Create LLM backend instance from agent-level config, falling back to default_config.
 
-    Returns one of: ChatOpenAI, CLIBackend, HTTPBackend
+    Returns one of: ChatOpenAI, AnthropicBackend, CLIBackend, HTTPBackend
     depending on the 'backend' field in config.
     """
     defaults = default_config or {}
@@ -83,6 +93,14 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             api_key=agent_config.get("api_key") or defaults.get("api_key", ""),
             base_url=agent_config.get("base_url") or defaults.get("base_url"),
             temperature=float(agent_config.get("temperature", defaults.get("temperature", 0))),
+        )
+    elif backend == "anthropic":
+        return AnthropicBackend(
+            base_url=agent_config.get("base_url") or defaults.get("base_url", ""),
+            api_key=agent_config.get("api_key") or defaults.get("api_key", ""),
+            model_name=agent_config.get("model_name") or defaults.get("model_name", ""),
+            temperature=float(agent_config.get("temperature", defaults.get("temperature", 0))),
+            timeout=int(agent_config.get("http_timeout", defaults.get("http_timeout", 120))),
         )
     elif backend == "cli":
         cli_command = agent_config.get("cli_command") or defaults.get("cli_command", "")
@@ -105,7 +123,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             response_path=agent_config.get("http_response_path") or defaults.get("http_response_path", "choices.0.message.content"),
         )
     else:
-        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'cli', or 'http'.")
+        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', or 'http'.")
 
 
 def load_prompt_from_file(path: str) -> str:
@@ -188,8 +206,8 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
 
     # Fill empty LLM config from Claude settings
     if fallback_to_claude_settings:
-        claude_settings = load_claude_settings()
         default = config.get("default", {})
+        claude_settings = load_claude_settings(default.get("settings_file"))
 
         if not default.get("api_key") and claude_settings.get("api_key"):
             default["api_key"] = claude_settings["api_key"]

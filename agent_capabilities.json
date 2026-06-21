@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "agents": {
+    "validator": {
+      "role": "Validate whether the user input contains enough kernel-maintenance context to route the workflow.",
+      "prompt_file": "prompts/maintenance/validator.md",
+      "required_inputs": ["user_input", "config_path"],
+      "optional_inputs": ["config"],
+      "outputs": ["validation_passed", "validation_feedback", "validation_contract", "input_artifacts_contract", "config"],
+      "tools": [],
+      "downstream_consumers": ["pm", "knowledge_base"]
+    },
+    "pm": {
+      "role": "Classify the issue and select tool experts for fan-out execution.",
+      "prompt_file": "prompts/maintenance/pm.md",
+      "required_inputs": ["user_input", "validation_feedback", "config"],
+      "optional_inputs": ["validation_contract", "input_artifacts_contract"],
+      "outputs": ["required_experts", "pm_routing_reason", "issue_id", "issue_url"],
+      "tools": [],
+      "downstream_consumers": ["tool_expert", "knowledge_base"]
+    },
+    "knowledge_search": {
+      "role": "Retrieve similar historical cases and summarize reusable investigation context.",
+      "prompt_file": "prompts/maintenance/knowledge_search.md",
+      "required_inputs": ["user_input", "expert_type", "config"],
+      "optional_inputs": ["input_artifacts_contract"],
+      "outputs": ["expert_results"],
+      "tools": ["rag_case_retrieval"],
+      "downstream_consumers": ["kernel_expert", "knowledge_base"]
+    },
+    "crash_analysis": {
+      "role": "Analyze vmcore/vmlinux data with direct crash-session tools and produce evidence-backed crash findings.",
+      "prompt_file": "prompts/maintenance/crash_analysis.md",
+      "required_inputs": ["user_input", "expert_type", "config"],
+      "optional_inputs": ["input_artifacts_contract", "vmcore_path", "vmlinux_path"],
+      "outputs": ["expert_results"],
+      "tools": ["collect_baseline", "run_crash_command", "run_crash_commands", "get_command_history"],
+      "downstream_consumers": ["kernel_expert", "knowledge_base"]
+    },
+    "lock_analysis": {
+      "role": "Analyze lock, hung-task, and deadlock evidence with direct crash-session tools.",
+      "prompt_file": "prompts/maintenance/lock_analysis.md",
+      "required_inputs": ["user_input", "expert_type", "config"],
+      "optional_inputs": ["input_artifacts_contract", "vmcore_path", "vmlinux_path"],
+      "outputs": ["expert_results"],
+      "tools": ["collect_baseline", "run_crash_command", "run_crash_commands", "get_command_history"],
+      "downstream_consumers": ["kernel_expert", "knowledge_base"]
+    },
+    "kernel_log_analysis": {
+      "role": "Analyze kernel logs from user input or pre-extracted crash-session log output.",
+      "prompt_file": "prompts/maintenance/kernel_log_analysis.md",
+      "required_inputs": ["user_input", "expert_type", "config"],
+      "optional_inputs": ["input_artifacts_contract", "vmcore_path", "vmlinux_path"],
+      "outputs": ["expert_results"],
+      "tools": ["extract_crash_log"],
+      "downstream_consumers": ["kernel_expert", "knowledge_base"]
+    },
+    "kernel_expert": {
+      "role": "Synthesize tool expert findings, create reproducer artifacts, compile where possible, and emit kernel_contract.",
+      "prompt_file": "prompts/maintenance/kernel_expert.md",
+      "required_inputs": ["user_input", "expert_results", "config"],
+      "optional_inputs": ["input_artifacts_contract", "test_result", "test_attempts"],
+      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract"],
+      "tools": ["create_directory", "write_file", "read_file", "compile_module", "check_file_exists", "list_directory", "search_files", "bash"],
+      "downstream_consumers": ["test_expert", "knowledge_base"]
+    },
+    "test_expert": {
+      "role": "Run deterministic QEMU validation from a validated kernel_contract and emit test_contract.",
+      "prompt_file": "prompts/maintenance/test_expert.md",
+      "required_inputs": ["user_input", "kernel_contract", "config"],
+      "optional_inputs": ["input_artifacts_contract", "reproduce_case", "kernel_diagnosis", "test_attempts"],
+      "outputs": ["test_result", "test_passed", "test_attempts", "test_contract"],
+      "tools": ["check_qemu_available", "create_initramfs", "boot_kernel", "analyze_boot_log"],
+      "downstream_consumers": ["kernel_expert", "knowledge_base"]
+    },
+    "knowledge_base": {
+      "role": "Archive the full analysis, structured contracts, evidence, reproducer artifacts, and test result.",
+      "prompt_file": "prompts/maintenance/knowledge_base.md",
+      "required_inputs": ["user_input", "expert_results", "kernel_contract", "test_contract", "config"],
+      "optional_inputs": ["validation_contract", "input_artifacts_contract", "kernel_analysis", "test_result", "issue_id", "issue_url"],
+      "outputs": ["knowledge_file", "final_response"],
+      "tools": ["rag_case_import"],
+      "downstream_consumers": []
+    }
+  }
+}

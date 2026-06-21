@@ -6,6 +6,7 @@ import sys
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
+from agents.input_artifacts import parse_input_artifacts
 from agents.validator import _validate_input_by_rules, validator_node
 
 
@@ -49,7 +50,20 @@ def test_validator_node_returns_contract_for_rule_pass():
     result = validator_node(state)
     assert result["validation_passed"] is True
     assert result["validation_contract"]["reason"] == "rule_detected_kernel_signals"
+    assert "input_artifacts_contract" in result
     assert result["config"]
+
+
+def test_parse_input_artifacts_extracts_paths_and_arch():
+    contract = parse_input_artifacts(
+        "arm64 panic vmcore: /tmp/vmcore vmlinux: /tmp/vmlinux "
+        "boot_kernel: /linux/arch/arm64/boot/Image"
+    )
+    assert contract.status == "ok"
+    assert contract.vmcore_path == "/tmp/vmcore"
+    assert contract.vmlinux_path == "/tmp/vmlinux"
+    assert contract.boot_kernel_path == "/linux/arch/arm64/boot/Image"
+    assert contract.target_arch == "arm64"
 
 
 if __name__ == "__main__":
@@ -59,6 +73,7 @@ if __name__ == "__main__":
         test_deadlock_passes_without_llm,
         test_vague_input_blocks,
         test_validator_node_returns_contract_for_rule_pass,
+        test_parse_input_artifacts_extracts_paths_and_arch,
     ]:
         test()
     print("validator_rules OK")

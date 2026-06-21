@@ -26,6 +26,7 @@ def route_after_pm(state: MaintenanceWorkflowState):
         Send("tool_expert", {
             "expert_type": expert_type,
             "user_input": state.get("user_input", ""),
+            "input_artifacts_contract": state.get("input_artifacts_contract", {}),
             "config": state.get("config", {}),
             "config_path": state.get("config_path", ""),
         })
