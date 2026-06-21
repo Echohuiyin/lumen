@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import re
+import os
+from pathlib import Path
 
 from agents.contracts import InputArtifactsContract
-from agents.test_runner import normalize_target_arch
+from agents.test_runner import detect_kernel_type, normalize_target_arch
+from paths import PROJECT_ROOT
 
 
 PATH_PATTERN = r"([~/][^\s,，;；]+)"
@@ -61,11 +64,66 @@ def _extract_log_excerpt(text: str, limit: int = 4000) -> str:
     return text[start:start + limit].strip()
 
 
-def parse_input_artifacts(user_input: str) -> InputArtifactsContract:
+def _resolve_input_path(path: str) -> Path:
+    expanded = Path(os.path.expanduser(path))
+    if not expanded.is_absolute():
+        expanded = PROJECT_ROOT / expanded
+    return expanded.resolve()
+
+
+def _validate_path_artifact(
+    *,
+    field: str,
+    raw_path: str,
+    expected_kind: str,
+    evidence: list[dict],
+    warnings: list[str],
+    errors: list[str],
+) -> None:
+    resolved = _resolve_input_path(raw_path)
+    if not resolved.exists():
+        warnings.append(f"{field} does not exist: {raw_path}")
+        evidence.append({
+            "kind": "input_artifact_check",
+            "field": field,
+            "path": str(resolved),
+            "exists": False,
+            "expected_kind": expected_kind,
+        })
+        return
+
+    is_dir = resolved.is_dir()
+    is_file = resolved.is_file()
+    if expected_kind == "dir" and not is_dir:
+        errors.append(f"{field} is not a directory: {raw_path}")
+    elif expected_kind == "file" and not is_file:
+        errors.append(f"{field} is not a file: {raw_path}")
+
+    check = {
+        "kind": "input_artifact_check",
+        "field": field,
+        "path": str(resolved),
+        "exists": True,
+        "expected_kind": expected_kind,
+        "is_file": is_file,
+        "is_dir": is_dir,
+    }
+    if field in {"boot_kernel_path", "vmlinux_path"} and is_file:
+        kernel_type = detect_kernel_type(str(resolved))
+        check["kernel_type"] = kernel_type
+        if field == "boot_kernel_path" and kernel_type == "elf":
+            errors.append("boot_kernel_path points to ELF vmlinux/debug symbols, not a bootable kernel image")
+        if field == "vmlinux_path" and kernel_type != "elf":
+            warnings.append(f"vmlinux_path does not look like an ELF debug-symbol image: {raw_path}")
+    evidence.append(check)
+
+
+def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> InputArtifactsContract:
     """Parse common artifact paths and target metadata from free-form input."""
     text = user_input or ""
     evidence: list[dict] = []
     warnings: list[str] = []
+    errors: list[str] = []
 
     vmcore_path, vmcore_label = _extract_labeled_path(text, ["vmcore", "/proc/vmcore", "kdump"])
     vmlinux_path, vmlinux_label = _extract_labeled_path(text, ["vmlinux"])
@@ -102,7 +160,31 @@ def parse_input_artifacts(user_input: str) -> InputArtifactsContract:
     if vmlinux_path and not boot_kernel_path:
         warnings.append("vmlinux_path was provided without a boot_kernel_path; vmlinux is not a QEMU boot image")
 
-    status = "ok" if evidence else "inconclusive"
+    if validate_paths:
+        expected_kinds = {
+            "vmcore_path": "file",
+            "vmlinux_path": "file",
+            "boot_kernel_path": "file",
+            "kernel_source_path": "dir",
+            "reproducer_path": "file",
+        }
+        for field, (value, _) in fields.items():
+            if value:
+                _validate_path_artifact(
+                    field=field,
+                    raw_path=value,
+                    expected_kind=expected_kinds[field],
+                    evidence=evidence,
+                    warnings=warnings,
+                    errors=errors,
+                )
+
+    if errors:
+        status = "degraded"
+    elif warnings:
+        status = "degraded"
+    else:
+        status = "ok" if evidence else "inconclusive"
     return InputArtifactsContract(
         status=status,
         vmcore_path=vmcore_path,
@@ -114,4 +196,5 @@ def parse_input_artifacts(user_input: str) -> InputArtifactsContract:
         log_excerpt=log_excerpt,
         evidence=evidence,
         warnings=warnings,
+        errors=errors,
     )

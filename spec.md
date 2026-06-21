@@ -955,6 +955,50 @@ Phase 5：端到端回归
 2. `input_artifacts_contract` 当前只做文本解析，不做文件存在性和文件类型校验；后续应加入 artifact validator。
 3. `boot_kernel_path` 和 `vmlinux_path` 的类型校验仍主要在 Kernel/Test contract 阶段完成，后续可前移到输入解析后的软校验。
 
+## 2026-06-21 输入 Artifact 校验执行记录
+
+### 已完成
+
+1. `InputArtifactsContract` 增加 `errors` 字段。
+2. `parse_input_artifacts()` 增加软校验能力：
+   - 检查已解析路径是否存在
+   - 检查文件/目录类型是否符合字段语义
+   - 对 `vmlinux_path` 和 `boot_kernel_path` 进行 kernel 类型识别
+   - 当 `boot_kernel_path` 指向 ELF `vmlinux` 时降级并记录错误
+   - 当路径不存在时记录 warning 和 artifact check evidence
+3. `parse_input_artifacts(validate_paths=False)` 可用于只测试解析行为或保留兼容场景。
+4. 增加输入 artifact 校验测试：
+   - 路径和架构解析
+   - vmlinux ELF 类型识别
+   - boot kernel bzImage 类型识别
+   - boot kernel 误传 ELF 时降级
+
+### 验证结果
+
+```bash
+.venv/bin/python tests/test_validator_rules.py
+.venv/bin/python -m pytest tests/test_validator_rules.py -q
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/check_agent_contracts.py
+.venv/bin/python -m pytest -q --run-online
+```
+
+结果：
+
+```text
+validator_rules OK
+8 passed
+46 passed, 18 skipped, 1 warning
+agent contract check passed
+64 passed, 1 warning
+```
+
+### 剩余问题
+
+1. 目前输入 artifact 校验是软校验，只记录 `warnings/errors` 并把状态降为 `degraded`，不会直接阻断工作流。
+2. `tool_expert` 和 `test_expert` 中旧解析 fallback 仍存在，后续可以在更多调用方迁移完成后逐步删除。
+3. `kernel_source_path` 只校验目录存在性，尚未识别是否为实际 Linux source tree。
+
 ## 2026-06-21 在线 LLM 与完整测试执行记录
 
 ### 已完成
