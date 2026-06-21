@@ -107,6 +107,8 @@ crash> struct task_struct.pid,comm,state 0xffff8ab201e3d700
 
 ### 分析流程
 
+
+
 #### 步骤 1: 确定锁类型
 
 使用 `run_crash_command` 执行 `struct -o mutex <lock-address>` 查看锁结构。
