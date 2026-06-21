@@ -8,9 +8,11 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from agents.contracts import KernelExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_persistence, display_expert_outputs, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.kernel_tools import create_kernel_tools
+from agents.test_runner import detect_kernel_type, normalize_target_arch
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
+from paths import PROJECT_ROOT
 
 
 def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_name: str):
@@ -267,6 +269,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         )
         kernel_contract = _merge_kernel_contract(kernel_contract, fallback_contract)
 
+    kernel_contract = _validate_kernel_contract_artifacts(kernel_contract)
     contract_ready = _kernel_contract_ready_for_test(kernel_contract)
 
     return {
@@ -406,3 +409,83 @@ def _kernel_contract_ready_for_test(contract: KernelExpertOutput) -> bool:
     if contract.status != "ok":
         return False
     return _kernel_contract_has_handoff(contract)
+
+
+def _resolve_contract_path(path: str) -> Path:
+    expanded = Path(os.path.expanduser(path))
+    if not expanded.is_absolute():
+        expanded = PROJECT_ROOT / expanded
+    return expanded.resolve()
+
+
+def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelExpertOutput:
+    """Validate Kernel Expert handoff paths before routing to Test Expert."""
+    data = model_to_dict(contract)
+    warnings = list(data.get("warnings") or [])
+    evidence = list(data.get("evidence") or [])
+    errors: list[str] = []
+
+    target_arch = normalize_target_arch(contract.target_arch)
+    if target_arch != contract.target_arch:
+        data["target_arch"] = target_arch
+        warnings.append(f"normalized target_arch to {target_arch}")
+    if not target_arch:
+        errors.append("missing target_arch")
+    elif target_arch not in {"x86_64", "arm64", "arm32"}:
+        errors.append(f"unsupported target_arch: {target_arch}")
+
+    required_paths = {
+        "boot_kernel_path": contract.boot_kernel_path,
+        "test_script_path": contract.test_script_path,
+    }
+    optional_paths = {
+        "reproducer_dir": contract.reproducer_dir,
+        "reproducer_module_path": contract.reproducer_module_path,
+    }
+
+    for field, raw_path in required_paths.items():
+        if not raw_path:
+            errors.append(f"missing {field}")
+            continue
+        resolved = _resolve_contract_path(raw_path)
+        if not resolved.exists():
+            errors.append(f"{field} does not exist: {raw_path}")
+            continue
+        data[field] = str(resolved)
+        evidence.append({"kind": "artifact", "field": field, "path": str(resolved)})
+
+    for field, raw_path in optional_paths.items():
+        if not raw_path:
+            continue
+        resolved = _resolve_contract_path(raw_path)
+        if not resolved.exists():
+            warnings.append(f"{field} does not exist: {raw_path}")
+            continue
+        data[field] = str(resolved)
+        evidence.append({"kind": "artifact", "field": field, "path": str(resolved)})
+
+    boot_kernel = data.get("boot_kernel_path", "")
+    if boot_kernel and Path(boot_kernel).exists():
+        kernel_type = detect_kernel_type(boot_kernel)
+        evidence.append({
+            "kind": "artifact_check",
+            "field": "boot_kernel_path",
+            "path": boot_kernel,
+            "kernel_type": kernel_type,
+        })
+        if kernel_type == "elf":
+            errors.append("boot_kernel_path points to ELF vmlinux/debug symbols, not a bootable kernel image")
+
+    if not contract.expected_signal:
+        errors.append("missing expected_signal")
+
+    data["warnings"] = warnings
+    data["evidence"] = evidence
+    if errors:
+        data["status"] = "blocked"
+        data["blocked_reason"] = "; ".join(errors)
+    elif data.get("status") in {"blocked", "degraded"} and _kernel_contract_has_handoff(_model_validate(KernelExpertOutput, data)):
+        data["status"] = "ok"
+        data["blocked_reason"] = ""
+
+    return _model_validate(KernelExpertOutput, data)
