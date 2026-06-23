@@ -55,6 +55,20 @@ def _resolve_runtime_path(path: str | Path) -> Path:
     return p.resolve()
 
 
+def _detect_kernel_type(kernel_path: str) -> str:
+    """Return elf, bzimage, raw_image, or unknown."""
+    try:
+        with open(kernel_path, "rb") as f:
+            header = f.read(4)
+        if header == b"\x7fELF":
+            return "elf"
+        if header[:2] == b"MZ" or header == b"HdrS":
+            return "bzimage"
+        return "raw_image"
+    except Exception:
+        return "unknown"
+
+
 def _normalize_arch(arch: str | None) -> str:
     value = (arch or "x86_64").lower()
     aliases = {
@@ -209,6 +223,9 @@ def boot_kernel(
 ) -> str:
     """Boot kernel in QEMU and capture boot log.
 
+    Writes QEMU serial output directly to a file via -serial file: option,
+    bypassing any shell pipe buffering issues that could cause empty logs.
+
     Args:
         kernel_path: Path to kernel image (vmlinux or Image)
         initramfs_path: Path to initramfs/initrd
@@ -230,63 +247,78 @@ def boot_kernel(
     if not initramfs.exists():
         return f"Error: initramfs not found: {initramfs_path}"
 
-    # Find boot script
-    boot_script_map = {
-        "x86_64": "boot_x86.sh",
-        "arm64": "boot_arm64.sh",
-        "arm32": "boot_arm32.sh",
-    }
-    boot_script_name = boot_script_map.get(arch, "boot_x86.sh")
-    boot_script_path = find_qemu_script(boot_script_name)
+    # Create log file for serial output (written directly by QEMU)
+    serial_log = tempfile.mktemp(suffix=".log", prefix="qemu_serial_")
 
-    if not boot_script_path:
-        return f"Error: boot script not found: {boot_script_name}"
-
-    # Create temp log file
-    log_path = tempfile.mktemp(suffix=".log", prefix="qemu_boot_")
+    kernel_type = _detect_kernel_type(str(kernel))
+    if kernel_type == "elf":
+        return (
+            f"✗ Kernel is ELF vmlinux (debug symbols only, not bootable)\n"
+            f"  Kernel: {kernel}\n"
+            f"  QEMU requires a bzImage for {arch}."
+        )
 
     try:
-        cmd = [
-            "bash", str(boot_script_path),
-            "--kernel", str(kernel),
-            "--initrd", str(initramfs),
-            "--timeout", str(timeout),
-            "--memory", memory,
+        # Build QEMU command directly — no intermediate shell script,
+        # no pipe buffering. Serial output goes directly to a file via
+        # -serial file: which is the most reliable capture method.
+        cmdline = f"console=ttyS0 root=/dev/ram rw panic=1"
+        qemu_cmd = [
+            "qemu-system-x86_64",
+            "-smp", "2",
+            "-m", memory,
+            "-display", "none",
+            "-serial", f"file:{serial_log}",
+            "-no-reboot",
+            "-kernel", str(kernel),
+            "-initrd", str(initramfs),
+            "-append", cmdline,
         ]
 
         result = subprocess.run(
-            cmd,
+            qemu_cmd,
             capture_output=True,
             text=True,
-            timeout=timeout + 30,  # Extra buffer for script overhead
-            cwd=str(boot_script_path.parent),
+            timeout=timeout,
         )
 
-        # Combine stdout and stderr as boot log
-        boot_log = result.stdout + "\n" + result.stderr
+        # Read serial log (primary output source)
+        boot_log = ""
+        serial_path = Path(serial_log)
+        if serial_path.exists():
+            boot_log = serial_path.read_text(encoding="utf-8", errors="replace")
 
-        # Save log
-        Path(log_path).write_text(boot_log)
+        # Fallback: if serial log is empty, use subprocess captured output
+        if not boot_log.strip():
+            boot_log = result.stdout + "\n" + result.stderr
+
+        # Also save to a known path for test_runner
+        log_path = serial_log
 
         # Analyze boot result
         exit_status = result.returncode
+        # timeout(1) exits 124; QEMU with -no-reboot exits on panic;
+        # normal poweroff exits 0
+        has_panic = "Kernel panic" in boot_log or "BUG:" in boot_log
+        has_hung = "hung_task" in boot_log or "blocked for more than" in boot_log
 
         if exit_status == 0:
-            status = "✓ Boot completed successfully"
-        elif exit_status == 124 or "Timeout" in boot_log:
+            status = "✓ Boot completed successfully (poweroff)"
+        elif has_panic or has_hung:
+            status = "✓ Boot completed with expected kernel panic"
+        elif exit_status == 124 or exit_status == 143:
             status = "⚠ Boot timed out"
         else:
             status = f"✗ Boot failed (exit: {exit_status})"
 
-        # Extract key info from log
+        # Extract kernel version and panic info
         kernel_version = ""
-        if "Linux version" in boot_log:
-            for line in boot_log.split("\n"):
-                if "Linux version" in line:
-                    kernel_version = line.strip()
-                    break
+        for line in boot_log.split("\n"):
+            if "Linux version" in line:
+                kernel_version = line.strip()
+                break
 
-        panic_detected = "Kernel panic" in boot_log or "BUG:" in boot_log
+        panic_detected = has_panic or has_hung
         boot_log_lines = boot_log.splitlines()
         last_lines = "\n".join(boot_log_lines[-20:]) if len(boot_log_lines) > 20 else boot_log
 
@@ -309,6 +341,24 @@ Last 20 lines:
 """
 
     except subprocess.TimeoutExpired:
+        # On timeout, still check if serial log has partial output
+        partial = ""
+        serial_path = Path(serial_log)
+        if serial_path.exists():
+            partial = serial_path.read_text(encoding="utf-8", errors="replace")
+        if partial.strip():
+            log_path = serial_log
+            Path(log_path).write_text(partial)
+            return f"""⚠ Boot timed out ({timeout}s) — partial output captured
+  Kernel: {kernel}
+  Initramfs: {initramfs}
+
+Boot Log saved to: {log_path}
+Log size: {len(partial)} bytes
+
+Last 20 lines:
+{chr(10).join(partial.splitlines()[-20:])}
+"""
         return f"Error: QEMU boot timed out ({timeout}s)"
     except Exception as e:
         return f"Error booting kernel: {str(e)}"
