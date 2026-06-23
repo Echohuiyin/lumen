@@ -406,7 +406,15 @@ KERNEL_CONTRACT:
 }
 ```
 
-`test.sh` 必须适配 initramfs 环境：从 `/modules/<name>.ko` 加载模块，输出明确的测试开始、模块加载结果和用于匹配的复现证据；如果测试可以安全结束，打印 `Test completed with status: <code>`。
+`test.sh` 必须适配 initramfs 环境，且必须兼容 busybox ash（不是 bash）：
+	- busybox 没有 `[` 命令 → 使用 `test` 关键字替代，如 `if test -f /path; then`
+	- busybox 不支持 `$((...))` 算术展开 → 不要使用
+	- busybox 不支持 `tail -NUM` → 使用 `tail -n NUM`
+	- 文件存在性判断：`if test -f /modules/<name>.ko; then`
+	- 返回值判断：`if test "$ret" -ne 0; then`
+	- 测试脚本从 `/modules/<name>.ko` 加载模块，输出明确的测试开始、模块加载结果和用于匹配的复现证据；如果测试可以安全结束，打印 `Test completed with status: <code>`。
+
+	🔴 compile_module 时必须传 kernel_dir 参数指向目标内核源码目录（即 boot_kernel_path 所在的内核源码树），否则模块会编译为宿主机内核版本，在 QEMU 中加载失败（invalid module format）。
 
 如果缺少 `boot_kernel_path`、`target_arch`、`test_script_path` 或 `expected_signal`，不要把 `status` 写成 `ok`。使用：
 

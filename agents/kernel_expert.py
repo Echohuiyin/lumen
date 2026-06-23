@@ -61,12 +61,25 @@ def _run_kernel_expert_with_tools(
         kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
         kernel_headers_exist = os.path.exists(kernel_headers_path)
 
+        # Derive target kernel source dir from boot_kernel_path in input_artifacts
+        boot_kernel = input_artifacts.get("boot_kernel_path", "") or input_artifacts.get("vmlinux_path", "")
+        target_kernel_dir = ""
+        if boot_kernel:
+            _kp = os.path.expanduser(boot_kernel)
+            if _kp:
+                _p = os.path.dirname(_kp)
+                for _ in range(3):
+                    _p = os.path.dirname(_p)
+                if os.path.isdir(os.path.join(_p, "include")):
+                    target_kernel_dir = _p
+
         home_dir = os.path.expanduser("~")
         context_info = f"""Kernel expert tool environment:
 
 - Home directory: {home_dir} (use this in paths, NOT /root or other guessed paths)
-- Kernel Headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
-- Kernel Version: {os.uname().release}
+{'- Target kernel source: ' + target_kernel_dir if target_kernel_dir else ''}
+- Host Kernel Headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
+- Host Kernel Version: {os.uname().release} (do NOT use for module compilation!)
 - Arch: {os.uname().machine}
 - Output directory: {OUTPUT_DIR} (for reproducer files)
 
@@ -91,6 +104,20 @@ Tool use rules:
 - Use search_files for code search.
 - Use bash only for: ls, cat, file, make commands (read-only or build operations).
 - NEVER use bash to call crash, gdb, or any analysis tools.
+
+🔴 CRITICAL: compile_module MUST use kernel_dir= pointing to the TARGET kernel
+   source directory. Always pass kernel_dir="{target_kernel_dir or '<target-kernel>'}"
+   to compile_module. The host kernel ({os.uname().release}) is the WRONG target.
+   Without the correct kernel_dir, the module will compile for the host kernel and
+   fail to load in QEMU with "invalid module format".
+
+🔴 CRITICAL: test.sh MUST be compatible with busybox ash (NOT bash). The initramfs
+   uses busybox which does NOT have:
+   - `[` (test bracket) → use `test` keyword instead, e.g. "if test -f /path; then"
+   - `$((...))` arithmetic expansion → do not use
+   - `tail -NUM` → use `tail -n NUM`
+   Always check file existence with: if test -f /path; then ...
+   Always check return codes with: if test "$ret" -ne 0; then ...
 
 Suggested workflow:
 1. Read the evidence summary from tool_experts to understand the problem
