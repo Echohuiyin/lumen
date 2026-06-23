@@ -1,38 +1,79 @@
 {
-  "version": "1.0",
-  "_comment": "NOTE: Agents 'validator', 'pm', 'kernel_expert', 'test_expert', 'knowledge_base' are automation agents and MUST NOT use 'cli' backend. CLI backend requires interactive user input and will block the workflow. Use 'openai' or 'http' backend for these agents.",
+  "version": "1.1",
+  "_comment": "NOTE: Agents 'validator', 'pm', 'kernel_expert', 'test_expert', 'knowledge_base' are automation agents and MUST NOT use 'cli' backend. Use 'openai' or 'http' backend for these agents.",
   "default": {
     "backend": "openai",
     "api_key": "your-api-key-here",
-    "base_url": "https://api.openai.com/v1",
-    "model_name": "gpt-4o-mini",
+    "base_url": "https://api.deepseek.com/v1",
+    "model_name": "deepseek-chat",
     "temperature": 0
+  },
+  "skills": {
+    "rag_case_retrieval": {
+      "path": "./skills/rag-case-retrieval",
+      "scripts": {
+        "retrieve": "scripts/retrieve_cases.py",
+        "import": "scripts/import_from_zip.py",
+        "check": "scripts/check_environment.py"
+      }
+    },
+    "vmcore_analyzer": {
+      "path": "./skills/vmcore-analyzer",
+      "scripts": {
+        "report_generator": "scripts/crash_report_generator.py"
+      }
+    },
+    "lock_analyzer": {
+      "path": "./skills/lock-analyzer"
+    },
+    "kernel_build": {
+      "path": "./skills/kernel-build"
+    },
+    "qemu_test": {
+      "path": "./skills/qemu-test",
+      "scripts": {
+        "create_initramfs": "scripts/create_initramfs.sh"
+      }
+    },
+    "kernel_testcase_generator": {
+      "path": "./skills/kernel-testcase-generator"
+    },
+    "kernel_test_validator": {
+      "path": "./skills/kernel-test-validator"
+    },
+    "jffs2_analyzer": {
+      "path": "./skills/jffs2-analyzer",
+      "scripts": {
+        "parser": "scripts/jffs2_parser.py"
+      }
+    },
+    "jffs2_fault_inject": {
+      "path": "./skills/jffs2-fault-inject",
+      "scripts": {
+        "injector": "scripts/jffs2_fault_injector.py"
+      }
+    }
+  },
+  "kernel": {
+    "source_dir": "/path/to/kernel/source",
+    "vmlinux_path": "/path/to/vmlinux",
+    "default_arch": "x86_64"
   },
   "agents": {
     "validator": {
-      "prompt_file": "prompts/maintenance/validator.md",
-      "model_name": "gpt-4o-mini",
-      "temperature": 0
+      "prompt_file": "prompts/maintenance/validator.md"
     },
     "pm": {
-      "prompt_file": "prompts/maintenance/pm.md",
-      "model_name": "gpt-4o",
-      "temperature": 0
+      "prompt_file": "prompts/maintenance/pm.md"
     },
     "kernel_expert": {
-      "prompt_file": "prompts/maintenance/kernel_expert.md",
-      "model_name": "gpt-4o",
-      "temperature": 0
+      "prompt_file": "prompts/maintenance/kernel_expert.md"
     },
     "test_expert": {
-      "prompt_file": "prompts/maintenance/test_expert.md",
-      "model_name": "gpt-4o",
-      "temperature": 0
+      "prompt_file": "prompts/maintenance/test_expert.md"
     },
     "knowledge_base": {
-      "prompt_file": "prompts/maintenance/knowledge_base.md",
-      "model_name": "gpt-4o",
-      "temperature": 0
+      "prompt_file": "prompts/maintenance/knowledge_base.md"
     }
   },
   "tool_experts": [
@@ -41,9 +82,7 @@
       "name": "历史知识库搜索专家",
       "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
       "agent": {
-        "prompt_file": "prompts/maintenance/knowledge_search.md",
-        "model_name": "gpt-4o",
-        "temperature": 0
+        "prompt_file": "prompts/maintenance/knowledge_search.md"
       }
     },
     {
@@ -51,9 +90,7 @@
       "name": "锁分析专家",
       "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
       "agent": {
-        "prompt_file": "prompts/maintenance/lock_analysis.md",
-        "model_name": "gpt-4o",
-        "temperature": 0
+        "prompt_file": "prompts/maintenance/lock_analysis.md"
       }
     },
     {
@@ -61,9 +98,7 @@
       "name": "Crash分析专家",
       "description": "分析 Crash 日志，定位崩溃原因和调用栈",
       "agent": {
-        "prompt_file": "prompts/maintenance/crash_analysis.md",
-        "model_name": "gpt-4o",
-        "temperature": 0
+        "prompt_file": "prompts/maintenance/crash_analysis.md"
       }
     },
     {
@@ -71,9 +106,7 @@
       "name": "内核日志分析专家",
       "description": "分析内核日志（dmesg/logcat等），提取关键错误信息和异常模式",
       "agent": {
-        "prompt_file": "prompts/maintenance/kernel_log_analysis.md",
-        "model_name": "gpt-4o",
-        "temperature": 0
+        "prompt_file": "prompts/maintenance/kernel_log_analysis.md"
       }
     }
   ],
