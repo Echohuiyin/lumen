@@ -1,6 +1,8 @@
 import argparse
 import logging
+import os
 import uuid
+from pathlib import Path
 
 from langgraph.checkpoint.memory import MemorySaver
 
@@ -27,14 +29,19 @@ def main():
     thread_id = str(uuid.uuid4())
     run_config = {"configurable": {"thread_id": thread_id}}
 
+    # 如果 --input 是文件路径，读取文件内容
+    user_input_text = args.input
+    if os.path.exists(args.input):
+        user_input_text = Path(args.input).read_text(encoding="utf-8", errors="replace")
+
     initial_state = make_initial_state(
-        user_input=args.input,
+        user_input=user_input_text,
         config_path=args.config,
     )
 
     print(f"\n{'=' * 60}")
     print(f"维护接口人工作流")
-    print(f"用户输入: {args.input}")
+    print(f"输入: {args.input} ({'文件已读取' if user_input_text != args.input else '直接文本'})")
     print(f"配置: {args.config}")
     print(f"{'=' * 60}")
 

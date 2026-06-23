@@ -84,7 +84,7 @@ def run_qemu_test_plan(
     plan: TestPlan,
     *,
     attempt: int,
-    timeout: int = 120,
+    timeout: int = 180,
     memory: str = "512M",
 ) -> TestResultContract:
     """Run a QEMU test plan with deterministic step order and result codes."""

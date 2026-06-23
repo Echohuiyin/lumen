@@ -281,7 +281,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         text = _generate_fallback_analysis(expert_results, input_artifacts, state)
         # Search for actual reproducer files
         outputs_dir = OUTPUT_DIR
-        reproducer_dir, test_script_path, reproducer_module_path = _find_actual_reproducer_path(outputs_dir)
+        reproducer_dir, test_script_path, reproducer_module_path, _ = _find_actual_reproducer_path(outputs_dir)
         fallback_arch = normalize_target_arch(os.uname().machine)
         fallback_boot = (
             input_artifacts.get("boot_kernel_path")
@@ -392,12 +392,12 @@ def _generate_fallback_analysis(expert_results: list, input_artifacts: dict, sta
     return "\n".join(parts)
 
 
-def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str]:
+def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str, str]:
     """Search outputs directory for actual reproducer files.
 
-    Returns: (reproducer_dir, test_script_path, reproducer_module_path)"""
+    Returns: (reproducer_dir, test_script_path, reproducer_module_path, expected_signal)"""
     if not outputs_dir.exists():
-        return "", "", ""
+        return "", "", "", ""
 
     # Find the most recently modified subdirectory with test.sh
     reproducer_dirs = sorted(
@@ -407,7 +407,7 @@ def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str]:
     )
 
     if not reproducer_dirs:
-        return "", "", ""
+        return "", "", "", ""
 
     reproducer_dir = str(reproducer_dirs[0])
     test_script_path = str(reproducer_dirs[0] / "test.sh")
@@ -416,7 +416,18 @@ def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str]:
     ko_files = list(reproducer_dirs[0].glob("*.ko"))
     reproducer_module_path = str(ko_files[0]) if ko_files else ""
 
-    return reproducer_dir, test_script_path, reproducer_module_path
+    # Parse expected_signal from test.sh REPRODUCER_SIGNAL lines
+    expected_signal = ""
+    try:
+        test_sh_text = (reproducer_dirs[0] / "test.sh").read_text()
+        import re
+        signal_match = re.search(r'REPRODUCER_SIGNAL:\s*(\S.+)', test_sh_text)
+        if signal_match:
+            expected_signal = signal_match.group(1).strip()
+    except Exception:
+        pass
+
+    return reproducer_dir, test_script_path, reproducer_module_path, expected_signal
 
 
 def _generate_auto_contract_fields(
@@ -440,7 +451,7 @@ def _generate_auto_contract_fields(
 
     # Search for actual reproducer files
     outputs_dir = OUTPUT_DIR
-    reproducer_dir, test_script_path, reproducer_module_path = _find_actual_reproducer_path(outputs_dir)
+    reproducer_dir, test_script_path, reproducer_module_path, test_signal = _find_actual_reproducer_path(outputs_dir)
 
     if reproducer_dir and not contract.reproducer_dir:
         fields["reproducer_dir"] = reproducer_dir
@@ -449,9 +460,9 @@ def _generate_auto_contract_fields(
     if reproducer_module_path and not contract.reproducer_module_path:
         fields["reproducer_module_path"] = reproducer_module_path
 
-    # expected_signal from common patterns
+    # expected_signal: prefer signal from test.sh, fallback to "blocked for more than"
     if not contract.expected_signal:
-        fields["expected_signal"] = "blocked for more than"
+        fields["expected_signal"] = test_signal or "blocked for more than"
 
     return fields
 
