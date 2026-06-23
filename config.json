@@ -2,7 +2,7 @@
   "default": {
     "backend": "anthropic",
     "api_key": "",
-    "settings_file": "~/.claude/settings.json_ds",
+    "settings_file": "~/.claude/settings.json",
     "base_url": "",
     "model_name": "deepseek-v4-flash",
     "temperature": 0.0
