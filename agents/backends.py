@@ -292,10 +292,39 @@ class AnthropicBackend:
         system_parts = []
         formatted = []
 
+        # Collect consecutive tool messages and merge into one user message
+        pending_tool_results = []
+
+        def _flush_tool_results():
+            """Emit accumulated tool results as a single user message."""
+            if not pending_tool_results:
+                return
+            formatted.append({
+                "role": "user",
+                "content": [dict(r) for r in pending_tool_results],
+            })
+            pending_tool_results.clear()
+
         for msg in messages:
             if isinstance(msg, SystemMessage) or msg.type == "system":
                 system_parts.append(str(msg.content))
                 continue
+
+            if msg.type == "tool" or isinstance(msg, ToolMessage):
+                # Accumulate tool result blocks — flush them together
+                # as a single user message (Anthropic API requirement:
+                # all tool_results must follow the tool_use immediately)
+                tool_use_id = getattr(msg, "tool_call_id", "")
+                content = str(msg.content) if msg.content else ""
+                pending_tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                })
+                continue
+
+            # Non-tool message: flush any pending tool results first
+            _flush_tool_results()
 
             if msg.type == "ai":
                 # AIMessage may contain tool_calls — format as tool_use blocks
@@ -319,22 +348,12 @@ class AnthropicBackend:
             elif isinstance(msg, HumanMessage):
                 formatted.append({"role": "user", "content": str(msg.content)})
 
-            elif msg.type == "tool":
-                # ToolMessage → Anthropic tool_result content block
-                tool_use_id = getattr(msg, "tool_call_id", "")
-                content = str(msg.content) if msg.content else ""
-                formatted.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": tool_use_id,
-                        "content": content,
-                    }],
-                })
-
             else:
                 # Fallback for any other message type
                 formatted.append({"role": "user", "content": str(msg.content)})
+
+        # Flush any trailing tool results
+        _flush_tool_results()
 
         payload = {
             "model": self._model_name,
