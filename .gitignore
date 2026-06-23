@@ -1,6 +1,7 @@
 # local env files
 .env
-maintenance_config.json 
+config.yaml
+maintenance_config.json
 AGENTS.md
 
 # IDE
@@ -32,6 +33,10 @@ _test_tmp.txt
 outputs/
 knowledge_base/
 self_test_reports/
+test_outputs/
+deadlock_analysis_output/
+venv/
+E2E_*.md
 
 # accidental LLM marker outputs (write_file misuse)
 TASK_PLAN
