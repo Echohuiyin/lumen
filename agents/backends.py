@@ -1,9 +1,10 @@
 import shlex
 import subprocess
 import time
+import uuid
 
 import httpx
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 
 class CLIBackend:
@@ -187,7 +188,7 @@ class HTTPBackend:
 
 
 class AnthropicBackend:
-    """Minimal Anthropic-compatible Messages API backend."""
+    """Minimal Anthropic-compatible Messages API backend with tool support."""
 
     def __init__(
         self,
@@ -206,6 +207,21 @@ class AnthropicBackend:
         self._max_tokens = max_tokens
         self._temperature = temperature
         self._max_retries = max_retries
+        self._tools: list | None = None  # bound tools (set via bind_tools)
+
+    def bind_tools(self, tools):
+        """Return a new instance with tools bound, following LangChain pattern."""
+        new = AnthropicBackend(
+            base_url=self._base_url,
+            api_key=self._api_key,
+            model_name=self._model_name,
+            timeout=self._timeout,
+            max_tokens=self._max_tokens,
+            temperature=self._temperature,
+            max_retries=self._max_retries,
+        )
+        new._tools = list(tools)
+        return new
 
     def invoke(self, messages: list[BaseMessage]) -> AIMessage:
         url = f"{self._base_url}/v1/messages"
@@ -241,38 +257,115 @@ class AnthropicBackend:
             raise RuntimeError(f"Anthropic backend failed: {last_error}")
 
         data = resp.json()
-        content = self._extract_content(data)
-        if not content:
-            raise RuntimeError(f"Anthropic backend returned empty content: {str(data)[:500]}")
-        return AIMessage(content=content)
+        return self._build_response(data)
 
     def stream(self, messages: list[BaseMessage]):
         result = self.invoke(messages)
         yield result
 
+    def _build_response(self, data: dict) -> AIMessage:
+        """Build AIMessage from Anthropic API response, handling tool_use blocks."""
+        text_parts = []
+        tool_calls = []
+
+        for item in data.get("content", []):
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "text":
+                text_parts.append(item.get("text", ""))
+            elif item.get("type") == "tool_use":
+                tool_calls.append({
+                    "name": item.get("name", ""),
+                    "args": item.get("input", {}),
+                    "id": item.get("id", str(uuid.uuid4())),
+                    "type": "tool_call",
+                })
+
+        content = "".join(text_parts).strip()
+        msg = AIMessage(content=content)
+        if tool_calls:
+            msg.tool_calls = tool_calls
+            msg.additional_kwargs = {"tool_calls": tool_calls}
+        return msg
+
     def _build_payload(self, messages: list[BaseMessage]) -> dict:
         system_parts = []
         formatted = []
+
         for msg in messages:
             if isinstance(msg, SystemMessage) or msg.type == "system":
                 system_parts.append(str(msg.content))
                 continue
-            role = "assistant" if msg.type == "ai" else "user"
-            formatted.append({"role": role, "content": str(msg.content)})
+
+            if msg.type == "ai":
+                # AIMessage may contain tool_calls — format as tool_use blocks
+                content_blocks = []
+                text = str(msg.content) if msg.content else ""
+                if text.strip():
+                    content_blocks.append({"type": "text", "text": text})
+                tool_calls = getattr(msg, "tool_calls", None) or []
+                for tc in tool_calls:
+                    content_blocks.append({
+                        "type": "tool_use",
+                        "id": tc.get("id", str(uuid.uuid4())),
+                        "name": tc.get("name", ""),
+                        "input": tc.get("args", {}),
+                    })
+                if content_blocks:
+                    formatted.append({"role": "assistant", "content": content_blocks})
+                else:
+                    formatted.append({"role": "assistant", "content": text or " "})
+
+            elif isinstance(msg, HumanMessage):
+                formatted.append({"role": "user", "content": str(msg.content)})
+
+            elif msg.type == "tool":
+                # ToolMessage → Anthropic tool_result content block
+                tool_use_id = getattr(msg, "tool_call_id", "")
+                content = str(msg.content) if msg.content else ""
+                formatted.append({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": tool_use_id,
+                        "content": content,
+                    }],
+                })
+
+            else:
+                # Fallback for any other message type
+                formatted.append({"role": "user", "content": str(msg.content)})
+
         payload = {
             "model": self._model_name,
             "max_tokens": self._max_tokens,
             "temperature": self._temperature,
             "messages": formatted or [{"role": "user", "content": ""}],
         }
+
+        # Add tools if bound
+        if self._tools:
+            payload["tools"] = self._tools_to_anthropic_format()
+
         if system_parts:
             payload["system"] = "\n\n".join(system_parts)
+
         return payload
 
-    @staticmethod
-    def _extract_content(data: dict) -> str:
-        parts = []
-        for item in data.get("content", []):
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
-        return "".join(parts).strip()
+    def _tools_to_anthropic_format(self) -> list[dict]:
+        """Convert LangChain StructuredTool list to Anthropic tools format."""
+        result = []
+        for tool in self._tools:
+            tool_def = {
+                "name": tool.name,
+                "description": tool.description or "",
+            }
+            if hasattr(tool, "args_schema") and tool.args_schema:
+                try:
+                    tool_def["input_schema"] = tool.args_schema.schema()
+                except Exception:
+                    tool_def["input_schema"] = {"type": "object", "properties": {}}
+            else:
+                tool_def["input_schema"] = {"type": "object", "properties": {}}
+            result.append(tool_def)
+        return result

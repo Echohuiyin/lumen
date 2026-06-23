@@ -40,6 +40,7 @@ def _run_kernel_expert_with_tools(
     user_content: str,
     expert_name: str,
     output_file: str,
+    target_kernel_dir: str = "",
     max_iterations: int = 15,
 ) -> AIMessage:
     """Execute kernel expert analysis with tool calling.
@@ -60,18 +61,6 @@ def _run_kernel_expert_with_tools(
         # Build context info for LLM
         kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
         kernel_headers_exist = os.path.exists(kernel_headers_path)
-
-        # Derive target kernel source dir from boot_kernel_path in input_artifacts
-        boot_kernel = input_artifacts.get("boot_kernel_path", "") or input_artifacts.get("vmlinux_path", "")
-        target_kernel_dir = ""
-        if boot_kernel:
-            _kp = os.path.expanduser(boot_kernel)
-            if _kp:
-                _p = os.path.dirname(_kp)
-                for _ in range(3):
-                    _p = os.path.dirname(_p)
-                if os.path.isdir(os.path.join(_p, "include")):
-                    target_kernel_dir = _p
 
         home_dir = os.path.expanduser("~")
         context_info = f"""Kernel expert tool environment:
@@ -291,6 +280,18 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "final_response": error_msg,
         }
 
+    # Derive target kernel source dir from boot_kernel_path in input_artifacts
+    boot_kernel_path = input_artifacts.get("boot_kernel_path", "") or input_artifacts.get("vmlinux_path", "")
+    target_kernel_dir = ""
+    if boot_kernel_path:
+        _kp = os.path.expanduser(boot_kernel_path)
+        if _kp:
+            _p = os.path.dirname(_kp)
+            for _ in range(3):
+                _p = os.path.dirname(_p)
+            if os.path.isdir(os.path.join(_p, "include")):
+                target_kernel_dir = _p
+
     # 执行工具调用
     response = _run_kernel_expert_with_tools(
         llm=llm,
@@ -298,6 +299,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         user_content=user_content,
         expert_name="内核专家",
         output_file=output_file,
+        target_kernel_dir=target_kernel_dir,
         max_iterations=20,
     )
 
