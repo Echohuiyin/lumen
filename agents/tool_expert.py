@@ -25,8 +25,13 @@ def _extract_vmcore_paths(user_input: str) -> tuple[str | None, str | None]:
     import re
 
     # Support both Chinese and English keywords before the path
-    vmcore_pattern = r'vmcore\s*(?:文件|file)?\s*[：:]\s*([~/\w\-\.]+)'
-    vmlinux_pattern = r'vmlinux\s*(?:文件|file)?\s*[：:]\s*([~/\w\-\.]+)'
+    # Support space or colon separator (e.g., "vmcore 文件 ~/path" or "vmcore: ~/path")
+    # Stop at common delimiters: space, comma (Chinese/English), semicolon, newline
+    # Match paths starting with ~ or /
+    path_capture = r'([~/][^,，;；\s]+)'
+
+    vmcore_pattern = rf'vmcore\s*(?:文件|file|路径|path)?(?:\s*[：:])?\s*{path_capture}'
+    vmlinux_pattern = rf'vmlinux\s*(?:文件|file|路径|path)?(?:\s*[：:])?\s*{path_capture}'
 
     vmcore_match = re.search(vmcore_pattern, user_input, re.IGNORECASE)
     vmlinux_match = re.search(vmlinux_pattern, user_input, re.IGNORECASE)

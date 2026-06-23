@@ -1,12 +1,20 @@
 """路径解析模块：统一处理项目和子模块路径。
 
 所有路径基于 PROJECT_ROOT 动态解析，避免硬编码。
+
+可通过环境变量覆盖默认路径：
+    LUMEN_OUTPUT_DIR    复现器输出目录（默认 outputs/）
 """
 
 from pathlib import Path
+import os
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+# 复现器输出目录（可通过环境变量覆盖）
+_OUTPUT_DIR_OVERRIDE = os.environ.get("LUMEN_OUTPUT_DIR")
+OUTPUT_DIR = Path(_OUTPUT_DIR_OVERRIDE) if _OUTPUT_DIR_OVERRIDE else (PROJECT_ROOT / "outputs")
 
 # Analysis-SKILL 子模块路径（git submodule）
 ANALYSIS_SKILL_PATH = PROJECT_ROOT / "Analysis-SKILL"
