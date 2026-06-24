@@ -2,12 +2,13 @@
   "version": "1.2",
   "_comment": "Each agent (in 'agents' and 'tool_experts[].agent') can independently override any field from 'default' (backend, api_key, base_url, model_name, temperature, http_timeout). Leave a field empty or omit it to inherit from 'default'. NOTE: 'validator', 'pm', 'kernel_expert', 'test_expert', 'knowledge_base' are automation agents and MUST NOT use 'cli' backend — use 'openai' or 'http' instead.",
   "default": {
-    "backend": "openai",
-    "api_key": "your-api-key-here",
-    "base_url": "https://api.deepseek.com/v1",
-    "model_name": "deepseek-chat",
+    "backend": "anthropic",
+    "api_key": "",
+    "base_url": "",
+    "model_name": "",
     "temperature": 0,
-    "http_timeout": 120
+    "http_timeout": 120,
+    "settings_file": "~/.claude/settings.json"
   },
   "skills": {
     "rag_case_retrieval": {
@@ -67,7 +68,8 @@
       "api_key": "",
       "base_url": "",
       "model_name": "",
-      "temperature": null
+      "temperature": null,
+      "settings_file": ""
     },
     "pm": {
       "prompt_file": "prompts/maintenance/pm.md",
@@ -75,7 +77,8 @@
       "api_key": "",
       "base_url": "",
       "model_name": "",
-      "temperature": null
+      "temperature": null,
+      "settings_file": ""
     },
     "kernel_expert": {
       "prompt_file": "prompts/maintenance/kernel_expert.md",
@@ -84,7 +87,8 @@
       "base_url": "",
       "model_name": "",
       "temperature": null,
-      "http_timeout": null
+      "http_timeout": null,
+      "settings_file": ""
     },
     "test_expert": {
       "prompt_file": "prompts/maintenance/test_expert.md",
@@ -92,7 +96,8 @@
       "api_key": "",
       "base_url": "",
       "model_name": "",
-      "temperature": null
+      "temperature": null,
+      "settings_file": ""
     },
     "knowledge_base": {
       "prompt_file": "prompts/maintenance/knowledge_base.md",
@@ -100,7 +105,8 @@
       "api_key": "",
       "base_url": "",
       "model_name": "",
-      "temperature": null
+      "temperature": null,
+      "settings_file": ""
     }
   },
   "tool_experts": [
@@ -114,7 +120,8 @@
         "api_key": "",
         "base_url": "",
         "model_name": "",
-        "temperature": null
+        "temperature": null,
+        "settings_file": ""
       }
     },
     {
@@ -127,7 +134,8 @@
         "api_key": "",
         "base_url": "",
         "model_name": "",
-        "temperature": null
+        "temperature": null,
+        "settings_file": ""
       }
     },
     {
@@ -140,7 +148,8 @@
         "api_key": "",
         "base_url": "",
         "model_name": "",
-        "temperature": null
+        "temperature": null,
+        "settings_file": ""
       }
     },
     {
@@ -153,7 +162,8 @@
         "api_key": "",
         "base_url": "",
         "model_name": "",
-        "temperature": null
+        "temperature": null,
+        "settings_file": ""
       }
     }
   ],

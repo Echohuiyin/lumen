@@ -92,15 +92,15 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             model=agent_config.get("model_name") or defaults.get("model_name", "gpt-4o-mini"),
             api_key=agent_config.get("api_key") or defaults.get("api_key", ""),
             base_url=agent_config.get("base_url") or defaults.get("base_url"),
-            temperature=float(agent_config.get("temperature", defaults.get("temperature", 0))),
+            temperature=float(agent_config.get("temperature") if agent_config.get("temperature") is not None else defaults.get("temperature", 0)),
         )
     elif backend == "anthropic":
         return AnthropicBackend(
             base_url=agent_config.get("base_url") or defaults.get("base_url", ""),
             api_key=agent_config.get("api_key") or defaults.get("api_key", ""),
             model_name=agent_config.get("model_name") or defaults.get("model_name", ""),
-            temperature=float(agent_config.get("temperature", defaults.get("temperature", 0))),
-            timeout=int(agent_config.get("http_timeout", defaults.get("http_timeout", 120))),
+            temperature=float(agent_config.get("temperature") if agent_config.get("temperature") is not None else defaults.get("temperature", 0)),
+            timeout=int(agent_config.get("http_timeout") if agent_config.get("http_timeout") is not None else defaults.get("http_timeout", 120)),
         )
     elif backend == "cli":
         cli_command = agent_config.get("cli_command") or defaults.get("cli_command", "")
@@ -207,7 +207,8 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
     # Fill empty LLM config from Claude settings
     if fallback_to_claude_settings:
         default = config.get("default", {})
-        claude_settings = load_claude_settings(default.get("settings_file"))
+        default_settings_file = default.get("settings_file")
+        claude_settings = load_claude_settings(default_settings_file)
 
         if not default.get("api_key") and claude_settings.get("api_key"):
             default["api_key"] = claude_settings["api_key"]
@@ -217,6 +218,33 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
             default["model_name"] = claude_settings["model_name"]
 
         config["default"] = default
+
+        # Per-agent Claude settings override: each agent may carry its own
+        # settings_file pointing to a different ~/.claude/settings.json variant.
+        # Load that file and fill any empty backend/api_key/base_url/model_name
+        # on the agent before get_llm_with_config falls back to default.
+        def _apply_agent_settings(agent_cfg: dict) -> None:
+            agent_settings_file = agent_cfg.get("settings_file")
+            if not agent_settings_file:
+                return
+            agent_settings = load_claude_settings(agent_settings_file)
+            if not agent_settings:
+                return
+            if not agent_cfg.get("api_key") and agent_settings.get("api_key"):
+                agent_cfg["api_key"] = agent_settings["api_key"]
+            if not agent_cfg.get("base_url") and agent_settings.get("base_url"):
+                agent_cfg["base_url"] = agent_settings["base_url"]
+            if not agent_cfg.get("model_name") and agent_settings.get("model_name"):
+                agent_cfg["model_name"] = agent_settings["model_name"]
+
+        for agent_cfg in config.get("agents", {}).values():
+            if isinstance(agent_cfg, dict):
+                _apply_agent_settings(agent_cfg)
+
+        for expert in config.get("tool_experts", []) or []:
+            agent_cfg = expert.get("agent") if isinstance(expert, dict) else None
+            if isinstance(agent_cfg, dict):
+                _apply_agent_settings(agent_cfg)
 
     return config
 
