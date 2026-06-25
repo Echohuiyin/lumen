@@ -12,6 +12,7 @@ import pytest
 
 
 ONLINE_TEST_NODEIDS = (
+    "tests/test_agent_capabilities.py",
     "tests/test_expert_io_format.py",
     "tests/test_kernel_expert.py::test_kernel_expert_tool_calling",
     "tests/test_test_expert.py::test_qemu_tool_calling",
