@@ -1,3 +1,5 @@
+import json
+import os
 import shlex
 import subprocess
 import time
@@ -388,3 +390,107 @@ class AnthropicBackend:
                 tool_def["input_schema"] = {"type": "object", "properties": {}}
             result.append(tool_def)
         return result
+
+
+class ClaudeCodeBackend:
+    """LLM backend that drives the Claude Code CLI as a mature code agent.
+
+    Delegates the tool-calling loop to `claude -p` (non-interactive print mode),
+    letting Claude Code's own agent loop handle Read/Write/Edit/Bash/Grep/Glob
+    instead of lumen's self-built tool_calling_loop. Returns the final text
+    result parsed from the CLI's JSON output.
+    """
+
+    def __init__(
+        self,
+        cli_command: str = "claude",
+        cli_timeout: int = 600,
+        model: str = "sonnet",
+        permission_mode: str = "bypassPermissions",
+        max_turns: int = 50,
+        settings_file: str = "",
+    ):
+        self._cli_command = cli_command
+        self._cli_timeout = cli_timeout
+        self._model = model
+        self._permission_mode = permission_mode
+        self._max_turns = max_turns
+        self._settings_file = settings_file
+
+    def bind_tools(self, tools):
+        """No-op: Claude Code has its own built-in tools. Returns self so the
+        backend can be used where `llm.bind_tools(tools)` is called."""
+        return self
+
+    def invoke(self, messages: list[BaseMessage], *, workdir: str = "", add_dirs: list[str] | None = None) -> AIMessage:
+        system_parts: list[str] = []
+        user_parts: list[str] = []
+        for msg in messages:
+            if isinstance(msg, SystemMessage) or msg.type == "system":
+                system_parts.append(str(msg.content))
+            elif isinstance(msg, HumanMessage) or msg.type == "human":
+                user_parts.append(str(msg.content))
+            else:
+                user_parts.append(str(msg.content))
+
+        user_prompt = "\n\n".join(user_parts) or " "
+        system_prompt = "\n\n".join(system_parts)
+
+        cmd: list[str] = [
+            self._cli_command,
+            "-p", user_prompt,
+            "--output-format", "json",
+            "--permission-mode", self._permission_mode,
+            "--model", self._model,
+            "--max-turns", str(self._max_turns),
+        ]
+        if system_prompt.strip():
+            cmd.extend(["--system-prompt", system_prompt])
+        if add_dirs:
+            for d in add_dirs:
+                cmd.extend(["--add-dir", d])
+        if self._settings_file:
+            settings_path = os.path.expanduser(self._settings_file)
+            if os.path.exists(settings_path):
+                cmd.extend(["--settings", settings_path])
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=workdir or None,
+                capture_output=True,
+                text=True,
+                timeout=self._cli_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Claude Code timed out after {self._cli_timeout}s") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Claude Code CLI not found: {self._cli_command}") from exc
+
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Claude Code failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
+            )
+
+        stdout = result.stdout.strip()
+        if not stdout:
+            raise RuntimeError("Claude Code returned empty stdout")
+
+        try:
+            data = json.loads(stdout)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"Claude Code returned non-JSON output: {stdout[:500]}"
+            ) from exc
+
+        if data.get("is_error"):
+            raise RuntimeError(
+                f"Claude Code reported error: {data.get('result', '')[:500]}"
+            )
+
+        content = data.get("result", "") or ""
+        return AIMessage(content=content)
+
+    def stream(self, messages: list[BaseMessage]):
+        """Non-streaming fallback: invoke and yield single chunk."""
+        yield self.invoke(messages)

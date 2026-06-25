@@ -8,7 +8,7 @@
     "model_name": "",
     "temperature": 0,
     "http_timeout": 120,
-    "settings_file": "~/.claude/settings.json"
+    "settings_file": "~/.claude/settings.json_GLM5"
   },
   "skills": {
     "rag_case_retrieval": {
@@ -82,13 +82,13 @@
     },
     "kernel_expert": {
       "prompt_file": "prompts/maintenance/kernel_expert.md",
-      "backend": "",
-      "api_key": "",
-      "base_url": "",
-      "model_name": "",
-      "temperature": null,
-      "http_timeout": null,
-      "settings_file": ""
+      "backend": "claude_code",
+      "cli_command": "claude",
+      "model": "sonnet",
+      "cli_timeout": 600,
+      "permission_mode": "bypassPermissions",
+      "max_turns": 50,
+      "settings_file": "~/.claude/settings.json"
     },
     "test_expert": {
       "prompt_file": "prompts/maintenance/test_expert.md",

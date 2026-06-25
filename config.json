@@ -2,18 +2,20 @@
   "default": {
     "backend": "anthropic",
     "api_key": "",
-    "settings_file": "~/.claude/settings.json",
+    "settings_file": "~/.claude/settings.json_GLM5",
     "base_url": "",
     "model_name": "deepseek-v4-flash",
     "temperature": 0.0
   },
   "agents": {
     "kernel_expert": {
-      "backend": "anthropic",
-      "api_key": "",
-      "base_url": "",
-      "model_name": "",
-      "temperature": 0.0,
+      "backend": "claude_code",
+      "cli_command": "claude",
+      "model": "sonnet",
+      "cli_timeout": 600,
+      "permission_mode": "bypassPermissions",
+      "max_turns": 50,
+      "settings_file": "~/.claude/settings.json_GLM5_lmr",
       "prompt_file": "prompts/maintenance/kernel_expert.md"
     },
     "test_expert": {
@@ -22,6 +24,7 @@
       "base_url": "",
       "model_name": "",
       "temperature": 0.0,
+      "settings_file": "~/.claude/settings.json_GLM5",
       "prompt_file": "prompts/maintenance/test_expert.md"
     }
   },
@@ -36,6 +39,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
+        "settings_file": "~/.claude/settings.json_GLM5",
         "prompt_file": "prompts/maintenance/knowledge_search.md"
       }
     },
@@ -49,6 +53,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
+        "settings_file": "~/.claude/settings.json_GLM5_lmr",
         "prompt_file": "prompts/maintenance/lock_analysis.md"
       }
     },
@@ -62,6 +67,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
+        "settings_file": "~/.claude/settings.json_GLM5",
         "prompt_file": "prompts/maintenance/crash_analysis.md"
       }
     },
@@ -75,6 +81,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
+        "settings_file": "~/.claude/settings.json_GLM5",
         "prompt_file": "prompts/maintenance/kernel_log_analysis.md"
       }
     }

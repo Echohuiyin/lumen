@@ -4,7 +4,7 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
-from agents.backends import AnthropicBackend, CLIBackend, HTTPBackend
+from agents.backends import AnthropicBackend, CLIBackend, ClaudeCodeBackend, HTTPBackend
 from paths import PROJECT_ROOT, resolve_aicrasher_path
 
 # Add aicrasher to Python path for crash session management (from submodule)
@@ -22,6 +22,11 @@ AUTOMATION_AGENTS = [
     "evaluation",
     "improvement",
 ]
+
+# Automation agents permitted to use the Claude Code CLI backend.
+# These agents delegate to `claude -p` whose own agent loop is mature enough
+# to run without interactive prompts (unlike raw CLIBackend).
+CLAUDE_CODE_ALLOWED = {"kernel_expert"}
 
 DEFAULT_CONFIG_PATH = "config.json"
 LEGACY_CONFIG_PATH = "maintenance_config.json"
@@ -61,16 +66,24 @@ def load_claude_settings(settings_file: str | None = None) -> dict:
 
 
 def validate_agent_backend(agent_name: str, backend: str) -> None:
-    """Validate that automation agents don't use CLI backend.
+    """Validate that automation agents don't use raw CLI backend.
 
     CLI backend requires interactive user input and will block the workflow.
-    Automation agents must use OpenAI or HTTP backend for automatic execution.
+    Automation agents must use OpenAI, HTTP, or Claude Code backend for
+    automatic execution. Claude Code (`claude -p`) is allowed for agents in
+    CLAUDE_CODE_ALLOWED because it runs non-interactively with its own agent
+    loop.
     """
     if agent_name in AUTOMATION_AGENTS and backend == "cli":
         raise ValueError(
             f"Agent '{agent_name}' is an automation agent and cannot use CLI backend. "
             f"CLI backend requires interactive user input and will block the workflow. "
-            f"Please use 'openai' or 'http' backend instead."
+            f"Please use 'openai', 'http', or 'claude_code' backend instead."
+        )
+    if agent_name in AUTOMATION_AGENTS and backend == "claude_code" and agent_name not in CLAUDE_CODE_ALLOWED:
+        raise ValueError(
+            f"Agent '{agent_name}' is not permitted to use claude_code backend. "
+            f"Only agents in CLAUDE_CODE_ALLOWED may use it."
         )
 
 
@@ -111,6 +124,15 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             timeout=int(agent_config.get("cli_timeout", defaults.get("cli_timeout", 120))),
             cli_stdin=bool(agent_config.get("cli_stdin", defaults.get("cli_stdin", False))),
         )
+    elif backend == "claude_code":
+        return ClaudeCodeBackend(
+            cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "claude"),
+            cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 600)),
+            model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", "sonnet"),
+            permission_mode=agent_config.get("permission_mode") or defaults.get("permission_mode", "bypassPermissions"),
+            max_turns=int(agent_config.get("max_turns") if agent_config.get("max_turns") is not None else defaults.get("max_turns", 50)),
+            settings_file=agent_config.get("settings_file") or defaults.get("settings_file", ""),
+        )
     elif backend == "http":
         url = agent_config.get("http_url") or defaults.get("http_url", "")
         if not url:
@@ -123,7 +145,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             response_path=agent_config.get("http_response_path") or defaults.get("http_response_path", "choices.0.message.content"),
         )
     else:
-        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', or 'http'.")
+        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', 'claude_code', or 'http'.")
 
 
 def load_prompt_from_file(path: str) -> str:

@@ -7,20 +7,10 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from agents.contracts import KernelExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_persistence, display_expert_outputs, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
-from agents.kernel_tools import create_kernel_tools
 from agents.test_runner import detect_kernel_type, normalize_target_arch
-from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 from paths import PROJECT_ROOT, OUTPUT_DIR
-
-
-def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_name: str):
-    """Log tool execution to output file."""
-    args_str = ", ".join(f"{k}={v}" for k, v in tool_args.items()) if tool_args else ""
-    with open(output_file, "a", encoding="utf-8") as f:
-        f.write(f"\n[{expert_name}] 执行工具: {tool_name}({args_str})\n")
-        f.write("等待输出...\n")
 
 
 def _write_tool_call_output(output_file: str, content: str, expert_name: str):
@@ -34,71 +24,56 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
         f.write(footer)
 
 
-def _run_kernel_expert_with_tools(
+def _run_kernel_expert_with_claude_code(
     llm,
     system_prompt: str,
     user_content: str,
     expert_name: str,
     output_file: str,
     target_kernel_dir: str = "",
-    max_iterations: int = 15,
 ) -> AIMessage:
-    """Execute kernel expert analysis with tool calling.
+    """Execute kernel expert analysis via Claude Code CLI.
 
-    Creates kernel tools, binds to LLM, runs tool-calling loop,
-    and returns final AIMessage with analysis result.
+    Delegates the tool-calling loop to `claude -p`, letting Claude Code's own
+    agent loop handle Read/Write/Edit/Bash/Grep/Glob. Returns the final text
+    result with KERNEL_CONTRACT and marker lines for downstream parsing.
     """
-    # Write initial header
-    header = _format_agent_header_text(expert_name, "分析构造用例（工具调用）")
+    header = _format_agent_header_text(expert_name, "分析构造用例（Claude Code）")
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(header)
-        f.write("执行模式: real (文件操作和编译工具)\n\n")
+        f.write("执行模式: real (Claude Code CLI agent)\n\n")
 
     try:
-        # Create kernel tools
-        tools = create_kernel_tools()
-
-        # Build context info for LLM
         kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
         kernel_headers_exist = os.path.exists(kernel_headers_path)
 
         home_dir = os.path.expanduser("~")
-        context_info = f"""Kernel expert tool environment:
+        context_info = f"""Kernel expert tool environment (Claude Code):
 
 - Home directory: {home_dir} (use this in paths, NOT /root or other guessed paths)
-{'- Target kernel source: ' + target_kernel_dir if target_kernel_dir else ''}
+{'- Target kernel source (added to Claude Code sandbox): ' + target_kernel_dir if target_kernel_dir else ''}
 - Host Kernel Headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
 - Host Kernel Version: {os.uname().release} (do NOT use for module compilation!)
 - Arch: {os.uname().machine}
-- Output directory: {OUTPUT_DIR} (for reproducer files)
+- Output directory (your current workdir): {OUTPUT_DIR} — ALL reproducer files MUST be created under this directory
 
 IMPORTANT: You do NOT need to call crash tools directly! The tool_experts have already
 performed crash analysis (sys, ps, bt, log, etc.) and the results are in the evidence.
 Use the extracted evidence summary provided in the input to get architecture, panic
 reason, and process information. Do NOT use bash to call crash commands!
 
-You have these tools for creating reproducer:
-- create_directory: create a directory for the reproducer
-- write_file: write source code, Makefile, README, test.sh, etc.
-- read_file: read file contents to verify
-- compile_module: compile a kernel module (.ko)
-- check_file_exists: verify file existence
-- list_directory: inspect generated files
-- search_files: search source files with ripgrep
-- bash: limited to build/test operations ONLY (NOT for crash analysis)
+Claude Code tool use rules:
+- Use the Write tool to create reproducer.c/Makefile/test.sh/README.md. Do NOT use bash heredocs for source files.
+- Use the Bash tool ONLY for: ls, cat, file, make, grep, head, tail (read-only or build operations).
+- NEVER use the Bash tool to call crash, gdb, or any kernel analysis tools.
+- Use the Grep/Glob tools for code search inside the target kernel source.
+- Use the Read tool to verify generated files.
 
-Tool use rules:
-- Use write_file for file creation. Do not use bash heredocs for source files.
-- Use compile_module for kernel module builds.
-- Use search_files for code search.
-- Use bash only for: ls, cat, file, make commands (read-only or build operations).
-- NEVER use bash to call crash, gdb, or any analysis tools.
-
-🔴 CRITICAL: compile_module MUST use kernel_dir= pointing to the TARGET kernel
-   source directory. Always pass kernel_dir="{target_kernel_dir or '<target-kernel>'}"
-   to compile_module. The host kernel ({os.uname().release}) is the WRONG target.
-   Without the correct kernel_dir, the module will compile for the host kernel and
-   fail to load in QEMU with "invalid module format".
+🔴 CRITICAL: When compiling the kernel module via Bash `make`, you MUST point at the
+   TARGET kernel source. Use: make -C {target_kernel_dir or '<target-kernel>'} M=$PWD modules
+   The host kernel ({os.uname().release}) is the WRONG target. Without the correct
+   kernel source, the module will compile for the host kernel and fail to load in QEMU
+   with "invalid module format".
 
 🔴 CRITICAL: test.sh MUST be compatible with busybox ash (NOT bash). The initramfs
    uses busybox which does NOT have:
@@ -108,24 +83,58 @@ Tool use rules:
    Always check file existence with: if test -f /path; then ...
    Always check return codes with: if test "$ret" -ne 0; then ...
 
+🔴 CRITICAL: For hung_task / deadlock scenarios, test.sh MUST configure the hung_task
+   detector to actually fire and panic. The kernel cmdline does NOT include
+   hung_task_panic=1, so your test.sh MUST set it at runtime:
+     echo 10 > /proc/sys/kernel/hung_task_timeout_secs   # 10s, NOT 30s (see timing below)
+     echo 1 > /proc/sys/kernel/hung_task_panic           # panic on hung task
+   Expected signal: "blocked for more than" or "hung_task: blocked tasks"
+
+🔴 CRITICAL: khungtaskd timing — sleep MUST be long enough for the detector to fire.
+
+   khungtaskd is itself a kthread that sleeps in a loop. Each iteration it computes:
+     t = hung_last_checked - now + timeout
+   If t > 0 it sleeps t seconds, then checks. If a task has been blocked for
+   >= timeout seconds at check time, it triggers the panic.
+
+   With timeout=10s and module load at T=5s (threads block at ~T=5.5s):
+     T=5s    echo 10 > hung_task_timeout_secs (wakes khungtaskd)
+             t = 0 - 5 + 10 = 5s, khungtaskd sleeps 5s
+     T=10s   wakes, checks: 5.5+10=15.5 > 10, NOT yet (blocked for 4.5s)
+             hung_last_checked=10, t = 10-10+10=10s, sleeps 10s
+     T=20s   wakes, checks: 5.5+10=15.5 < 20, HUNG TASK DETECTED -> panic
+   So with timeout=10s, panic fires at ~T=20s. Sleep 40s is enough.
+
+   With timeout=30s (DO NOT USE — too long):
+     T=5s    echo 30 > hung_task_timeout_secs
+             t = 0 - 5 + 30 = 25s, sleeps 25s
+     T=30s   wakes, checks: 5.5+30=35.5 > 30, NOT yet
+             t = 30-30+30=30s, sleeps 30s
+     T=45.9s init script exits after sleep 40 -> "Attempted to kill init" panic
+             (hung_task would have fired at T=60s, but kernel already panicked)
+   So sleep=40s with timeout=30s FAILS — init exits before hung_task fires.
+
+   RULE: sleep_duration >= 3 * hung_task_timeout_secs (so the detector gets
+   at least 2 full check intervals). Recommended: timeout=10s, sleep=40s.
+
 Suggested workflow:
 1. Read the evidence summary from tool_experts to understand the problem
 2. Get target_arch from the evidence summary or sys output excerpt
 3. Get boot_kernel_path from the input_artifacts (vmlinux_path or boot_kernel_path)
-4. Create reproducer directory: {OUTPUT_DIR}/<bug_type>_reproducer
-5. Write reproducer source code (.c) based on the analysis findings
-6. Write Makefile with correct kernel build system integration
-7. Write test.sh that loads the module and emits clear pass/fail evidence
-8. If kernel headers exist, compile the module to verify correctness
+4. Create reproducer directory under {OUTPUT_DIR}/<bug_type>_reproducer
+5. Use Write tool to create reproducer source code (.c) based on the analysis findings
+6. Use Write tool to create Makefile with correct kernel build system integration
+7. Use Write tool to create test.sh that loads the module and emits clear pass/fail evidence
+8. If kernel headers exist, use Bash `make` to compile the module and verify correctness
 9. Output KERNEL_CONTRACT JSON with ALL required fields
 
 KERNEL_CONTRACT MUST include these fields for test_expert handoff:
 - target_arch: from evidence summary (MACHINE field in sys output)
 - boot_kernel_path: from input_artifacts or vmlinux_path
-- reproducer_dir: the directory you created
+- reproducer_dir: the directory you created under {OUTPUT_DIR}
 - reproducer_module_path: the compiled .ko path (if compiled successfully)
 - test_script_path: the test.sh you created
-- expected_signal: what the boot log should show (e.g., "blocked for more than 120 seconds")
+- expected_signal: what the boot log should show (e.g., "blocked for more than")
 
 KERNEL_CONTRACT:
 ```json
@@ -153,44 +162,27 @@ Notes:
 - For panic: create code that triggers the specific kernel panic condition
 """
 
-        # Create messages for tool-calling loop
-        messages = create_tool_call_messages(
-            system_prompt=system_prompt,
-            user_input=user_content,
-            context_info=context_info,
+        messages = [
+            SystemMessage(content=system_prompt + "\n\n" + context_info),
+            HumanMessage(content=user_content),
+        ]
+
+        add_dirs = [target_kernel_dir] if target_kernel_dir else None
+        response = llm.invoke(
+            messages,
+            workdir=str(OUTPUT_DIR),
+            add_dirs=add_dirs,
         )
 
-        # Execute tool-calling loop
-        response = execute_tool_calling_loop(
-            llm=llm,
-            messages=messages,
-            tools=tools,
-            max_iterations=max_iterations,
-            on_tool_call=lambda name, args: _log_tool_call(output_file, name, args, expert_name),
-            verbose=False,
-        )
-
-        # Write final output — fallback to summary if content empty
-        output_content = response.content
-        if not output_content or not output_content.strip():
-            # Extract last non-tool messages for summary
-            summary_lines = ["（工具调用已完成，LLM 未生成最终文本）"]
-            for msg in reversed(messages):
-                if hasattr(msg, "content") and msg.content:
-                    content = msg.content.strip()
-                    if content and len(content) > 50 and not content.startswith("Error"):
-                        import textwrap
-                        summary_lines.append("\n最后一次有效响应:")
-                        summary_lines.append(textwrap.shorten(content, width=300))
-                        break
-            output_content = "\n".join(summary_lines)
+        output_content = response.content or ""
+        if not output_content.strip():
+            output_content = "（Claude Code 未生成最终文本，请检查 Claude Code CLI 输出）"
         _write_tool_call_output(output_file, output_content, expert_name)
 
         return response
 
     except Exception as e:
-        # Execution failed
-        error_msg = f"工具调用执行失败: {str(e)}"
+        error_msg = f"Claude Code 调用失败: {str(e)}"
         _write_tool_call_output(output_file, error_msg, expert_name)
         return AIMessage(content=error_msg)
 
@@ -292,15 +284,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             if os.path.isdir(os.path.join(_p, "include")):
                 target_kernel_dir = _p
 
-    # 执行工具调用
-    response = _run_kernel_expert_with_tools(
+    # 执行 Claude Code agent 分析
+    response = _run_kernel_expert_with_claude_code(
         llm=llm,
         system_prompt=system_prompt,
         user_content=user_content,
         expert_name="内核专家",
         output_file=output_file,
         target_kernel_dir=target_kernel_dir,
-        max_iterations=20,
     )
 
     text = response.content.strip()
