@@ -144,6 +144,24 @@ run_crash_command: "bt -a"
 run_crash_command: "struct semaphore.count,sleepers,wait <lock-address>"
 ```
 
+**Rwsem 分析**：
+```python
+# 获取 rwsem owner 和计数
+run_crash_command: "struct rw_semaphore.owner,count <lock-address>"
+
+# rw_semaphore.owner 也是 atomic_long，但解码方式跟 mutex 不同：
+# - 如果 owner 的低 3 位非零，说明有 writer 持有或 handoff 中
+# - 解码 task_struct 指针：owner & ~0x3（低 2 位是标志位，不同于 mutex 的 ~0x7）
+# - 如果 owner 为 0，说明是 reader 模式，需要查 rwsem.readers 检查读者计数
+run_crash_command: "px <owner_raw> & ~0x3"
+
+# 查询 rwsem 等待链表
+run_crash_command: "struct rw_semaphore.wait_list <lock-address>"
+
+# 验证 owner 进程信息
+run_crash_command: "struct task_struct.pid,comm,state <decoded_addr>"
+```
+
 #### 步骤 3: 检测死锁
 
 ```python
@@ -189,11 +207,19 @@ struct semaphore.count,sleepers <addr>  # 计数和等待者
 struct semaphore.wait <addr>            # 等待列表
 ```
 
+**Rwsem 常用命令**：
+```bash
+struct rw_semaphore.owner,count <addr>  # rwsem owner 和计数
+struct rw_semaphore <addr>               # 完整 rwsem 信息
+struct rw_semaphore.wait_list <addr>     # 等待链表
+```
+
 **死锁检测命令**：
 ```bash
 ps -u | head -20                   # 检查所有阻塞任务
 struct task_struct.blocked_on <task_addr>  # 锁依赖
 struct task_struct.pi_top_task <task_addr>  # 优先级继承
+# rwsem 死锁：owner 解码用 & ~0x3（低 2 位标志），区别于 mutex 的 & ~0x7
 ```
 
 ### 锁问题分类诊断
@@ -213,6 +239,43 @@ struct task_struct.pi_top_task <task_addr>  # 优先级继承
 | **高竞争** | 多 CPU 在同一锁上自旋 | `foreach bt | grep spin_lock` 统计 |
 | **长时间持有** | 锁被持有超过合理时间 | 检查持有者栈和运行时间 |
 | **cgroup throttle** | 持锁进程因 CPU quota 被延迟 | 检查持有进程的 cgroup 配置 |
+
+#### 锁顺序违规
+
+| 类型 | 特征 | 分析方法 |
+|------|------|----------|
+| **层级违反** | 违反锁获取层级规则（如先拿 child 再拿 parent） | `struct task_struct.held_locks <task_addr>` 检查进程持有的锁集合 |
+| **跨子系统反序** | 跨子系统的锁获取顺序不一致 | 对比多个线程的 `held_locks`，找出反序对 |
+| **中断上下文违规** | 在中断上下文获取可睡眠锁（mutex/rwsem） | 检查中断栈 `bt -a` 中是否出现 `mutex_lock`/`rwsem_down_read` |
+
+检测命令：
+```bash
+# 查看进程持有的所有锁
+struct task_struct.held_locks <task_addr>
+
+# 查看锁的依赖层级（需要 lockdep 启用）
+struct task_struct.lockdep_depth <task_addr>
+```
+
+#### 锁泄漏
+
+| 类型 | 特征 | 分析方法 |
+|------|------|----------|
+| **未释放** | `mutex_lock` 后路径异常退出未 `mutex_unlock` | 检查持有者栈是否在异常退出路径 |
+| **错误路径泄漏** | 错误处理分支漏写 unlock | 对比持有者栈和源码错误处理路径 |
+| **半释放状态** | 锁结构状态不一致（owner 非空但无等待者且持有进程已退出） | `struct mutex.owner` 查 owner，再 `ps` 看 PID 是否存在 |
+
+检测命令：
+```bash
+# 检查锁 owner 对应的进程是否还活着
+struct mutex.owner <addr>          # 拿到 owner
+px <owner_raw> & ~0x7              # 解码
+struct task_struct.pid,comm,state <decoded_addr>  # 看进程状态
+ps | grep <pid>                    # 确认进程还在
+
+# 检查锁持有时长（通过进程运行时间和栈推断）
+bt <owner_pid>                     # 看持有者卡在哪
+```
 
 ### 常见问题排查
 

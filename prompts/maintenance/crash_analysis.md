@@ -153,30 +153,7 @@ run_crash_commands: [
 run_crash_commands: ["foreach UN bt", "files <hung_task_pid>"]
 ```
 
-**⚠️ Mutex Owner 解码（死锁场景关键）**
-
-对于 mutex 死锁导致的 Hung Task，必须正确解码 mutex.owner：
-
-```python
-# 获取 mutex 的 owner.counter 原始值
-run_crash_command: "struct mutex.owner,count <mutex_addr>"
-
-# 示例输出：
-# owner = {
-#   counter = 0xffff8ab201e3d701
-# }
-
-# 解码公式：task_struct_ptr = owner.counter & ~0x7
-run_crash_command: "px 0xffff8ab201e3d701 & ~0x7"
-
-# 使用解码后的地址查询进程信息
-run_crash_command: "struct task_struct.pid,comm,state <decoded_addr>"
-```
-
-**标志位含义（低 3 位）：**
-- Bit 0: MUTEX_FLAG_WAITERS (有等待者)
-- Bit 1: MUTEX_FLAG_HANDOFF (正在传递锁)
-- Bit 2: MUTEX_FLAG_PICKUP (等待 pick up)
+**Mutex 死锁导致的 Hung Task**：mutex owner 解码方法（`owner.counter & ~0x7` 得到 task_struct 指针）详见 lock_analysis 专家的"Mutex Owner 解码"段。如果死锁涉及 mutex，建议联动 lock_analysis 专家做完整锁依赖分析。
 
 **排查方向：**
 1. 确认是否真正长时间 D 状态
@@ -211,8 +188,8 @@ run_crash_command: "struct task_struct.pid,comm,state <decoded_addr>"
 
 | 根因分类 | 判定标准 | 后续流程 |
 |----------|---------|---------|
-| **内核缺陷** | 根因涉及内核代码 bug | → 阶段四 → 阶段五 → 阶段六 → 阶段七 |
-| **非内核缺陷** | 根因为业务配置问题、用户态程序行为等 | → **跳过阶段四**，直接进入 阶段五 → 阶段六 → 阶段七 |
+| **内核缺陷** | 根因涉及内核代码 bug | → 阶段四 → 阶段六 → 阶段七 |
+| **非内核缺陷** | 根因为业务配置问题、用户态程序行为等 | → **跳过阶段四**，直接进入 阶段六 → 阶段七 |
 
 ## 阶段四：查找社区 fix commit（条件执行）
 
