@@ -48,118 +48,13 @@ def _run_kernel_expert_with_claude_code(
         kernel_headers_exist = os.path.exists(kernel_headers_path)
 
         home_dir = os.path.expanduser("~")
-        context_info = f"""Kernel expert tool environment (Claude Code):
+        context_info = f"""Kernel expert runtime environment:
 
-- Home directory: {home_dir} (use this in paths, NOT /root or other guessed paths)
-{'- Target kernel source (added to Claude Code sandbox): ' + target_kernel_dir if target_kernel_dir else ''}
-- Host Kernel Headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
-- Host Kernel Version: {os.uname().release} (do NOT use for module compilation!)
-- Arch: {os.uname().machine}
+- Home directory: {home_dir} (use this in paths, NOT /root)
 - Output directory (your current workdir): {OUTPUT_DIR} — ALL reproducer files MUST be created under this directory
-
-IMPORTANT: You do NOT need to call crash tools directly! The tool_experts have already
-performed crash analysis (sys, ps, bt, log, etc.) and the results are in the evidence.
-Use the extracted evidence summary provided in the input to get architecture, panic
-reason, and process information. Do NOT use bash to call crash commands!
-
-Claude Code tool use rules:
-- Use the Write tool to create reproducer.c/Makefile/test.sh/README.md. Do NOT use bash heredocs for source files.
-- Use the Bash tool ONLY for: ls, cat, file, make, grep, head, tail (read-only or build operations).
-- NEVER use the Bash tool to call crash, gdb, or any kernel analysis tools.
-- Use the Grep/Glob tools for code search inside the target kernel source.
-- Use the Read tool to verify generated files.
-
-🔴 CRITICAL: When compiling the kernel module via Bash `make`, you MUST point at the
-   TARGET kernel source. Use: make -C {target_kernel_dir or '<target-kernel>'} M=$PWD modules
-   The host kernel ({os.uname().release}) is the WRONG target. Without the correct
-   kernel source, the module will compile for the host kernel and fail to load in QEMU
-   with "invalid module format".
-
-🔴 CRITICAL: test.sh MUST be compatible with busybox ash (NOT bash). The initramfs
-   uses busybox which does NOT have:
-   - `[` (test bracket) → use `test` keyword instead, e.g. "if test -f /path; then"
-   - `$((...))` arithmetic expansion → do not use
-   - `tail -NUM` → use `tail -n NUM`
-   Always check file existence with: if test -f /path; then ...
-   Always check return codes with: if test "$ret" -ne 0; then ...
-
-🔴 CRITICAL: For hung_task / deadlock scenarios, test.sh MUST configure the hung_task
-   detector to actually fire and panic. The kernel cmdline does NOT include
-   hung_task_panic=1, so your test.sh MUST set it at runtime:
-     echo 10 > /proc/sys/kernel/hung_task_timeout_secs   # 10s, NOT 30s (see timing below)
-     echo 1 > /proc/sys/kernel/hung_task_panic           # panic on hung task
-   Expected signal: "blocked for more than" or "hung_task: blocked tasks"
-
-🔴 CRITICAL: khungtaskd timing — sleep MUST be long enough for the detector to fire.
-
-   khungtaskd is itself a kthread that sleeps in a loop. Each iteration it computes:
-     t = hung_last_checked - now + timeout
-   If t > 0 it sleeps t seconds, then checks. If a task has been blocked for
-   >= timeout seconds at check time, it triggers the panic.
-
-   With timeout=10s and module load at T=5s (threads block at ~T=5.5s):
-     T=5s    echo 10 > hung_task_timeout_secs (wakes khungtaskd)
-             t = 0 - 5 + 10 = 5s, khungtaskd sleeps 5s
-     T=10s   wakes, checks: 5.5+10=15.5 > 10, NOT yet (blocked for 4.5s)
-             hung_last_checked=10, t = 10-10+10=10s, sleeps 10s
-     T=20s   wakes, checks: 5.5+10=15.5 < 20, HUNG TASK DETECTED -> panic
-   So with timeout=10s, panic fires at ~T=20s. Sleep 40s is enough.
-
-   With timeout=30s (DO NOT USE — too long):
-     T=5s    echo 30 > hung_task_timeout_secs
-             t = 0 - 5 + 30 = 25s, sleeps 25s
-     T=30s   wakes, checks: 5.5+30=35.5 > 30, NOT yet
-             t = 30-30+30=30s, sleeps 30s
-     T=45.9s init script exits after sleep 40 -> "Attempted to kill init" panic
-             (hung_task would have fired at T=60s, but kernel already panicked)
-   So sleep=40s with timeout=30s FAILS — init exits before hung_task fires.
-
-   RULE: sleep_duration >= 3 * hung_task_timeout_secs (so the detector gets
-   at least 2 full check intervals). Recommended: timeout=10s, sleep=40s.
-
-Suggested workflow:
-1. Read the evidence summary from tool_experts to understand the problem
-2. Get target_arch from the evidence summary or sys output excerpt
-3. Get boot_kernel_path from the input_artifacts (vmlinux_path or boot_kernel_path)
-4. Create reproducer directory under {OUTPUT_DIR}/<bug_type>_reproducer
-5. Use Write tool to create reproducer source code (.c) based on the analysis findings
-6. Use Write tool to create Makefile with correct kernel build system integration
-7. Use Write tool to create test.sh that loads the module and emits clear pass/fail evidence
-8. If kernel headers exist, use Bash `make` to compile the module and verify correctness
-9. Output KERNEL_CONTRACT JSON with ALL required fields
-
-KERNEL_CONTRACT MUST include these fields for test_expert handoff:
-- target_arch: from evidence summary (MACHINE field in sys output)
-- boot_kernel_path: from input_artifacts or vmlinux_path
-- reproducer_dir: the directory you created under {OUTPUT_DIR}
-- reproducer_module_path: the compiled .ko path (if compiled successfully)
-- test_script_path: the test.sh you created
-- expected_signal: what the boot log should show (e.g., "blocked for more than")
-
-KERNEL_CONTRACT:
-```json
-{{
-  "status": "ok|blocked|failed|degraded",
-  "target_arch": "x86_64|arm64|arm32",
-  "vmlinux_path": "",
-  "boot_kernel_path": "<bootable bzImage/Image path, or vmlinux if no separate boot kernel>",
-  "reproducer_dir": "<directory containing generated reproducer files>",
-  "reproducer_module_path": "<compiled .ko path>",
-  "test_script_path": "<script that loads/runs the reproducer>",
-  "expected_signal": "<boot log pattern proving reproduction>",
-  "build_status": "passed|failed|skipped",
-  "evidence": [],
-  "warnings": [],
-  "blocked_reason": ""
-}}
-```
-
-Notes:
-- Use {home_dir} in all paths
-- Use correct kernel APIs (kthread_run, mutex_lock, init_completion, etc.)
-- Makefile MUST use Tab indentation (not spaces)
-- For deadlock: create two threads that acquire locks in opposite order (ABBA)
-- For panic: create code that triggers the specific kernel panic condition
+- Host kernel: {os.uname().release} / arch {os.uname().machine} (host kernel is for compile toolchain only, NOT for module compilation target)
+- Host kernel headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
+- Target kernel source for module compilation: {target_kernel_dir or '(not detected — ask user or use boot_kernel_path-derived dir)'}
 """
 
         messages = [
