@@ -326,6 +326,7 @@ ANALYSIS:
 - **不要编造 session_id 或 MCP 调用语法** - 只选择已绑定工具和命令参数
 - 如果信息不足以确定问题类型，明确指出需要补充哪些信息
 - 注意区分真正的锁问题和由其他问题引起的锁症状
+- **只输出结论，不要输出思考过程** - 不要写"Now I have all the evidence needed"、"Let me compile the complete analysis"之类的过渡句；不要贴解码推理步骤（如 owner.counter & ~0x7 的推导过程），直接给结论表
 
 
 

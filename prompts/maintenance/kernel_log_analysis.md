@@ -194,6 +194,24 @@ awk '{gsub(/\[|\]/, "", $1); split($1, a, "."); ts=a[1]; print ts}' dmesg.log
 - 检查泄漏是否持续
 - 查找泄漏的进程或模块
 
+## 降级报告规则
+
+**如果日志不包含任何关键错误关键字**（即日志只有启动初期内容、没有 panic/hung_task/call_trace/OOM/soft_lockup/hard_lockup/null_pointer/BUG_ON 等条目），直接输出简短降级报告，不要展开分析启动参数、环境、时间线等无关内容：
+
+```
+ANALYSIS:
+
+### 日志状态
+日志内容不完整/无目标问题相关条目。
+
+### 日志范围
+- 时间范围: [起始时间戳] ~ [结束时间戳]
+- 总行数: N
+
+### 结论
+日志不包含 <目标问题类型> 相关条目。建议从 vmcore 通过 crash `log` 命令获取完整内核日志（lock_analysis 专家已执行）。
+```
+
 ## 输出格式
 
 ```
@@ -238,5 +256,6 @@ ANALYSIS:
 - **关注日志完整性**，如果日志不完整需要指出
 - **结合 vmcore 分析**（如有），日志分析是 vmcore 分析的补充
 - **注意过滤噪音**，某些 INFO 级别日志可能掩盖关键 ERROR
+- **只输出结论，不要输出思考过程** — 不要写过渡句（如"Now I have all the evidence needed"、"Let me compile"），不要贴分析推理步骤，直接给结论
 
 
