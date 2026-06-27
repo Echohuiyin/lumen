@@ -4,9 +4,101 @@ import shlex
 import subprocess
 import time
 import uuid
+from pathlib import Path
 
 import httpx
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+
+
+# Debug dump toggle: set LUMEN_DEBUG_CLAUDE_CLI=1 to capture the full CLI
+# command, prompts, and live stdout/stderr of every ClaudeCodeBackend.invoke
+# call into /tmp/lumen_outputs/. Default off to avoid disk accumulation.
+_DEBUG_CLI = os.environ.get("LUMEN_DEBUG_CLAUDE_CLI", "").strip() in {"1", "true", "yes"}
+# Stream-json toggle (implies _DEBUG_CLI): set LUMEN_CLAUDE_STREAM_JSON=1 to
+# run the CLI with --output-format stream-json --verbose so live.log captures
+# each tool_use/tool_result/assistant event as it happens, instead of one
+# final JSON blob at the end. Useful for diagnosing where kernel_expert's
+# agent loop stalls.
+_STREAM_JSON = os.environ.get("LUMEN_CLAUDE_STREAM_JSON", "").strip() in {"1", "true", "yes"}
+_DUMP_DIR = Path("/tmp/lumen_outputs")
+
+
+def _format_stream_event(line: str) -> str:
+    """Render a stream-json JSONL line as a readable single-line summary.
+
+    Returns the original line (truncated) if parsing fails so the live log
+    never silently drops output.
+    """
+    line = line.rstrip("\n")
+    if not line:
+        return ""
+    try:
+        evt = json.loads(line)
+    except json.JSONDecodeError:
+        return f"[raw] {line[:300]}"
+    etype = evt.get("type", "?")
+    subtype = evt.get("subtype", "")
+
+    if etype == "system" and subtype == "init":
+        return f"[init] session={evt.get('session_id','')[:8]} model={evt.get('model','')} tools={len(evt.get('tools',[]))}"
+    if etype == "assistant":
+        msg = evt.get("message", {}) or {}
+        content = msg.get("content", []) or []
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                txt = (block.get("text") or "").replace("\n", " ")
+                parts.append(f"text:{txt[:200]}")
+            elif btype == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {})
+                # Compact JSON, capped to keep lines readable
+                inp_str = json.dumps(inp, ensure_ascii=False)
+                if len(inp_str) > 300:
+                    inp_str = inp_str[:300] + "..."
+                parts.append(f"tool_use:{name}({inp_str})")
+            elif btype == "thinking":
+                parts.append("thinking:(...)")
+        return f"[assistant] {' | '.join(parts)}" if parts else "[assistant] (empty)"
+    if etype == "tool_result":
+        # tool_result events carry the tool output (stdout/stderr/...
+        content = evt.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                c.get("text", "") if isinstance(c, dict) else str(c)
+                for c in content
+            )
+        txt = str(content).replace("\n", " ")
+        return f"[tool_result] {txt[:300]}"
+    if etype == "user":
+        # Claude Code wraps tool results in a `user` message whose content
+        # is a list of tool_result blocks. Unwrap so the live log shows the
+        # actual tool output, not the raw envelope.
+        msg = evt.get("message", {}) or {}
+        content = msg.get("content", []) or []
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tc = block.get("content", "")
+                    if isinstance(tc, list):
+                        tc = " ".join(
+                            c.get("text", "") if isinstance(c, dict) else str(c)
+                            for c in tc
+                        )
+                    txt = str(tc).replace("\n", " ")
+                    is_err = block.get("is_error", False)
+                    return f"[tool_result]{' ERROR' if is_err else ''} {txt[:300]}"
+        return f"[user] {line[:300]}"
+    if etype == "result":
+        return (
+            f"[result] subtype={subtype} is_error={evt.get('is_error')} "
+            f"num_turns={evt.get('num_turns')} duration_ms={evt.get('duration_ms')} "
+            f"result={str(evt.get('result',''))[:300]}"
+        )
+    return f"[{etype}/{subtype}] {line[:300]}"
 
 
 class CLIBackend:
@@ -422,6 +514,97 @@ class ClaudeCodeBackend:
         backend can be used where `llm.bind_tools(tools)` is called."""
         return self
 
+    def _dump_cli_artifacts(
+        self,
+        *,
+        tag: str,
+        cmd: list[str],
+        system_prompt: str,
+        user_prompt: str,
+        workdir: str,
+    ) -> dict[str, str] | None:
+        """Write the CLI command, prompts, and workdir to /tmp/lumen_outputs/.
+
+        Returns a dict of artifact paths (or None when debug is off). The
+        command is written two ways: cmd.sh is a shell-quoted, copy-paste-
+        rerunnable form (with prompts replaced by file references so the line
+        stays readable), and cmd.raw.txt is the raw argv list.
+        """
+        if not (_DEBUG_CLI or _STREAM_JSON):
+            return None
+        try:
+            _DUMP_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        prefix = f"claude_cli_{tag}_{ts}"
+
+        system_path = _DUMP_DIR / f"{prefix}_prompt_system.txt"
+        user_path = _DUMP_DIR / f"{prefix}_prompt_user.txt"
+        cmd_raw_path = _DUMP_DIR / f"{prefix}_cmd.raw.txt"
+        cmd_sh_path = _DUMP_DIR / f"{prefix}_cmd.sh"
+        live_log_path = _DUMP_DIR / f"{prefix}_live.log"
+
+        try:
+            system_path.write_text(system_prompt, encoding="utf-8")
+            user_path.write_text(user_prompt, encoding="utf-8")
+            cmd_raw_path.write_text(
+                "\n".join(cmd) + "\n", encoding="utf-8"
+            )
+
+            # Rebuild a rerunnable shell command. Long prompts are replaced
+            # with $(cat file) references so the line stays manageable; the
+            # caller can rerun cmd.sh directly. We build the shell line
+            # manually rather than shlex.quote-ing the whole list, because
+            # the $(cat ...) expansion must stay unquoted for the shell to
+            # splice in the file contents as a single argv.
+            readable_parts: list[str] = []
+            i = 0
+            args = cmd
+            while i < len(args):
+                arg = args[i]
+                if arg == "-p" and i + 1 < len(args):
+                    readable_parts.append(shlex.quote(arg))
+                    readable_parts.append(f"\"$(cat {str(user_path)})\"")
+                    i += 2
+                    continue
+                if arg == "--system-prompt" and i + 1 < len(args):
+                    readable_parts.append(shlex.quote(arg))
+                    readable_parts.append(f"\"$(cat {str(system_path)})\"")
+                    i += 2
+                    continue
+                readable_parts.append(shlex.quote(arg))
+                i += 1
+
+            shell_line = " ".join(readable_parts)
+            header = (
+                f"# Claude Code CLI invocation (tag={tag})\n"
+                f"# Generated {ts}\n"
+                f"# workdir: {workdir or '(inherit)'}\n"
+                f"# system prompt: {system_path}\n"
+                f"# user prompt:   {user_path}\n"
+                f"# raw argv:      {cmd_raw_path}\n"
+                f"# live log:      {live_log_path}\n"
+                f"# Run with:\n"
+            )
+            cwd_prefix = f"cd {shlex.quote(workdir)} && " if workdir else ""
+            cmd_sh_path.write_text(
+                header + cwd_prefix + shell_line + "\n",
+                encoding="utf-8",
+            )
+            cmd_sh_path.chmod(0o755)
+        except OSError:
+            pass
+
+        return {
+            "system_prompt": str(system_path),
+            "user_prompt": str(user_path),
+            "cmd_raw": str(cmd_raw_path),
+            "cmd_sh": str(cmd_sh_path),
+            "live_log": str(live_log_path),
+        }
+
     def invoke(self, messages: list[BaseMessage], *, workdir: str = "", add_dirs: list[str] | None = None) -> AIMessage:
         system_parts: list[str] = []
         user_parts: list[str] = []
@@ -439,11 +622,14 @@ class ClaudeCodeBackend:
         cmd: list[str] = [
             self._cli_command,
             "-p", user_prompt,
-            "--output-format", "json",
+            "--output-format", "stream-json" if _STREAM_JSON else "json",
             "--permission-mode", self._permission_mode,
             "--model", self._model,
             "--max-turns", str(self._max_turns),
         ]
+        if _STREAM_JSON:
+            # stream-json requires --verbose per CLI spec
+            cmd.append("--verbose")
         if system_prompt.strip():
             cmd.extend(["--system-prompt", system_prompt])
         if add_dirs:
@@ -454,34 +640,84 @@ class ClaudeCodeBackend:
             if os.path.exists(settings_path):
                 cmd.extend(["--settings", settings_path])
 
+        # Debug dump: write the full command + prompts to disk so the call
+        # can be inspected or rerun. Tag includes a uuid suffix in case
+        # multiple invokes happen within the same second.
+        # _STREAM_JSON implies debug (it only makes sense when capturing logs).
+        dump_enabled = _DEBUG_CLI or _STREAM_JSON
+        tag = f"kernel_expert_{uuid.uuid4().hex[:6]}"
+        dump = self._dump_cli_artifacts(
+            tag=tag,
+            cmd=cmd,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            workdir=workdir,
+        ) if dump_enabled else None
+
         try:
-            result = subprocess.run(
-                cmd,
-                cwd=workdir or None,
-                capture_output=True,
-                text=True,
-                timeout=self._cli_timeout,
-            )
+            # When debug is on, stream stdout/stderr line-by-line to a live
+            # log so `tail -f` can watch progress. Otherwise use the original
+            # capture-once subprocess.run to keep existing behavior.
+            if dump:
+                stdout, stderr, returncode = self._run_with_live_logging(
+                    cmd,
+                    workdir=workdir or None,
+                    live_log_path=dump["live_log"],
+                    stream_json=_STREAM_JSON,
+                )
+            else:
+                result = subprocess.run(
+                    cmd,
+                    cwd=workdir or None,
+                    capture_output=True,
+                    text=True,
+                    timeout=self._cli_timeout,
+                )
+                stdout, stderr, returncode = result.stdout, result.stderr, result.returncode
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"Claude Code timed out after {self._cli_timeout}s") from exc
         except FileNotFoundError as exc:
             raise RuntimeError(f"Claude Code CLI not found: {self._cli_command}") from exc
 
-        if result.returncode != 0:
+        if returncode != 0:
             raise RuntimeError(
-                f"Claude Code failed (exit {result.returncode}): {result.stderr.strip()[:500]}"
+                f"Claude Code failed (exit {returncode}): {stderr.strip()[:500]}"
             )
 
-        stdout = result.stdout.strip()
+        stdout = stdout.strip()
         if not stdout:
             raise RuntimeError("Claude Code returned empty stdout")
 
-        try:
-            data = json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f"Claude Code returned non-JSON output: {stdout[:500]}"
-            ) from exc
+        if _STREAM_JSON:
+            # stdout is JSONL; find the final `result` event and parse it.
+            # Earlier events (system/assistant/tool_use/tool_result) were
+            # already rendered to the live log line-by-line.
+            result_obj: dict | None = None
+            parse_errors: list[str] = []
+            for line in stdout.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    evt = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    parse_errors.append(f"{line[:120]}: {exc}")
+                    continue
+                if isinstance(evt, dict) and evt.get("type") == "result":
+                    result_obj = evt
+            if result_obj is None:
+                raise RuntimeError(
+                    f"stream-json output had no result event. "
+                    f"parse_errors={parse_errors[:3]}, tail={stdout[-300:]}"
+                )
+            data = result_obj
+        else:
+            try:
+                data = json.loads(stdout)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"Claude Code returned non-JSON output: {stdout[:500]}"
+                ) from exc
 
         if data.get("is_error"):
             raise RuntimeError(
@@ -490,6 +726,106 @@ class ClaudeCodeBackend:
 
         content = data.get("result", "") or ""
         return AIMessage(content=content)
+
+    def _run_with_live_logging(
+        self,
+        cmd: list[str],
+        *,
+        workdir: str | None,
+        live_log_path: str,
+        stream_json: bool = False,
+    ) -> tuple[str, str, int]:
+        """Popen the CLI, tee stdout/stderr to live_log_path line-by-line.
+
+        Returns (stdout, stderr, returncode) with full captured text so the
+        caller can parse JSON exactly as before. stderr is also captured
+        fully even though we stream it, because non-zero exits need the
+        trimmed message for the RuntimeError.
+
+        When stream_json is True, stdout is JSONL (one event per line). Each
+        line is formatted via _format_stream_event and written to the live
+        log so `tail -f` shows tool_use/tool_result/assistant events as they
+        happen. The full stdout buffer is reconstructed so the caller can
+        still parse the final `result` event: we return the raw JSONL text
+        and let invoke() handle extraction.
+        """
+        live = open(live_log_path, "w", encoding="utf-8")
+
+        def _tee_raw(src, prefix: str, sink: list[str]) -> None:
+            """Raw line tee — used for stderr and non-stream-json stdout."""
+            if src is None:
+                return
+            for line in iter(src.readline, ""):
+                if not line:
+                    break
+                sink.append(line)
+                live.write(f"{prefix}{line}")
+                live.flush()
+            src.close()
+
+        def _tee_stream_json(src, sink: list[str]) -> None:
+            """JSONL tee — parse each stdout line as a stream event."""
+            if src is None:
+                return
+            for line in iter(src.readline, ""):
+                if not line:
+                    break
+                sink.append(line)
+                # Keep the raw line in the buffer so the caller can find the
+                # final result event; write the human-readable form to live.
+                formatted = _format_stream_event(line)
+                if formatted:
+                    live.write(formatted + "\n")
+                else:
+                    live.write("(empty line)\n")
+                live.flush()
+            src.close()
+
+        try:
+            live.write(
+                f"=== Claude Code CLI live log ===\n"
+                f"cmd: {' '.join(shlex.quote(a) for a in cmd)}\n"
+                f"cwd: {workdir or '(inherit)'}\n"
+                f"stream_json: {stream_json}\n"
+                f"started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"--- stdout ---\n"
+            )
+            live.flush()
+
+            proc = subprocess.Popen(
+                cmd,
+                cwd=workdir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+
+            # Stream stdout first (the JSON output is the bulk of it); read
+            # stderr in parallel so neither pipe blocks the other.
+            import threading
+
+            stderr_thread = threading.Thread(
+                target=_tee_raw,
+                args=(proc.stderr, "[stderr] ", stderr_parts),
+            )
+            stderr_thread.start()
+            if stream_json:
+                _tee_stream_json(proc.stdout, stdout_parts)
+            else:
+                _tee_raw(proc.stdout, "", stdout_parts)
+            stderr_thread.join()
+
+            returncode = proc.wait()
+
+            live.write(f"--- end (exit={returncode}) ---\n")
+            live.flush()
+
+            return "".join(stdout_parts), "".join(stderr_parts), returncode
+        finally:
+            live.close()
 
     def stream(self, messages: list[BaseMessage]):
         """Non-streaming fallback: invoke and yield single chunk."""
