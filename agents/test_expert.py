@@ -224,6 +224,7 @@ def _run_qemu_test_with_tools(
 - Target arch: {target_arch}
 - Modules dir: {modules_dir or '未提供'}
 - Reproducer module: {reproducer_module_path or '未提供'}
+- Binaries dir: {binaries_dir or '未提供'}  # userspace trigger programs to inject into /bin
 - Expected signal: {expected_signal or '未提供'}
 
 You MUST use the following QEMU testing tools that are bound to you:
@@ -248,6 +249,7 @@ REQUIRED execution flow:
 1. Call check_qemu_available(arch="{target_arch}") to verify QEMU
 2. Call create_initramfs(arch="{target_arch}") ONCE. If Test script exists, pass test_script_path={test_script_path or 'N/A'}.
    If Modules dir exists, pass modules_dir={modules_dir or 'N/A'} so the .ko is included in /modules.
+   If Binaries dir exists, pass binaries_dir={binaries_dir or 'N/A'} so trigger programs are included in /bin.
 3. Call boot_kernel() with arch="{target_arch}", kernel_path={kernel_path or 'N/A'} and the initramfs path
 4. Call analyze_boot_log() on the resulting log
 5. Based on actual tool outputs and Expected signal, determine if issue reproduced
@@ -400,6 +402,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     reproducer_dir = kernel_contract.get("reproducer_dir") or state.get("reproducer_dir", "")
     reproducer_module_path = kernel_contract.get("reproducer_module_path") or state.get("reproducer_module_path", "")
     expected_signal = kernel_contract.get("expected_signal") or state.get("expected_signal", "")
+    binaries_dir = kernel_contract.get("binaries_dir") or state.get("binaries_dir", "")
 
     # Deterministic QEMU execution path. The LLM is no longer responsible for
     # choosing or ordering QEMU tools.
@@ -410,6 +413,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         reproducer_module_path=reproducer_module_path,
         test_script_path=test_script_path,
         expected_signal=expected_signal,
+        binaries_dir=binaries_dir,
     )
     runner_result = run_qemu_test_plan(plan, attempt=current_attempts)
     text = _format_runner_result(runner_result)

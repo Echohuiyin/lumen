@@ -44,6 +44,7 @@
 | **异常地址** | "unable to handle kernel paging request"、"general protection fault" |
 | **OOM 内存耗尽** | "Out of memory and no killable processes" |
 | **SysRq 触发** | "SysRq : Trigger a crashdump" |
+| **KASAN UAF/OOB** | "KASAN: use-after-free"、"KASAN: slab-out-of-bounds"、"BUG: KASAN" |
 
 ### 核心分析原则
 

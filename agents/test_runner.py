@@ -165,6 +165,7 @@ def run_qemu_test_plan(
         arch=plan.target_arch,
         test_script_path=plan.test_script_path or None,
         modules_dir=modules_dir or None,
+        binaries_dir=plan.binaries_dir or None,
     )
     steps.append(initramfs_step)
     initramfs_path = initramfs_step.artifacts.get("initramfs_path", "")

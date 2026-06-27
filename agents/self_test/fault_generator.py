@@ -62,6 +62,14 @@ FAULT_TYPES = {
         "difficulty": "medium",
         "panic_keywords": ["stack-overflow", "corrupted stack"],
     },
+    "uaf": {
+        "description": "Use-after-free via kref refcount leak",
+        "expected_panic": "KASAN: use-after-free",
+        "expected_root_cause": "kref_get without matching kref_put -> premature kfree -> stale pointer access",
+        "expected_call_trace": "uaf_ioctl",
+        "difficulty": "medium",
+        "panic_keywords": ["KASAN", "use-after-free", "BUG"],
+    },
 }
 
 

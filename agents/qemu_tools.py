@@ -150,6 +150,7 @@ def create_initramfs(
     arch: str = "x86_64",
     test_script_path: Optional[str] = None,
     modules_dir: Optional[str] = None,
+    binaries_dir: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> str:
     """Create minimal initramfs for QEMU kernel testing.
@@ -158,6 +159,8 @@ def create_initramfs(
         arch: Target architecture
         test_script_path: Optional test script to include
         modules_dir: Optional directory containing kernel modules to include
+        binaries_dir: Optional directory containing userspace binaries (e.g.
+            trigger programs) to include in /bin inside the initramfs
         output_path: Optional output path for initramfs
 
     Returns:
@@ -189,6 +192,12 @@ def create_initramfs(
         if not module_path.exists() or not module_path.is_dir():
             return f"Error: modules dir not found: {modules_dir}"
         cmd.extend(["--modules", str(module_path)])
+
+    if binaries_dir:
+        binaries_path = _resolve_runtime_path(binaries_dir)
+        if not binaries_path.exists() or not binaries_path.is_dir():
+            return f"Error: binaries dir not found: {binaries_dir}"
+        cmd.extend(["--binaries", str(binaries_path)])
 
     try:
         result = subprocess.run(
@@ -262,7 +271,17 @@ def boot_kernel(
         # Build QEMU command directly — no intermediate shell script,
         # no pipe buffering. Serial output goes directly to a file via
         # -serial file: which is the most reliable capture method.
-        cmdline = f"console=ttyS0 root=/dev/ram rw panic=1"
+        # kasan.fault=panic: KASAN reports (UAF/OOB) panic the kernel — required
+        #   for KASAN fault reproducers to leave vmcore evidence.
+        # oops=panic: kernel oops (NULL deref, BUG_ON) escalates to panic.
+        # hung_task_panic=1 + hung_task_timeout_secs=60: khungtaskd panics on
+        #   D-state tasks blocked >= 60s — required for deadlock reproducers.
+        # These flags are inert for kernels/bug types that don't trigger them.
+        cmdline = (
+            "console=ttyS0 root=/dev/ram rw panic=1 "
+            "oops=panic kasan.fault=panic "
+            "hung_task_panic=1 hung_task_timeout_secs=60"
+        )
         qemu_cmd = [
             "qemu-system-x86_64",
             "-smp", "2",
@@ -464,6 +483,7 @@ def create_initramfs_result(
     arch: str = "x86_64",
     test_script_path: Optional[str] = None,
     modules_dir: Optional[str] = None,
+    binaries_dir: Optional[str] = None,
     output_path: Optional[str] = None,
 ) -> ToolStepResult:
     """Structured wrapper around create_initramfs."""
@@ -472,6 +492,7 @@ def create_initramfs_result(
         arch=normalized_arch,
         test_script_path=test_script_path,
         modules_dir=modules_dir,
+        binaries_dir=binaries_dir,
         output_path=output_path,
     )
     initramfs_path = _extract_labeled_value(output, "Path")
@@ -485,6 +506,7 @@ def create_initramfs_result(
             "arch": normalized_arch,
             "test_script_path": test_script_path or "",
             "modules_dir": modules_dir or "",
+            "binaries_dir": binaries_dir or "",
             "output_path": output_path or "",
         },
         artifacts=artifacts,

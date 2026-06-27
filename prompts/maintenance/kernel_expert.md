@@ -174,6 +174,38 @@ echo 1 > /proc/sys/kernel/hung_task_panic           # 检测到 hung task 时 pa
 
 预期信号：`blocked for more than` 或 `hung_task: blocked tasks`
 
+### KASAN / UAF / 内存错误场景的 test.sh
+
+UAF/越界/双重释放等问题在 KASAN 内核上会触发 `BUG: KASAN: ...` 报告。QEMU 启动 cmdline 已含 `kasan.fault=panic`（见 run_vmcore_test.sh），KASAN 报告即 panic，无需 test.sh 运行时设置。
+
+如果复现器需要用户态触发（如 ioctl 序列），用 `gcc -static` 编译触发程序，在 test.sh 里 `insmod /modules/<reproducer>.ko` 后调用 `/bin/<trigger>`。触发程序二进制由 `create_initramfs --binaries` 注入 initramfs `/bin/`。
+
+**重要：触发程序二进制必须放在 reproducer_dir 下**（与 reproducer.c/Makefile/test.sh 同目录），并在 KERNEL_CONTRACT 的 `binaries_dir` 字段填 reproducer_dir 路径。test_expert 会读 `binaries_dir` 并通过 `create_initramfs --binaries <dir>` 把目录下所有可执行文件塞进 initramfs `/bin/`。如果 `binaries_dir` 留空，触发程序不会进 initramfs，test.sh 会报 "trigger binary not found"。
+
+预期信号：`BUG: KASAN: slab-use-after-free`、`BUG: KASAN: slab-out-of-bounds`、`BUG: KASAN`（按问题类型选择具体子串）
+
+### expected_signal 必须匹配问题类型（重要！）
+
+`KERNEL_CONTRACT.expected_signal` 是 test_expert 在 QEMU boot log 中 grep 的关键证据。**必须根据问题类型填正确的信号，不要默认填死锁信号**：
+
+| 问题类型 | expected_signal | 说明 |
+|----------|-----------------|------|
+| 死锁 / hung task | `blocked for more than` | khungtaskd 报告 |
+| UAF (use-after-free) | `BUG: KASAN: slab-use-after-free` | KASAN 报告 |
+| 越界访问 | `BUG: KASAN: slab-out-of-bounds` | KASAN 报告 |
+| NULL 指针 | `unable to handle kernel NULL pointer` | Oops |
+| BUG_ON | `kernel BUG at` | 断言失败 |
+| 软死锁 | `BUG: soft lockup` | watchdog |
+| OOM | `Out of memory` | oom killer |
+| 直接 panic | `Kernel panic` | panic() 调用 |
+
+**选信号的判定流程（必走）**：
+1. 看 user 消息中工具专家的 `analysis_output` 提到的 panic 类型关键字（如 "KASAN"、"use-after-free"、"blocked for more than"、"NULL pointer"、"soft lockup"、"OOM"）
+2. 按上表映射到 expected_signal
+3. **绝对禁止**：未看 analysis_output 就默认填 `blocked for more than`（那是死锁专用信号，UAF/OOM/NULL/soft lockup 场景填它会导致 test_expert 找不到证据而判失败）
+
+例：analysis_output 提到 "KASAN use-after-free" → expected_signal 必须填 `BUG: KASAN: slab-use-after-free`，**不能**填 `blocked for more than`。
+
 ### khungtaskd 时序
 
 khungtaskd 是个 kthread，循环里计算 `t = hung_last_checked - now + timeout` 然后睡 `t` 秒。任务阻塞时长 >= timeout 时才触发 panic。
@@ -203,7 +235,8 @@ BOOT_KERNEL_PATH: <可由 QEMU 启动的 bzImage/Image 路径；不要填 ELF vm
 REPRODUCER_DIR: <实际创建的复现目录>
 REPRODUCER_MODULE_PATH: <实际编译出的 .ko 路径；未编译写 N/A>
 TEST_SCRIPT_PATH: <实际创建的 test.sh 路径>
-EXPECTED_SIGNAL: <测试专家应在 QEMU boot log 中查找的复现证据>
+EXPECTED_SIGNAL: <测试专家应在 QEMU boot log 中查找的复现证据；按问题类型选，见上方 expected_signal 表>
+BINARIES_DIR: <用户态触发程序所在目录；纯内核态复现器留空。配合形态下用户态触发程序（如 uaf_trigger）放在此目录，test_expert 会通过 create_initramfs --binaries 把它们注入 initramfs 的 /bin/ 下>
 
 KERNEL_CONTRACT:
 ```json
@@ -215,7 +248,8 @@ KERNEL_CONTRACT:
   "reproducer_dir": "<OUTPUT_DIR>/<bug>_reproducer",
   "reproducer_module_path": "<OUTPUT_DIR>/<bug>_reproducer/<name>.ko",
   "test_script_path": "<OUTPUT_DIR>/<bug>_reproducer/test.sh",
-  "expected_signal": "blocked for more than",
+  "expected_signal": "<按问题类型选择：blocked for more than / BUG: KASAN: slab-use-after-free / unable to handle kernel NULL pointer / ...>",
+  "binaries_dir": "<OUTPUT_DIR>/<bug>_reproducer 或留空；用户态触发程序所在目录",
   "build_status": "passed",
   "evidence": [],
   "warnings": [],
@@ -235,6 +269,7 @@ KERNEL_CONTRACT:
   "reproducer_module_path": "",
   "test_script_path": "",
   "expected_signal": "",
+  "binaries_dir": "",
   "build_status": "skipped",
   "evidence": [],
   "warnings": [],

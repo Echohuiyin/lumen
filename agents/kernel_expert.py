@@ -238,6 +238,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     reproducer_module_path = _extract_scalar_marker(text, "REPRODUCER_MODULE_PATH")
     test_script_path = _extract_scalar_marker(text, "TEST_SCRIPT_PATH")
     expected_signal = _extract_scalar_marker(text, "EXPECTED_SIGNAL")
+    binaries_dir = _extract_scalar_marker(text, "BINARIES_DIR")
     kernel_contract = _extract_kernel_contract(text)
     if not _kernel_contract_has_handoff(kernel_contract):
         fallback_contract = _kernel_contract_from_markers(
@@ -247,8 +248,15 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             reproducer_module_path=reproducer_module_path,
             test_script_path=test_script_path,
             expected_signal=expected_signal,
+            binaries_dir=binaries_dir,
         )
         kernel_contract = _merge_kernel_contract(kernel_contract, fallback_contract)
+
+    # If markers had binaries_dir but the JSON contract didn't, propagate it.
+    if binaries_dir and not kernel_contract.binaries_dir:
+        data = model_to_dict(kernel_contract)
+        data["binaries_dir"] = binaries_dir
+        kernel_contract = _model_validate(KernelExpertOutput, data)
 
     # Final fallback: auto-fill from input_artifacts if contract still incomplete
     if not _kernel_contract_has_handoff(kernel_contract):
@@ -276,6 +284,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         "reproducer_module_path": kernel_contract.reproducer_module_path,
         "test_script_path": kernel_contract.test_script_path,
         "expected_signal": kernel_contract.expected_signal,
+        "binaries_dir": kernel_contract.binaries_dir,
     }
 
 
@@ -443,8 +452,13 @@ def _extract_section(text: str, marker: str) -> str:
 
 
 def _extract_scalar_marker(text: str, marker: str) -> str:
-    """Extract a one-line marker value and ignore empty placeholders."""
-    match = re.search(rf"^{re.escape(marker)}:\s*(.+?)\s*$", text, re.MULTILINE)
+    """Extract a one-line marker value and ignore empty placeholders.
+
+    Uses [^\\S\\n] for whitespace so the regex stays on a single line — \\s*
+    would consume the trailing newline and let (.+?) spill onto the next line
+    (e.g. matching 'KERNEL_CONTRACT:' as the value of an empty BINARIES_DIR:).
+    """
+    match = re.search(rf"^{re.escape(marker)}:[^\S\n]*(.+?)[^\S\n]*$", text, re.MULTILINE)
     if not match:
         return ""
     value = match.group(1).strip().strip("`'\"")
@@ -500,6 +514,7 @@ def _kernel_contract_from_markers(
     reproducer_module_path: str,
     test_script_path: str,
     expected_signal: str,
+    binaries_dir: str = "",
 ) -> KernelExpertOutput:
     missing = [
         name for name, value in {
@@ -518,6 +533,7 @@ def _kernel_contract_from_markers(
         reproducer_module_path=reproducer_module_path,
         test_script_path=test_script_path,
         expected_signal=expected_signal,
+        binaries_dir=binaries_dir,
         build_status="unknown",
         warnings=["parsed from legacy marker lines"],
         blocked_reason=f"missing test handoff fields: {', '.join(missing)}" if missing else "",

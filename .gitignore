@@ -35,6 +35,7 @@ knowledge_base/
 self_test_reports/
 test_outputs/
 deadlock_analysis_output/
+test_assets/
 venv/
 E2E_*.md
 

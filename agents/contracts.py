@@ -44,6 +44,7 @@ class TestPlan(BaseModel):
     reproducer_module_path: str = ""
     test_script_path: str = ""
     expected_signal: str = ""
+    binaries_dir: str = ""
 
 
 class TestResultContract(BaseModel):
@@ -101,6 +102,7 @@ class KernelExpertOutput(BaseModel):
     reproducer_module_path: str = ""
     test_script_path: str = ""
     expected_signal: str = ""
+    binaries_dir: str = ""
     build_status: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)

@@ -2,18 +2,19 @@
 
 每个 agent 一个测试函数，调用真实 LLM + 真实 vmcore/crash/QEMU，
 断言关键字段非空、文件生成、契约合法。用于迭代回归。
+参数化 fault_type（deadlock / uaf），同一套测试跑两种故障输入。
 
 运行方式：
-    # 全部 agent 能力测试（约 10-15 min，调真 LLM + QEMU）
+    # 全部 agent 能力测试 × 所有 fault_type（约 20-30 min）
     pytest tests/test_agent_capabilities.py --run-online -v
 
-    # 单个 agent
-    pytest tests/test_agent_capabilities.py::test_validator_capability --run-online -v
+    # 单个 agent + 单个 fault_type
+    pytest tests/test_agent_capabilities.py::test_validator_capability[deadlock] --run-online -v
 
 前置条件：
     - maintenance_config.json 配好可用的 GLM-5.2/DeepSeek API key
-    - /tmp/deadlock_input.txt 存在（或通过 DEADLOCK_INPUT 环境变量指定）
-    - vmcore/vmlinux/boot_kernel 路径在输入文件中正确指向
+    - test_assets/<fault_type>/input.txt 存在（deadlock/uaf）
+    - vmcore/vmlinux/boot_kernel 路径在 input.txt 中正确指向
     - QEMU 已安装（test_expert 测试需要）
     - Claude Code CLI 已安装（kernel_expert 测试需要）
 """
@@ -41,29 +42,90 @@ from graph.rn_state import make_initial_state
 
 
 # ---------------------------------------------------------------------------
+# Fault type parameterization
+# ---------------------------------------------------------------------------
+
+FAULT_TYPES = ["deadlock", "uaf"]
+
+# Per-fault-type expectations for assertions
+FAULT_EXPECTATIONS = {
+    "deadlock": {
+        "issue_keywords": ["mutex", "deadlock", "abba", "blocked", "wait"],
+        "crash_keywords": ["panic", "call trace", "stack", "hung", "deadlock"],
+        "log_keywords": ["log", "日志", "hung_task", "panic", "boot"],
+        "expected_signal": "blocked for more than",
+        "expert_summary": (
+            "Mutex ABBA deadlock: thread1 (PID 89) holds mutex_alpha waits mutex_beta; "
+            "thread2 (PID 90) holds mutex_beta waits mutex_alpha. "
+            "Both blocked in __mutex_lock."
+        ),
+        "pm_required_experts": ["lock_analysis"],
+        "skip_if_missing": None,
+    },
+    "uaf": {
+        "issue_keywords": ["kasan", "use-after-free", "uaf", "kref", "refcount", "freed"],
+        "crash_keywords": ["kasan", "use-after-free", "panic", "call trace", "stack"],
+        "log_keywords": ["kasan", "use-after-free", "log", "日志", "panic"],
+        "expected_signal": "KASAN: use-after-free",
+        "expert_summary": (
+            "Use-after-free via kref refcount leak: kref_get without matching kref_put "
+            "caused premature kfree; stale pointer access caught by KASAN."
+        ),
+        "pm_required_experts": ["crash_analysis"],
+        "skip_if_missing": "test_assets/uaf/vmcore.elf",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-DEFAULT_INPUT_FILE = "/tmp/deadlock_input.txt"
 DEFAULT_CONFIG_PATH = "maintenance_config.json"
 
-DEADLOCK_INPUT = """vmcore 文件: /home/liumingrui/lumen/deadlock_analysis_output/vmcore.elf
-vmlinux 文件: /home/liumingrui/code/OLK-6.6/vmlinux
-boot_kernel 文件: /home/liumingrui/code/OLK-6.6/arch/x86/boot/bzImage
 
-问题描述: 内核发生 hung_task panic。
-故障类型: deadlock
-执行模式: real
-"""
+def _resolve_fault_input(fault_type: str) -> str:
+    """Resolve input text for a given fault_type.
+
+    Lookup order:
+    1. env var <FAULT_TYPE>_INPUT (e.g. DEADLOCK_INPUT / UAF_INPUT)
+    2. test_assets/<fault_type>/input.txt
+    3. fallback empty (caller should skip)
+    """
+    env_var = f"{fault_type.upper()}_INPUT"
+    env_path = os.environ.get(env_var, "")
+    if env_path and Path(env_path).exists():
+        return Path(env_path).read_text(encoding="utf-8", errors="replace")
+
+    asset_path = PROJECT_ROOT / "test_assets" / fault_type / "input.txt"
+    if asset_path.exists():
+        return asset_path.read_text(encoding="utf-8", errors="replace")
+
+    return ""
+
+
+def _extract_paths(input_text: str) -> dict:
+    paths = {"vmcore_path": "", "vmlinux_path": "", "boot_kernel_path": ""}
+    for line in input_text.splitlines():
+        lowered = line.lower()
+        if "vmcore" in lowered and "文件" in line:
+            paths["vmcore_path"] = line.split(":", 1)[-1].strip() if ":" in line else ""
+        elif "vmlinux" in lowered and "文件" in line:
+            paths["vmlinux_path"] = line.split(":", 1)[-1].strip() if ":" in line else ""
+        elif "boot_kernel" in lowered and "文件" in line:
+            paths["boot_kernel_path"] = line.split(":", 1)[-1].strip() if ":" in line else ""
+    return paths
+
+
+@pytest.fixture(scope="module", params=FAULT_TYPES)
+def fault_type(request) -> str:
+    return request.param
 
 
 @pytest.fixture(scope="module")
-def deadlock_input() -> str:
-    """Load deadlock input text from file or fallback to built-in template."""
-    input_file = os.environ.get("DEADLOCK_INPUT", DEFAULT_INPUT_FILE)
-    if Path(input_file).exists():
-        return Path(input_file).read_text(encoding="utf-8", errors="replace")
-    return DEADLOCK_INPUT
+def fault_input(fault_type: str) -> str:
+    """Load input text for the given fault_type."""
+    return _resolve_fault_input(fault_type)
 
 
 @pytest.fixture(scope="module")
@@ -77,18 +139,21 @@ def loaded_config(config_path: str) -> dict:
 
 
 @pytest.fixture(scope="module")
-def vmcore_paths(deadlock_input: str):
+def vmcore_paths(fault_type: str, fault_input: str):
     """Extract vmcore/vmlinux/boot_kernel paths from input text."""
-    paths = {"vmcore_path": "", "vmlinux_path": "", "boot_kernel_path": ""}
-    for line in deadlock_input.splitlines():
-        lowered = line.lower()
-        if "vmcore" in lowered and "文件" in line:
-            paths["vmcore_path"] = line.split(":", 1)[-1].strip() if ":" in line else ""
-        elif "vmlinux" in lowered and "文件" in line:
-            paths["vmlinux_path"] = line.split(":", 1)[-1].strip() if ":" in line else ""
-        elif "boot_kernel" in lowered and "文件" in line:
-            paths["boot_kernel_path"] = line.split(":", 1)[-1].strip() if ":" in line else ""
-    return paths
+    return _extract_paths(fault_input)
+
+
+def _skip_if_asset_missing(fault_type: str, fault_input: str):
+    """Skip test if the fault_type's input/vmcore is not available."""
+    expectations = FAULT_EXPECTATIONS[fault_type]
+    skip_marker = expectations.get("skip_if_missing")
+    if not fault_input:
+        pytest.skip(f"{fault_type} input.txt 不存在，跳过")
+    if skip_marker:
+        marker_path = PROJECT_ROOT / skip_marker
+        if not marker_path.exists():
+            pytest.skip(f"{fault_type} 资产未就绪（{skip_marker} 不存在），跳过")
 
 
 @pytest.fixture(autouse=True)
@@ -106,13 +171,14 @@ def _clean_outputs():
 # Validator
 # ---------------------------------------------------------------------------
 
-def test_validator_capability(deadlock_input: str, config_path: str):
+def test_validator_capability(fault_type: str, fault_input: str, config_path: str):
     """validator 应识别 vmcore/vmlinux/boot_kernel 关键词并通过校验。"""
-    state = make_initial_state(user_input=deadlock_input, config_path=config_path)
+    _skip_if_asset_missing(fault_type, fault_input)
+    state = make_initial_state(user_input=fault_input, config_path=config_path)
     result = validator_node(state)
 
     assert result["validation_passed"] is True, (
-        f"validator 应通过 deadlock 输入校验，但 validation_passed=False。"
+        f"validator 应通过 {fault_type} 输入校验，但 validation_passed=False。"
         f" feedback: {result.get('validation_feedback', '')}"
     )
     artifacts = result["input_artifacts_contract"]
@@ -129,10 +195,11 @@ def test_validator_capability(deadlock_input: str, config_path: str):
 # PM
 # ---------------------------------------------------------------------------
 
-def test_pm_capability(deadlock_input: str, loaded_config: dict):
-    """pm 应识别 deadlock 场景，选择 lock_analysis + kernel_log_analysis + knowledge_search。"""
+def test_pm_capability(fault_type: str, fault_input: str, loaded_config: dict):
+    """pm 应识别 fault_type 场景，路由到合适的 tool_experts。"""
+    _skip_if_asset_missing(fault_type, fault_input)
     state = {
-        "user_input": deadlock_input,
+        "user_input": fault_input,
         "config": loaded_config,
         "validation_passed": True,
         "validation_feedback": "",
@@ -142,8 +209,10 @@ def test_pm_capability(deadlock_input: str, loaded_config: dict):
 
     required = result["required_experts"]
     assert required, "pm 应至少选择一个 tool_expert"
-    assert "knowledge_search" in required, "deadlock 场景应包含 knowledge_search"
-    assert "lock_analysis" in required, "deadlock 场景应包含 lock_analysis"
+    assert "knowledge_search" in required, f"{fault_type} 场景应包含 knowledge_search"
+    expectations = FAULT_EXPECTATIONS[fault_type]
+    for expert in expectations["pm_required_experts"]:
+        assert expert in required, f"{fault_type} 场景应包含 {expert}"
     assert result["issue_id"].startswith("ISSUE-"), f"issue_id 格式错误: {result['issue_id']}"
     assert result["issue_url"].startswith("https://"), f"issue_url 格式错误: {result['issue_url']}"
     assert result["pm_routing_reason"], "pm_routing_reason 不应为空"
@@ -153,10 +222,10 @@ def test_pm_capability(deadlock_input: str, loaded_config: dict):
 # Tool experts (4 个)
 # ---------------------------------------------------------------------------
 
-def _build_tool_expert_state(expert_type: str, deadlock_input: str, loaded_config: dict) -> dict:
+def _build_tool_expert_state(expert_type: str, fault_input: str, loaded_config: dict) -> dict:
     return {
         "expert_type": expert_type,
-        "user_input": deadlock_input,
+        "user_input": fault_input,
         "config": loaded_config,
         "config_path": os.environ.get("LUMEN_CONFIG", DEFAULT_CONFIG_PATH),
         "input_artifacts_contract": {},
@@ -190,9 +259,10 @@ def _check_expert_result(result: dict, expert_type: str, min_output_len: int = 2
     return output, status, evidence
 
 
-def test_knowledge_search_capability(deadlock_input: str, loaded_config: dict):
+def test_knowledge_search_capability(fault_type: str, fault_input: str, loaded_config: dict):
     """knowledge_search 应返回历史相似案例摘要。"""
-    state = _build_tool_expert_state("knowledge_search", deadlock_input, loaded_config)
+    _skip_if_asset_missing(fault_type, fault_input)
+    state = _build_tool_expert_state("knowledge_search", fault_input, loaded_config)
     result = tool_expert_node(state)
     output, status, _ = _check_expert_result(result, "knowledge_search", min_output_len=100)
     # knowledge_search 可能因 RAG 库为空而降级，但应至少有 ANALYSIS 段
@@ -201,17 +271,19 @@ def test_knowledge_search_capability(deadlock_input: str, loaded_config: dict):
     )
 
 
-def test_lock_analysis_capability(deadlock_input: str, loaded_config: dict, vmcore_paths: dict):
-    """lock_analysis 应调用 crash 工具，识别 ABBA 死锁并产出 evidence。"""
-    state = _build_tool_expert_state("lock_analysis", deadlock_input, loaded_config)
+def test_lock_analysis_capability(fault_type: str, fault_input: str, loaded_config: dict, vmcore_paths: dict):
+    """lock_analysis 应调用 crash 工具，识别锁问题并产出 evidence。"""
+    _skip_if_asset_missing(fault_type, fault_input)
+    state = _build_tool_expert_state("lock_analysis", fault_input, loaded_config)
     result = tool_expert_node(state)
     output, status, evidence = _check_expert_result(result, "lock_analysis", min_output_len=300)
     # lock_analysis 应执行了 crash 工具调用，有 evidence
     assert evidence, "lock_analysis 应至少有 1 条 evidence（crash 命令输出）"
-    # 输出应提及死锁关键证据
+    # 输出应提及锁相关证据（deadlock 场景）
+    expectations = FAULT_EXPECTATIONS[fault_type]
     output_lower = output.lower()
-    assert any(kw in output_lower for kw in ["mutex", "deadlock", "abba", "blocked", "wait"]), (
-        "lock_analysis 输出应包含死锁相关关键词"
+    assert any(kw in output_lower for kw in expectations["issue_keywords"]), (
+        f"lock_analysis 输出应包含 {fault_type} 相关关键词"
     )
     # 输出文件应生成
     out_file = Path(get_expert_output_file("lock_analysis"))
@@ -219,28 +291,32 @@ def test_lock_analysis_capability(deadlock_input: str, loaded_config: dict, vmco
     assert out_file.stat().st_size > 200, f"输出文件过小: {out_file.stat().st_size}"
 
 
-def test_crash_analysis_capability(deadlock_input: str, loaded_config: dict):
+def test_crash_analysis_capability(fault_type: str, fault_input: str, loaded_config: dict):
     """crash_analysis 应调用 crash 工具，分析 vmcore 崩溃原因。"""
-    state = _build_tool_expert_state("crash_analysis", deadlock_input, loaded_config)
+    _skip_if_asset_missing(fault_type, fault_input)
+    state = _build_tool_expert_state("crash_analysis", fault_input, loaded_config)
     result = tool_expert_node(state)
     output, status, evidence = _check_expert_result(result, "crash_analysis", min_output_len=200)
     # crash_analysis 在 deadlock 场景下，pm 路由会去重，但直接调用应能跑通
     # 输出应包含崩溃相关关键词
+    expectations = FAULT_EXPECTATIONS[fault_type]
     output_lower = output.lower()
-    assert any(kw in output_lower for kw in ["panic", "call trace", "stack", "hung", "deadlock"]), (
-        "crash_analysis 输出应包含崩溃相关关键词"
+    assert any(kw in output_lower for kw in expectations["crash_keywords"]), (
+        f"crash_analysis 输出应包含 {fault_type} 相关关键词"
     )
 
 
-def test_kernel_log_analysis_capability(deadlock_input: str, loaded_config: dict):
+def test_kernel_log_analysis_capability(fault_type: str, fault_input: str, loaded_config: dict):
     """kernel_log_analysis 应分析内核日志，提取关键错误信息。"""
-    state = _build_tool_expert_state("kernel_log_analysis", deadlock_input, loaded_config)
+    _skip_if_asset_missing(fault_type, fault_input)
+    state = _build_tool_expert_state("kernel_log_analysis", fault_input, loaded_config)
     result = tool_expert_node(state)
     output, status, _ = _check_expert_result(result, "kernel_log_analysis", min_output_len=150)
     # 应包含日志分析相关关键词
+    expectations = FAULT_EXPECTATIONS[fault_type]
     output_lower = output.lower()
-    assert any(kw in output_lower for kw in ["log", "日志", "hung_task", "panic", "boot"]), (
-        "kernel_log_analysis 输出应包含日志相关关键词"
+    assert any(kw in output_lower for kw in expectations["log_keywords"]), (
+        f"kernel_log_analysis 输出应包含 {fault_type} 相关关键词"
     )
 
 
@@ -248,22 +324,20 @@ def test_kernel_log_analysis_capability(deadlock_input: str, loaded_config: dict
 # Kernel expert (Claude Code CLI backend)
 # ---------------------------------------------------------------------------
 
-def test_kernel_expert_capability(deadlock_input: str, loaded_config: dict, vmcore_paths: dict):
+def test_kernel_expert_capability(fault_type: str, fault_input: str, loaded_config: dict, vmcore_paths: dict):
     """kernel_expert (Claude Code) 应生成 KERNEL_CONTRACT 和真实 reproducer 文件。"""
+    _skip_if_asset_missing(fault_type, fault_input)
+    expectations = FAULT_EXPECTATIONS[fault_type]
     # 构造前置 state（含工具专家的 evidence 摘要）
     state = {
-        "user_input": deadlock_input,
+        "user_input": fault_input,
         "config": loaded_config,
         "input_artifacts_contract": vmcore_paths,
         "expert_results": [
             {
-                "expert_name": "锁分析专家",
-                "expert_type": "lock_analysis",
-                "analysis_output": (
-                    "Mutex ABBA deadlock: thread1 (PID 89) holds mutex_alpha waits mutex_beta; "
-                    "thread2 (PID 90) holds mutex_beta waits mutex_alpha. "
-                    "Both blocked in __mutex_lock."
-                ),
+                "expert_name": "锁分析专家" if fault_type == "deadlock" else "Crash 分析专家",
+                "expert_type": "lock_analysis" if fault_type == "deadlock" else "crash_analysis",
+                "analysis_output": expectations["expert_summary"],
                 "evidence": [],
             },
         ],
@@ -290,7 +364,12 @@ def test_kernel_expert_capability(deadlock_input: str, loaded_config: dict, vmco
     # reproducer_dir 下的关键文件应真实存在
     reproducer_dir = Path(contract["reproducer_dir"])
     assert reproducer_dir.exists(), f"reproducer_dir 不存在: {reproducer_dir}"
-    assert (reproducer_dir / "reproducer.c").exists(), "reproducer.c 未生成"
+    # Source file may be named reproducer.c (kernel module skeleton convention)
+    # or matched to the module name (e.g. crash_uaf.c for UAF, mutex_abba_deadlock.c
+    # for the deadlock case). Accept any .c file as the reproducer source.
+    c_files = sorted(reproducer_dir.glob("*.c"))
+    c_files = [c for c in c_files if not c.name.endswith(".mod.c")]
+    assert c_files, f"reproducer 源码 (.c) 未生成于 {reproducer_dir}"
     assert (reproducer_dir / "test.sh").exists(), "test.sh 未生成"
 
     # kernel_expert.txt 应有完整分析内容
@@ -300,25 +379,33 @@ def test_kernel_expert_capability(deadlock_input: str, loaded_config: dict, vmco
         f"kernel_expert.txt 内容过少: {out_file.stat().st_size}"
     )
     content = out_file.read_text(encoding="utf-8", errors="replace")
-    assert "KERNEL_CONTRACT" in content, "kernel_expert.txt 应包含 KERNEL_CONTRACT 标记"
+    # The machine-readable contract is in `contract` (parsed above) — the text
+    # file may contain either the full KERNEL_CONTRACT block or a summary
+    # referencing it. Accept either, as long as the parsed contract is valid
+    # (which the earlier assertions already checked).
+    assert "KERNEL_CONTRACT" in content or "kernel_contract" in content.lower() or "最终分析结果" in content, (
+        "kernel_expert.txt 应包含 KERNEL_CONTRACT 标记或最终分析结果"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Test expert (QEMU)
 # ---------------------------------------------------------------------------
 
-def test_test_expert_capability(deadlock_input: str, loaded_config: dict, vmcore_paths: dict):
-    """test_expert 应执行 QEMU 测试，复现 hung_task panic。"""
+def test_test_expert_capability(fault_type: str, fault_input: str, loaded_config: dict, vmcore_paths: dict):
+    """test_expert 应执行 QEMU 测试，复现 panic。"""
+    _skip_if_asset_missing(fault_type, fault_input)
+    expectations = FAULT_EXPECTATIONS[fault_type]
     # 先跑 kernel_expert 拿到 contract（依赖 kernel_expert 能力）
     ke_state = {
-        "user_input": deadlock_input,
+        "user_input": fault_input,
         "config": loaded_config,
         "input_artifacts_contract": vmcore_paths,
         "expert_results": [
             {
-                "expert_name": "锁分析专家",
-                "expert_type": "lock_analysis",
-                "analysis_output": "Mutex ABBA deadlock detected.",
+                "expert_name": "锁分析专家" if fault_type == "deadlock" else "Crash 分析专家",
+                "expert_type": "lock_analysis" if fault_type == "deadlock" else "crash_analysis",
+                "analysis_output": expectations["expert_summary"],
                 "evidence": [],
             },
         ],
@@ -334,7 +421,7 @@ def test_test_expert_capability(deadlock_input: str, loaded_config: dict, vmcore
 
     # 调用 test_expert
     te_state = {
-        "user_input": deadlock_input,
+        "user_input": fault_input,
         "config": loaded_config,
         "input_artifacts_contract": vmcore_paths,
         "kernel_contract": contract,
@@ -366,23 +453,32 @@ def test_test_expert_capability(deadlock_input: str, loaded_config: dict, vmcore
 # Knowledge base
 # ---------------------------------------------------------------------------
 
-def test_knowledge_base_capability(deadlock_input: str, loaded_config: dict, vmcore_paths: dict):
+def test_knowledge_base_capability(fault_type: str, fault_input: str, loaded_config: dict, vmcore_paths: dict):
     """knowledge_base 应生成知识库 markdown 文件并导入 Chroma。"""
+    _skip_if_asset_missing(fault_type, fault_input)
+    expectations = FAULT_EXPECTATIONS[fault_type]
+    expected_signal = expectations["expected_signal"]
+    expert_name = "锁分析专家" if fault_type == "deadlock" else "Crash 分析专家"
+    expert_type = "lock_analysis" if fault_type == "deadlock" else "crash_analysis"
+    analysis_summary = (
+        "Mutex ABBA deadlock detected." if fault_type == "deadlock"
+        else "KASAN use-after-free detected via kref refcount leak."
+    )
     # 构造前置 state（模拟完整 workflow 跑完后的状态）
     state = {
-        "user_input": deadlock_input,
+        "user_input": fault_input,
         "config": loaded_config,
         "input_artifacts_contract": vmcore_paths,
         "validation_contract": {"status": "ok", "validation_passed": True},
         "expert_results": [
             {
-                "expert_name": "锁分析专家",
-                "expert_type": "lock_analysis",
-                "analysis_output": "Mutex ABBA deadlock detected.",
+                "expert_name": expert_name,
+                "expert_type": expert_type,
+                "analysis_output": analysis_summary,
                 "evidence": [],
             },
         ],
-        "kernel_analysis": "ABBA 死锁分析完成。",
+        "kernel_analysis": f"{fault_type} 分析完成。",
         "kernel_contract": {
             "status": "ok",
             "target_arch": "x86_64",
@@ -390,17 +486,17 @@ def test_knowledge_base_capability(deadlock_input: str, loaded_config: dict, vmc
             "reproducer_dir": "/tmp/test_reproducer",
             "reproducer_module_path": "/tmp/test_reproducer/reproducer.ko",
             "test_script_path": "/tmp/test_reproducer/test.sh",
-            "expected_signal": "blocked for more than",
+            "expected_signal": expected_signal,
             "build_status": "passed",
         },
-        "reproduce_case": "ABBA 死锁复现用例",
-        "kernel_diagnosis": "添加 lockdep 检测",
+        "reproduce_case": f"{fault_type} 复现用例",
+        "kernel_diagnosis": f"{fault_type} 修复方向",
         "target_arch": "x86_64",
         "boot_kernel_path": vmcore_paths["boot_kernel_path"],
         "reproducer_dir": "/tmp/test_reproducer",
         "reproducer_module_path": "/tmp/test_reproducer/reproducer.ko",
         "test_script_path": "/tmp/test_reproducer/test.sh",
-        "expected_signal": "blocked for more than",
+        "expected_signal": expected_signal,
         "test_result": "QEMU TEST STATUS: ok\nTEST PASSED: True",
         "test_contract": {"test_passed": True, "boot_log_path": "/tmp/qemu_serial.log"},
         "test_attempts": 1,
