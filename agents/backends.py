@@ -101,6 +101,105 @@ def _format_stream_event(line: str) -> str:
     return f"[{etype}/{subtype}] {line[:300]}"
 
 
+class _ToolCallTracker:
+    """Track per-tool-call wall-clock duration from stream-json events.
+
+    Claude Code stream-json emits:
+    - assistant events whose message.content contains tool_use blocks
+      (each with an `id`) — recorded as the call's start time.
+    - user events whose message.content contains tool_result blocks
+      (each with `tool_use_id` matching a prior tool_use) — recorded
+      as the call's end time.
+
+    Wall clock is read when the line arrives from the CLI pipe. With
+    bufsize=1 line-buffered stdout, arrival lag is <100ms, which is
+    fine for spotting slow tools (seconds+) but not for micro-bench.
+    Assistant events lack a timestamp field, so we can't use CLI's
+    own clock; user events do carry one but only for the end side.
+    """
+
+    def __init__(self) -> None:
+        # tool_use_id -> (tool_name, start_monotonic)
+        self._pending: dict[str, tuple[str, float]] = {}
+        # tool_name -> list of durations in seconds
+        self._completed: dict[str, list[float]] = {}
+        # tool_use_id -> (tool_name, duration_sec) for the detail log
+        self._calls: list[dict] = []
+        self._t0 = time.monotonic()
+
+    def observe(self, evt: dict) -> None:
+        etype = evt.get("type")
+        if etype == "assistant":
+            content = (evt.get("message") or {}).get("content") or []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_use":
+                    tid = block.get("id", "")
+                    name = block.get("name", "?")
+                    if tid:
+                        self._pending[tid] = (name, time.monotonic())
+        elif etype == "user":
+            content = (evt.get("message") or {}).get("content") or []
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("type") == "tool_result":
+                        tid = block.get("tool_use_id", "")
+                        if not tid or tid not in self._pending:
+                            continue
+                        name, start = self._pending.pop(tid)
+                        dur = time.monotonic() - start
+                        self._completed.setdefault(name, []).append(dur)
+                        self._calls.append({
+                            "tool": name,
+                            "tool_use_id": tid,
+                            "duration_sec": round(dur, 3),
+                            "is_error": bool(block.get("is_error", False)),
+                        })
+
+    def summary(self) -> dict:
+        per_tool: list[dict] = []
+        for name, durations in self._completed.items():
+            if not durations:
+                continue
+            total = sum(durations)
+            per_tool.append({
+                "tool": name,
+                "calls": len(durations),
+                "total_sec": round(total, 3),
+                "avg_sec": round(total / len(durations), 3),
+                "max_sec": round(max(durations), 3),
+                "min_sec": round(min(durations), 3),
+            })
+        per_tool.sort(key=lambda x: x["total_sec"], reverse=True)
+        return {
+            "wall_clock_sec": round(time.monotonic() - self._t0, 3),
+            "total_calls": len(self._calls),
+            "per_tool": per_tool,
+            "calls": self._calls,
+        }
+
+    def render_summary_table(self) -> str:
+        s = self.summary()
+        if not s["per_tool"]:
+            return "(no tool calls observed)"
+        lines = [
+            f"{'tool':<14}{'calls':>6}{'total_s':>10}{'avg_s':>8}{'max_s':>8}",
+            "-" * 46,
+        ]
+        for row in s["per_tool"]:
+            lines.append(
+                f"{row['tool']:<14}{row['calls']:>6}"
+                f"{row['total_sec']:>10.3f}{row['avg_sec']:>8.3f}{row['max_sec']:>8.3f}"
+            )
+        lines.append("")
+        lines.append(f"total tool calls: {s['total_calls']}")
+        lines.append(f"wall clock (this session): {s['wall_clock_sec']}s")
+        return "\n".join(lines)
+
+
 class CLIBackend:
     """LLM backend that calls a CLI tool via subprocess."""
 
@@ -545,6 +644,10 @@ class ClaudeCodeBackend:
         cmd_raw_path = _DUMP_DIR / f"{prefix}_cmd.raw.txt"
         cmd_sh_path = _DUMP_DIR / f"{prefix}_cmd.sh"
         live_log_path = _DUMP_DIR / f"{prefix}_live.log"
+        # tools_stats.json only meaningful in stream-json mode (events
+        # are emitted per tool call). Kept even in plain debug mode for
+        # path stability, but stays empty there.
+        tools_stats_path = _DUMP_DIR / f"{prefix}_tools_stats.json"
 
         try:
             system_path.write_text(system_prompt, encoding="utf-8")
@@ -586,6 +689,7 @@ class ClaudeCodeBackend:
                 f"# user prompt:   {user_path}\n"
                 f"# raw argv:      {cmd_raw_path}\n"
                 f"# live log:      {live_log_path}\n"
+                f"# tools stats:   {tools_stats_path}\n"
                 f"# Run with:\n"
             )
             cwd_prefix = f"cd {shlex.quote(workdir)} && " if workdir else ""
@@ -603,6 +707,7 @@ class ClaudeCodeBackend:
             "cmd_raw": str(cmd_raw_path),
             "cmd_sh": str(cmd_sh_path),
             "live_log": str(live_log_path),
+            "tools_stats": str(tools_stats_path),
         }
 
     def invoke(self, messages: list[BaseMessage], *, workdir: str = "", add_dirs: list[str] | None = None) -> AIMessage:
@@ -663,6 +768,7 @@ class ClaudeCodeBackend:
                     cmd,
                     workdir=workdir or None,
                     live_log_path=dump["live_log"],
+                    tools_stats_path=dump.get("tools_stats") if _STREAM_JSON else None,
                     stream_json=_STREAM_JSON,
                 )
             else:
@@ -733,6 +839,7 @@ class ClaudeCodeBackend:
         *,
         workdir: str | None,
         live_log_path: str,
+        tools_stats_path: str | None = None,
         stream_json: bool = False,
     ) -> tuple[str, str, int]:
         """Popen the CLI, tee stdout/stderr to live_log_path line-by-line.
@@ -748,8 +855,16 @@ class ClaudeCodeBackend:
         happen. The full stdout buffer is reconstructed so the caller can
         still parse the final `result` event: we return the raw JSONL text
         and let invoke() handle extraction.
+
+        When stream_json is True and tools_stats_path is set, each event is
+        also fed to a _ToolCallTracker that pairs tool_use with tool_result
+        by id; on exit the per-tool durations are written to
+        tools_stats_path as JSON and a summary table is appended to the
+        live log. Use this to spot slow tools (e.g. Grep over a huge tree)
+        and target optimization (e.g. add a code search index).
         """
         live = open(live_log_path, "w", encoding="utf-8")
+        tracker = _ToolCallTracker() if (stream_json and tools_stats_path) else None
 
         def _tee_raw(src, prefix: str, sink: list[str]) -> None:
             """Raw line tee — used for stderr and non-stream-json stdout."""
@@ -779,6 +894,15 @@ class ClaudeCodeBackend:
                 else:
                     live.write("(empty line)\n")
                 live.flush()
+                # Feed the parsed event to the tracker so it can pair
+                # tool_use with tool_result and time the call.
+                if tracker is not None:
+                    try:
+                        evt = json.loads(line)
+                    except json.JSONDecodeError:
+                        evt = {}
+                    if isinstance(evt, dict):
+                        tracker.observe(evt)
             src.close()
 
         try:
@@ -821,6 +945,21 @@ class ClaudeCodeBackend:
             returncode = proc.wait()
 
             live.write(f"--- end (exit={returncode}) ---\n")
+
+            # Append per-tool timing summary so `tail -f` viewers and
+            # post-mortem readers see the slow tools at a glance.
+            if tracker is not None and tools_stats_path:
+                summary = tracker.summary()
+                try:
+                    Path(tools_stats_path).write_text(
+                        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                except OSError:
+                    pass
+                live.write("\n--- tool call timing ---\n")
+                live.write(tracker.render_summary_table() + "\n")
+
             live.flush()
 
             return "".join(stdout_parts), "".join(stderr_parts), returncode
