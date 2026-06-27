@@ -130,8 +130,9 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 600)),
             model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", "sonnet"),
             permission_mode=agent_config.get("permission_mode") or defaults.get("permission_mode", "bypassPermissions"),
-            max_turns=int(agent_config.get("max_turns") if agent_config.get("max_turns") is not None else defaults.get("max_turns", 50)),
+            max_turns=int(agent_config.get("max_turns") if agent_config.get("max_turns") is not None else defaults.get("max_turns", 100)),
             settings_file=agent_config.get("settings_file") or defaults.get("settings_file", ""),
+            mcp_config_path=agent_config.get("mcp_config_path") or defaults.get("mcp_config_path", ""),
         )
     elif backend == "http":
         url = agent_config.get("http_url") or defaults.get("http_url", "")

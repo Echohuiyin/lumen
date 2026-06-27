@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "semcode": {
+      "command": "/path/to/semcode-mcp"
+    }
+  }
+}

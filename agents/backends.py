@@ -598,8 +598,9 @@ class ClaudeCodeBackend:
         cli_timeout: int = 600,
         model: str = "sonnet",
         permission_mode: str = "bypassPermissions",
-        max_turns: int = 50,
+        max_turns: int = 100,
         settings_file: str = "",
+        mcp_config_path: str = "",
     ):
         self._cli_command = cli_command
         self._cli_timeout = cli_timeout
@@ -607,6 +608,7 @@ class ClaudeCodeBackend:
         self._permission_mode = permission_mode
         self._max_turns = max_turns
         self._settings_file = settings_file
+        self._mcp_config_path = mcp_config_path
 
     def bind_tools(self, tools):
         """No-op: Claude Code has its own built-in tools. Returns self so the
@@ -744,6 +746,10 @@ class ClaudeCodeBackend:
             settings_path = os.path.expanduser(self._settings_file)
             if os.path.exists(settings_path):
                 cmd.extend(["--settings", settings_path])
+        if self._mcp_config_path:
+            mcp_path = os.path.expanduser(self._mcp_config_path)
+            if os.path.exists(mcp_path):
+                cmd.extend(["--mcp-config", mcp_path])
 
         # Debug dump: write the full command + prompts to disk so the call
         # can be inspected or rerun. Tag includes a uuid suffix in case
@@ -831,7 +837,20 @@ class ClaudeCodeBackend:
             )
 
         content = data.get("result", "") or ""
-        return AIMessage(content=content)
+        msg = AIMessage(content=content)
+        # Detect max_turns exhaustion: CLI returns is_error=False with
+        # num_turns == max_turns when the agent loop hit the turn budget
+        # without a natural stop. The result text is partial/truncated.
+        # Mark it so upstream can route to retry or warn — without this,
+        # a truncated analysis silently flows to fallback stubs.
+        num_turns = data.get("num_turns") or 0
+        if num_turns and num_turns >= self._max_turns and not data.get("is_error"):
+            msg.additional_kwargs = {
+                "exhausted_max_turns": True,
+                "num_turns": num_turns,
+                "max_turns": self._max_turns,
+            }
+        return msg
 
     def _run_with_live_logging(
         self,
