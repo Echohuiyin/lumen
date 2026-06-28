@@ -748,6 +748,16 @@ class ClaudeCodeBackend:
                 cmd.extend(["--settings", settings_path])
         if self._mcp_config_path:
             mcp_path = os.path.expanduser(self._mcp_config_path)
+            # Resolve relative path against the lumen project root (this
+            # file's parent dir), NOT the CLI's cwd (which may be outputs/
+            # or another workdir). Without this, `config/semcode-mcp.json`
+            # gets resolved as `<workdir>/config/semcode-mcp.json` and the
+            # CLI fails to load MCP servers, causing a 0.5s silent exit.
+            if not os.path.isabs(mcp_path):
+                project_root = Path(__file__).resolve().parent.parent
+                candidate = project_root / mcp_path
+                if candidate.exists():
+                    mcp_path = str(candidate)
             if os.path.exists(mcp_path):
                 cmd.extend(["--mcp-config", mcp_path])
 
