@@ -79,6 +79,11 @@ def _run_kernel_expert_with_claude_code(
     except Exception as e:
         error_msg = f"Claude Code 调用失败: {str(e)}"
         _write_tool_call_output(output_file, error_msg, expert_name)
+        # Re-raise CLI startup failures (MCP config, CLI crash) so
+        # kernel_expert_node can route to a blocked contract instead of
+        # fabricating a fallback that hides the broken environment.
+        if "[cli_startup_failure]" in str(e):
+            raise
         return AIMessage(content=error_msg)
 
 
@@ -180,14 +185,34 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 target_kernel_dir = _p
 
     # 执行 Claude Code agent 分析
-    response = _run_kernel_expert_with_claude_code(
-        llm=llm,
-        system_prompt=system_prompt,
-        user_content=user_content,
-        expert_name="内核专家",
-        output_file=output_file,
-        target_kernel_dir=target_kernel_dir,
-    )
+    try:
+        response = _run_kernel_expert_with_claude_code(
+            llm=llm,
+            system_prompt=system_prompt,
+            user_content=user_content,
+            expert_name="内核专家",
+            output_file=output_file,
+            target_kernel_dir=target_kernel_dir,
+        )
+    except RuntimeError as e:
+        # CLI startup failure (MCP config missing, CLI crash): fail-fast
+        # into a blocked contract instead of fabricating fallback output
+        # that would route to test_expert with a wrong expected_signal.
+        error_msg = f"kernel_expert CLI 启动失败: {str(e)}"
+        blocked_contract = KernelExpertOutput(
+            status="blocked",
+            build_status="skipped",
+            blocked_reason=str(e),
+            warnings=[error_msg],
+        )
+        return {
+            "kernel_analysis": error_msg,
+            "reproduce_case": "",
+            "kernel_diagnosis": "",
+            "kernel_ready_for_test": False,
+            "kernel_contract": model_to_dict(blocked_contract),
+            "final_response": error_msg,
+        }
 
     text = response.content.strip()
 

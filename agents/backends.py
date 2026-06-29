@@ -2,6 +2,7 @@ import json
 import os
 import shlex
 import subprocess
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -600,7 +601,7 @@ class ClaudeCodeBackend:
         permission_mode: str = "bypassPermissions",
         max_turns: int = 100,
         settings_file: str = "",
-        mcp_config_path: str = "",
+        semcode_mcp: dict | None = None,
     ):
         self._cli_command = cli_command
         self._cli_timeout = cli_timeout
@@ -608,7 +609,15 @@ class ClaudeCodeBackend:
         self._permission_mode = permission_mode
         self._max_turns = max_turns
         self._settings_file = settings_file
-        self._mcp_config_path = mcp_config_path
+        # Inline MCP server config for semcode, e.g.
+        # {"command": "/path/to/semcode-mcp", "args": ["-d", "/path/to/.semcode.db"]}
+        # When set, the backend writes a temp mcp config file in CLI format
+        # and passes it via --mcp-config. The db path is machine-specific and
+        # belongs in maintenance_config.json (gitignored). The -d arg is what
+        # makes the semcode tools actually register — without it semcode-mcp
+        # searches the cwd, finds no index, and the agent reports
+        # "find_function not in my tool list".
+        self._semcode_mcp = semcode_mcp or {}
 
     def bind_tools(self, tools):
         """No-op: Claude Code has its own built-in tools. Returns self so the
@@ -746,19 +755,16 @@ class ClaudeCodeBackend:
             settings_path = os.path.expanduser(self._settings_file)
             if os.path.exists(settings_path):
                 cmd.extend(["--settings", settings_path])
-        if self._mcp_config_path:
-            mcp_path = os.path.expanduser(self._mcp_config_path)
-            # Resolve relative path against the lumen project root (this
-            # file's parent dir), NOT the CLI's cwd (which may be outputs/
-            # or another workdir). Without this, `config/semcode-mcp.json`
-            # gets resolved as `<workdir>/config/semcode-mcp.json` and the
-            # CLI fails to load MCP servers, causing a 0.5s silent exit.
-            if not os.path.isabs(mcp_path):
-                project_root = Path(__file__).resolve().parent.parent
-                candidate = project_root / mcp_path
-                if candidate.exists():
-                    mcp_path = str(candidate)
-            if os.path.exists(mcp_path):
+        if self._semcode_mcp:
+            # Generate a temp mcp config in CLI format from the inline
+            # semcode_mcp dict. This is what makes the semcode tools
+            # actually register — without `-d`, semcode-mcp searches the
+            # cwd for .semcode.db, finds nothing in outputs/, and the MCP
+            # server starts but exposes no tools (init event shows ~26
+            # tools instead of ~42, agent then says "find_function not in
+            # my tool list").
+            mcp_path = self._write_semcode_mcp_config()
+            if mcp_path and os.path.exists(mcp_path):
                 cmd.extend(["--mcp-config", mcp_path])
 
         # Debug dump: write the full command + prompts to disk so the call
@@ -802,8 +808,20 @@ class ClaudeCodeBackend:
             raise RuntimeError(f"Claude Code CLI not found: {self._cli_command}") from exc
 
         if returncode != 0:
+            # Detect CLI startup failures (MCP config missing, CLI crash
+            # before agent loop). These must NOT be swallowed into a fallback
+            # stub by upstream — they indicate a broken environment, not an
+            # analysis failure. Tag the message so kernel_expert_node can
+            # route to a blocked contract instead of fabricating output.
+            stderr_str = stderr.strip()[:500]
+            is_startup_failure = bool(stderr_str) and (
+                "MCP config" in stderr_str
+                or "Invalid MCP" in stderr_str
+                or "mcp" in stderr_str.lower()
+            )
+            prefix = "[cli_startup_failure] " if is_startup_failure else ""
             raise RuntimeError(
-                f"Claude Code failed (exit {returncode}): {stderr.strip()[:500]}"
+                f"{prefix}Claude Code failed (exit {returncode}): {stderr_str}"
             )
 
         stdout = stdout.strip()
@@ -861,6 +879,30 @@ class ClaudeCodeBackend:
                 "max_turns": self._max_turns,
             }
         return msg
+
+    def _write_semcode_mcp_config(self) -> str:
+        """Write a temp mcp config in CLI format from the inline semcode_mcp dict.
+
+        The dict comes from maintenance_config.json (agent-level semcode_mcp
+        field), e.g. {"command": "/path/to/semcode-mcp", "args": ["-d", "/path/to/.semcode.db"]}.
+        Renders to {"mcpServers": {"semcode": {...}}} and writes a temp file
+        that --mcp-config can consume. Returns the temp path, or "" if the
+        dict lacks a command or the command binary doesn't exist.
+        """
+        if not self._semcode_mcp or not self._semcode_mcp.get("command"):
+            return ""
+        command = os.path.expanduser(self._semcode_mcp["command"])
+        if not os.path.exists(command):
+            return ""
+        server_cfg: dict = {"command": command}
+        args = self._semcode_mcp.get("args")
+        if args:
+            server_cfg["args"] = [os.path.expanduser(a) for a in args]
+        config = {"mcpServers": {"semcode": server_cfg}}
+        tmp_dir = Path(tempfile.gettempdir())
+        tmp_path = tmp_dir / f"lumen_semcode_mcp_{uuid.uuid4().hex[:8]}.json"
+        tmp_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        return str(tmp_path)
 
     def _run_with_live_logging(
         self,
