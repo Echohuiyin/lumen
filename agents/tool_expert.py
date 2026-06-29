@@ -187,11 +187,18 @@ def _collect_crash_evidence(session, expert_type: str) -> tuple[list[dict], dict
 
 
 def _command_evidence(command_result: dict) -> dict:
+    """Build evidence for one crash command.
+
+    output_full preserves the complete raw output for the human review pack
+    (hint_review.md). It is intentionally NOT fed to the LLM — the LLM gets
+    the compact structured evidence via _format_evidence_context and can pull
+    raw details on demand through run_crash_command.
+    """
     return {
         "kind": "crash_command",
         "command": command_result["command"],
         "success": command_result.get("success", False),
-        "output_excerpt": command_result.get("output", "")[:2000],
+        "output_full": command_result.get("output", ""),
         "error": command_result.get("error", ""),
     }
 
@@ -247,11 +254,17 @@ def _parse_bt_evidence(bt_output: str) -> list[dict]:
     if current:
         evidence.append(current)
     for item in evidence:
-        item["frames"] = item.get("frames", [])[:20]
+        item["frames"] = item.get("frames", [])
     return evidence
 
 
 def _parse_log_evidence(log_output: str) -> list[dict]:
+    """Extract structured log events with ±3 lines of context.
+
+    The context lines let the LLM see what surrounded a panic/hung_task/lockdep
+    event (e.g. the Call Trace that follows a BUG: line) without dumping the
+    full raw log into context.
+    """
     patterns = [
         ("kernel_panic", r"kernel panic"),
         ("oops", r"\boops\b"),
@@ -263,36 +276,82 @@ def _parse_log_evidence(log_output: str) -> list[dict]:
         ("hard_lockup", r"hard lockup"),
         ("call_trace", r"call trace"),
     ]
+    lines = log_output.splitlines()
     evidence = []
-    for line_no, line in enumerate(log_output.splitlines(), start=1):
+    for line_no, line in enumerate(lines, start=1):
         lowered = line.lower()
         for event_type, pattern in patterns:
             if re.search(pattern, lowered, re.IGNORECASE):
+                start = max(0, line_no - 4)
+                end = min(len(lines), line_no + 3)
+                context = [
+                    {"line": start + i + 1, "message": lines[start + i].strip()}
+                    for i in range(end - start)
+                ]
                 evidence.append({
                     "kind": "log_event",
                     "event_type": event_type,
                     "line": line_no,
                     "message": line.strip(),
+                    "context": context,
                 })
                 break
-    return evidence[:100]
+    return evidence
 
 
 def _format_evidence_context(command_results: list[dict], evidence: list[dict]) -> str:
+    """Render structured evidence as compact, kind-grouped text for the LLM.
+
+    Lossless on signal: no item count cap, no per-item char cap. Grouped by
+    kind so the LLM can scan D-state tasks, backtraces, and log events
+    separately. Raw output is NOT included — the LLM pulls specifics via
+    run_crash_command when needed.
+    """
     command_summary = "\n".join(
         f"- {item['command']}: {'ok' if item.get('success') else 'failed'}"
         for item in command_results
     )
-    evidence_summary = "\n".join(
-        f"- {item.get('kind')}: {str(item)[:300]}"
-        for item in evidence[:30]
-    )
+
+    by_kind: dict[str, list[dict]] = {}
+    for item in evidence:
+        by_kind.setdefault(item.get("kind", "unknown"), []).append(item)
+
+    sections: list[str] = []
+    if by_kind.get("task"):
+        lines = [f"  PID={t.get('pid')} comm={t.get('comm')} state={t.get('state')}"
+                 for t in by_kind["task"]]
+        sections.append(f"D-state / runnable tasks ({len(by_kind['task'])}):\n" + "\n".join(lines))
+
+    if by_kind.get("backtrace"):
+        bt_parts = [f"Backtraces ({len(by_kind['backtrace'])}):"]
+        for bt in by_kind["backtrace"]:
+            bt_parts.append(f"  PID={bt.get('pid')} comm={bt.get('comm')}:")
+            for frame in bt.get("frames", []):
+                bt_parts.append(f"    {frame}")
+        sections.append("\n".join(bt_parts))
+
+    if by_kind.get("log_event"):
+        ev_parts = [f"Key log events ({len(by_kind['log_event'])}):"]
+        for ev in by_kind["log_event"]:
+            ev_parts.append(f"  [L{ev.get('line')}] ({ev.get('event_type')}) {ev.get('message')}")
+            for ctx in ev.get("context", []):
+                ev_parts.append(f"    [L{ctx.get('line')}] {ctx.get('message')}")
+        sections.append("\n".join(ev_parts))
+
+    if by_kind.get("crash_command"):
+        cmd_parts = [f"Crash commands ({len(by_kind['crash_command'])}):"]
+        for cmd in by_kind["crash_command"]:
+            cmd_parts.append(f"  {cmd.get('command')}: {'ok' if cmd.get('success') else 'failed'}"
+                             + (f" — {cmd.get('error')}" if cmd.get("error") else ""))
+        sections.append("\n".join(cmd_parts))
+
+    evidence_summary = "\n\n".join(sections) if sections else "(no structured evidence)"
     return f"""Deterministic crash baseline already collected.
 
 Commands:
 {command_summary}
 
-Structured evidence excerpts:
+Structured evidence (lossless, grouped by kind):
 {evidence_summary}
 """
 

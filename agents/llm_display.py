@@ -304,6 +304,144 @@ def display_expert_outputs(expert_results: list) -> None:
     print(flush=True)
 
 
+# ===== Human hint injection support =====
+
+HINT_FILE = OUTPUT_DIR / "kernel_expert.hint"
+HINT_REVIEW_FILE = OUTPUT_DIR / "hint_review.md"
+HINT_CONTINUE_FILE = OUTPUT_DIR / "kernel_expert.continue"
+DEFAULT_HINT_WAIT_SECONDS = 120
+
+
+def wait_for_hint(timeout_seconds: int = DEFAULT_HINT_WAIT_SECONDS) -> str:
+    """Poll for a human hint within a bounded window after the review pack is written.
+
+    Returns the hint text (and deletes the hint file) if the human writes one
+    within the window. Returns "" if the human skips via the continue sidecar
+    file or the window times out — either way the workflow proceeds normally
+    to test_expert.
+
+    The window is necessary because write_hint_review_pack and the hint check
+    would otherwise run in the same tick, giving the human no time to read
+    the pack and write a hint.
+    """
+    import time
+    interval = 2
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        if HINT_CONTINUE_FILE.exists():
+            try:
+                HINT_CONTINUE_FILE.unlink()
+            except Exception:
+                pass
+            return ""
+        hint = read_and_consume_hint()
+        if hint:
+            return hint
+        time.sleep(interval)
+        elapsed += interval
+    return ""
+
+
+def write_hint_review_pack(
+    user_input: str,
+    expert_results: list,
+    kernel_expert_output: str,
+) -> Path:
+    """Write a human review pack before hint injection.
+
+    Includes user input, each tool expert's full structured evidence (with
+    complete raw crash output via output_full) and LLM summary, and the
+    kernel_expert first-round full output. Lets a human decide whether to
+    inject a corrective hint.
+    """
+    ensure_output_dir()
+    parts: list[str] = []
+    parts.append("# 内核专家人审阅包\n")
+    parts.append("如需注入关键思路，写入以下文件后 workflow 会自动拾取并重跑内核专家：\n")
+    parts.append(f"```\necho \"你的思路\" > {HINT_FILE}\n```\n")
+    parts.append("注入后本轮只重跑一次。不写则正常流转到测试专家。\n")
+    parts.append("\n---\n")
+
+    parts.append("## 用户输入\n\n")
+    parts.append(user_input + "\n")
+    parts.append("\n---\n")
+
+    for result in expert_results:
+        expert_name = result.get("expert_name", "unknown")
+        expert_type = result.get("expert_type", "")
+        analysis_output = result.get("analysis_output", "")
+        evidence_list = result.get("evidence") or (result.get("structured_output") or {}).get("evidence") or []
+
+        parts.append(f"\n## 工具专家：{expert_name}（{expert_type}）\n")
+
+        parts.append("\n### LLM 总结\n\n")
+        parts.append(analysis_output + "\n")
+
+        parts.append("\n### 过程数据（结构化 evidence + 完整 raw 输出）\n\n")
+        if not evidence_list:
+            parts.append("（无结构化 evidence）\n")
+            continue
+
+        for ev in evidence_list:
+            kind = ev.get("kind", "")
+            parts.append(f"\n#### [{kind}] \n")
+            if kind == "crash_command":
+                parts.append(f"- command: `{ev.get('command', '')}`\n")
+                parts.append(f"- success: {ev.get('success', False)}\n")
+                if ev.get("error"):
+                    parts.append(f"- error: {ev.get('error')}\n")
+                parts.append("\n完整输出：\n")
+                parts.append("```\n")
+                parts.append(ev.get("output_full", "") or "(empty)")
+                parts.append("\n```\n")
+            elif kind == "task":
+                parts.append(f"- PID={ev.get('pid')} comm={ev.get('comm')} state={ev.get('state')} ppid={ev.get('ppid')} cpu={ev.get('cpu')}\n")
+            elif kind == "backtrace":
+                parts.append(f"- PID={ev.get('pid')} comm={ev.get('comm')}\n")
+                for frame in ev.get("frames", []):
+                    parts.append(f"  {frame}\n")
+            elif kind == "log_event":
+                parts.append(f"- [L{ev.get('line')}] ({ev.get('event_type')}) {ev.get('message')}\n")
+                for ctx in ev.get("context", []):
+                    parts.append(f"  [L{ctx.get('line')}] {ctx.get('message')}\n")
+            else:
+                parts.append(f"```\n{ev}\n```\n")
+
+        parts.append("\n---\n")
+
+    parts.append("\n## 内核专家第 1 轮输出（完整原文）\n\n")
+    parts.append(kernel_expert_output + "\n")
+
+    HINT_REVIEW_FILE.write_text("\n".join(parts), encoding="utf-8")
+    return HINT_REVIEW_FILE
+
+
+def read_and_consume_hint() -> str:
+    """Non-blocking check for a human hint file.
+
+    Returns the hint text if present and non-empty, then deletes the file so
+    the next retry cycle doesn't re-inject the same hint. Returns "" when no
+    hint is pending.
+    """
+    if not HINT_FILE.exists():
+        return ""
+    try:
+        content = HINT_FILE.read_text(encoding="utf-8").strip()
+    except Exception:
+        return ""
+    if not content:
+        try:
+            HINT_FILE.unlink()
+        except Exception:
+            pass
+        return ""
+    try:
+        HINT_FILE.unlink()
+    except Exception:
+        pass
+    return content
+
+
 # ===== 输出持久化功能 =====
 
 # Agent 到子目录的映射

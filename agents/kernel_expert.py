@@ -6,7 +6,16 @@ import re
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from agents.contracts import KernelExpertOutput, model_to_dict
-from agents.llm_display import call_llm_with_persistence, display_expert_outputs, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
+from agents.llm_display import (
+    call_llm_with_persistence,
+    display_expert_outputs,
+    get_expert_output_file,
+    ensure_output_dir,
+    _format_agent_header_text,
+    _format_agent_footer_text,
+    write_hint_review_pack,
+    wait_for_hint,
+)
 from agents.test_runner import detect_kernel_type, normalize_target_arch
 from config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
@@ -216,6 +225,67 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     text = response.content.strip()
 
+    # 写人审阅包，检测是否有人注入关键思路
+    # 注入时机：跑完一轮后，路由 test_expert 前
+    # 不影响 retry：重跑只替换本轮 contract，不改 test_attempts
+    # wait_for_hint 给人一个有界窗口审阅 review pack 并决定是否注入：
+    #   - 写 kernel_expert.hint → 拾取并重跑
+    #   - touch kernel_expert.continue → 立即跳过等待
+    #   - 超时 → 正常路由 test_expert
+    try:
+        write_hint_review_pack(
+            user_input=state.get("user_input", ""),
+            expert_results=expert_results,
+            kernel_expert_output=text,
+        )
+    except Exception:
+        pass  # review pack 写失败不应阻塞主流程
+
+    workflow_cfg = config.get("workflow", {}) or {}
+    hint_wait = int(workflow_cfg.get("hint_wait_seconds", 120))
+    hint = wait_for_hint(timeout_seconds=hint_wait)
+    if hint:
+        # 本轮单 shot：read_and_consume_hint 已删除 hint 文件
+        # 重跑时把 hint 追加到 user_content，标记为维护人员关键思路
+        hinted_user_content = (
+            user_content
+            + f"\n\n## 维护人员关键思路（优先参考，不强制）\n\n{hint}\n"
+        )
+        try:
+            response = _run_kernel_expert_with_claude_code(
+                llm=llm,
+                system_prompt=system_prompt,
+                user_content=hinted_user_content,
+                expert_name="内核专家（hint 重跑）",
+                output_file=output_file,
+                target_kernel_dir=target_kernel_dir,
+            )
+            text = response.content.strip()
+        except RuntimeError:
+            # 重跑失败保留第 1 轮输出，不阻塞
+            pass
+
+    # 解析 contract + 构造返回 dict（hint 注入重跑后也复用此函数）
+    return _parse_kernel_expert_response(
+        text=text,
+        expert_results=expert_results,
+        input_artifacts=input_artifacts,
+        state=state,
+    )
+
+
+def _parse_kernel_expert_response(
+    *,
+    text: str,
+    expert_results: list,
+    input_artifacts: dict,
+    state: dict,
+) -> dict:
+    """Parse kernel_expert output text into contract + state update dict.
+
+    Shared between first-round and hint-injected rerun so both produce
+    identically-shaped state updates.
+    """
     # Fallback for empty response: auto-generate contract from state
     if not text:
         text = _generate_fallback_analysis(expert_results, input_artifacts, state)
@@ -326,13 +396,14 @@ def _generate_fallback_analysis(expert_results: list, input_artifacts: dict, sta
     for result in expert_results:
         name = result.get("expert_name", "unknown")
         etype = result.get("expert_type", "")
-        evidence = result.get("evidence", [])
+        evidence = result.get("evidence") or (result.get("structured_output") or {}).get("evidence") or []
         analysis = result.get("analysis_output", "")
         parts.append(f"### {name} ({etype})")
         if analysis:
             parts.append(analysis[:500])
         for ev in evidence[:3]:
-            parts.append(f"- Evidence: {ev.get('kind', '')}: {ev.get('command', '') or ev.get('output_excerpt', '')[:100]}")
+            raw = ev.get("output_full", "") or ev.get("message", "")
+            parts.append(f"- Evidence: {ev.get('kind', '')}: {ev.get('command', '') or raw[:100]}")
         parts.append("")
 
     parts.append("### 总结")
@@ -419,49 +490,59 @@ def _generate_auto_contract_fields(
 def _extract_evidence_summary(expert_results: list) -> str:
     """Extract key evidence from tool expert results for LLM context.
 
-    This provides extracted info so kernel_expert doesn't need to call crash directly.
+    Uses the structured evidence (task/backtrace/log_event/crash_command)
+    already collected by tool_expert, instead of re-parsing raw output.
+    Falls back to raw output_full only for signals not covered by structured
+    fields (e.g. MACHINE: arch from sys, panic string from log).
     """
+    import re
     summary_parts = []
 
     for result in expert_results:
-        expert_name = result.get("expert_name", "unknown")
-        expert_type = result.get("expert_type", "")
-        evidence_list = result.get("evidence", [])
-
+        evidence_list = result.get("evidence") or (result.get("structured_output") or {}).get("evidence") or []
         if not evidence_list:
             continue
 
-        # Extract key information from crash evidence
         for ev in evidence_list:
-            if ev.get("kind") == "crash_command":
-                cmd = ev.get("command", "")
-                output = ev.get("output_excerpt", "")
+            kind = ev.get("kind", "")
 
-                # Extract arch from sys output
+            if kind == "task":
+                state = ev.get("state", "")
+                if state.upper() in {"UN", "RU", "IN"}:
+                    summary_parts.append(
+                        f"- Task PID={ev.get('pid')} comm={ev.get('comm')} state={state}"
+                    )
+
+            elif kind == "backtrace":
+                frames = ev.get("frames", [])
+                if frames:
+                    top = frames[0] if frames else ""
+                    summary_parts.append(
+                        f"- Backtrace PID={ev.get('pid')} comm={ev.get('comm')}: {top}"
+                    )
+
+            elif kind == "log_event":
+                etype = ev.get("event_type", "")
+                msg = ev.get("message", "")
+                if etype in {"kernel_panic", "hung_task", "lockdep", "bug"}:
+                    summary_parts.append(f"- Log event ({etype}) L{ev.get('line')}: {msg}")
+
+            elif kind == "crash_command":
+                cmd = ev.get("command", "")
+                output = ev.get("output_full", "")
+
+                # Arch from sys output (not in structured evidence)
                 if "sys" in cmd and output:
-                    import re
                     arch_match = re.search(r"MACHINE:\s*(\S+)", output)
                     if arch_match:
                         summary_parts.append(f"- Architecture: {arch_match.group(1)}")
 
-                # Extract panic info
+                # Panic/hung string from log output (structured log_event covers
+                # most cases, but raw log may have the full panic line)
                 if "log" in cmd and output:
                     panic_match = re.search(r"Kernel panic - not syncing: (.+)", output)
                     if panic_match:
                         summary_parts.append(f"- Panic: {panic_match.group(1)}")
-
-                    hung_match = re.search(r"blocked for more than (\d+) seconds", output)
-                    if hung_match:
-                        summary_parts.append(f"- Hung task: blocked for {hung_match.group(1)} seconds")
-
-                # Extract task info from ps output
-                if "ps" in cmd and output:
-                    # Look for D-state (UN) processes
-                    import re
-                    un_procs = re.findall(r"^(\S+)\s+(\d+)\s+\d+\s+\S+\s+UN", output, re.MULTILINE)
-                    if un_procs:
-                        procs_str = ", ".join(f"{p[0]}(PID:{p[1]})" for p in un_procs[:3])
-                        summary_parts.append(f"- D-state processes: {procs_str}")
 
     if not summary_parts:
         return "（从工具专家结果中未提取到关键证据）"
