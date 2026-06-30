@@ -108,7 +108,24 @@ def test_validate_kernel_contract_rejects_elf_vmlinux():
         assert _kernel_contract_ready_for_test(validated) is False
 
 
-def test_validate_kernel_contract_rejects_missing_script():
+def test_validate_kernel_contract_rejects_missing_expected_signal():
+    with tempfile.NamedTemporaryFile() as kernel_file:
+        kernel_file.write(b"MZ\x00\x00")
+        kernel_file.flush()
+        contract = _kernel_contract_from_markers(
+            target_arch="x86_64",
+            boot_kernel_path=kernel_file.name,
+            reproducer_dir="",
+            reproducer_module_path="",
+            test_script_path="/tmp/missing-test-script.sh",
+            expected_signal="",
+        )
+        validated = _validate_kernel_contract_artifacts(contract)
+        assert validated.status == "blocked"
+        assert "expected_signal" in validated.blocked_reason
+
+
+def test_validate_kernel_contract_missing_script_generates_warning():
     with tempfile.NamedTemporaryFile() as kernel_file:
         kernel_file.write(b"MZ\x00\x00")
         kernel_file.flush()
@@ -121,8 +138,10 @@ def test_validate_kernel_contract_rejects_missing_script():
             expected_signal="Kernel panic",
         )
         validated = _validate_kernel_contract_artifacts(contract)
-        assert validated.status == "blocked"
-        assert "test_script_path does not exist" in validated.blocked_reason
+        # test_script_path is optional — missing script generates a warning
+        # but does not block the contract (supports max_turns recovery)
+        assert validated.status == "ok"
+        assert any("test_script_path" in w for w in validated.warnings)
 
 
 def test_route_after_kernel_uses_contract():
@@ -154,7 +173,8 @@ if __name__ == "__main__":
         test_marker_fallback_blocks_incomplete_handoff,
         test_merge_fills_json_with_marker_fallback,
         test_validate_kernel_contract_rejects_elf_vmlinux,
-        test_validate_kernel_contract_rejects_missing_script,
+        test_validate_kernel_contract_rejects_missing_expected_signal,
+        test_validate_kernel_contract_missing_script_generates_warning,
         test_route_after_kernel_uses_contract,
     ]:
         test()

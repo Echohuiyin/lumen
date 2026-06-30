@@ -53,7 +53,8 @@ def test_elf_vmlinux_rejected_before_qemu():
 
 def test_legacy_config_name_falls_back_to_config_json():
     config = load_config("maintenance_config.json", fallback_to_claude_settings=False)
-    assert config.get("default", {}).get("model_name")
+    assert "default" in config
+    assert "backend" in config["default"]
 
 
 def test_contract_serializes_to_dict():
