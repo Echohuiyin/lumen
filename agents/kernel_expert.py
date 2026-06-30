@@ -88,10 +88,16 @@ def _run_kernel_expert_with_claude_code(
     except Exception as e:
         error_msg = f"Claude Code 调用失败: {str(e)}"
         _write_tool_call_output(output_file, error_msg, expert_name)
-        # Re-raise CLI startup failures (MCP config, CLI crash) so
-        # kernel_expert_node can route to a blocked contract instead of
-        # fabricating a fallback that hides the broken environment.
-        if "[cli_startup_failure]" in str(e):
+        # Re-raise CLI startup failures, max_turns exhaustion, and timeouts
+        # so kernel_expert_node can route to a blocked contract instead of
+        # fabricating a fallback that picks up stale reproducer dirs from
+        # previous E2E runs.
+        err_str = str(e)
+        if (
+            "[cli_startup_failure]" in err_str
+            or "[cli_max_turns]" in err_str
+            or "timed out" in err_str.lower()
+        ):
             raise
         return AIMessage(content=error_msg)
 
@@ -194,6 +200,10 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 target_kernel_dir = _p
 
     # 执行 Claude Code agent 分析
+    # Snapshot the mtime of the newest reproducer dir BEFORE the CLI runs,
+    # so the max_turns recovery path can distinguish files the agent wrote
+    # during this invocation from stale dirs left over by a previous case.
+    cli_start_mtime = _newest_reproducer_mtime(OUTPUT_DIR)
     try:
         response = _run_kernel_expert_with_claude_code(
             llm=llm,
@@ -204,14 +214,54 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             target_kernel_dir=target_kernel_dir,
         )
     except RuntimeError as e:
-        # CLI startup failure (MCP config missing, CLI crash): fail-fast
-        # into a blocked contract instead of fabricating fallback output
-        # that would route to test_expert with a wrong expected_signal.
-        error_msg = f"kernel_expert CLI 启动失败: {str(e)}"
+        # CLI startup failure (MCP config missing, CLI crash), max_turns
+        # exhaustion, or timeout. Before blocking, check whether the agent
+        # actually wrote reproducer files before it ran out of turns — the
+        # btrfs case routinely writes a full reproducer.c + test.sh early
+        # then keeps analyzing and hits max_turns without emitting the
+        # KERNEL_CONTRACT. Discarding that work forces a full re-run.
+        err_str = str(e)
+        is_max_turns = "[cli_max_turns]" in err_str or "Reached maximum number of turns" in err_str
+        if "timed out" in err_str.lower():
+            error_msg = f"kernel_expert CLI 超时: {err_str}"
+        elif is_max_turns:
+            error_msg = f"kernel_expert CLI 达到 max_turns 上限: {err_str}"
+        else:
+            error_msg = f"kernel_expert CLI 启动失败: {err_str}"
+
+        # Attempt to recover reproducer files written before the CLI failed.
+        # Only do this for max_turns (the agent had time to write files but
+        # didn't finish the contract); startup failures and timeouts are
+        # unlikely to have produced files and should stay blocked.
+        recovered = (
+            _recover_reproducer_from_outputs(
+                input_artifacts, state, min_mtime=cli_start_mtime,
+            )
+            if is_max_turns
+            else None
+        )
+        if recovered is not None:
+            contract, analysis_text = recovered
+            return {
+                "kernel_analysis": analysis_text,
+                "reproduce_case": analysis_text,
+                "kernel_diagnosis": "",
+                "kernel_ready_for_test": _kernel_contract_ready_for_test(contract),
+                "kernel_contract": model_to_dict(contract),
+                "target_arch": contract.target_arch,
+                "boot_kernel_path": contract.boot_kernel_path,
+                "reproducer_dir": contract.reproducer_dir,
+                "reproducer_module_path": contract.reproducer_module_path,
+                "test_script_path": contract.test_script_path,
+                "expected_signal": contract.expected_signal,
+                "binaries_dir": contract.binaries_dir,
+                "final_response": analysis_text,
+            }
+
         blocked_contract = KernelExpertOutput(
             status="blocked",
             build_status="skipped",
-            blocked_reason=str(e),
+            blocked_reason=err_str,
             warnings=[error_msg],
         )
         return {
@@ -286,6 +336,31 @@ def _parse_kernel_expert_response(
     Shared between first-round and hint-injected rerun so both produce
     identically-shaped state updates.
     """
+    # Detect CLI failure text (timeout, startup error, max_turns) that
+    # slipped through as a non-empty AIMessage. Block here instead of running
+    # the empty-text fallback that would search outputs/ for stale reproducer
+    # dirs and route test_expert with the wrong expected_signal.
+    if text and (
+        "Claude Code 调用失败" in text
+        or "Claude Code timed out" in text
+        or "Reached maximum number of turns" in text
+        or "[cli_max_turns]" in text
+    ):
+        blocked_contract = KernelExpertOutput(
+            status="blocked",
+            build_status="skipped",
+            blocked_reason=text,
+            warnings=["kernel_expert CLI failed; contract blocked to prevent stale fallback"],
+        )
+        return {
+            "kernel_analysis": text,
+            "reproduce_case": "",
+            "kernel_diagnosis": "",
+            "kernel_ready_for_test": False,
+            "kernel_contract": model_to_dict(blocked_contract),
+            "final_response": text,
+        }
+
     # Fallback for empty response: auto-generate contract from state
     if not text:
         text = _generate_fallback_analysis(expert_results, input_artifacts, state)
@@ -412,16 +487,50 @@ def _generate_fallback_analysis(expert_results: list, input_artifacts: dict, sta
     return "\n".join(parts)
 
 
-def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str, str]:
+def _newest_reproducer_mtime(outputs_dir: Path) -> float | None:
+    """Return the mtime of the newest reproducer subdir, or None if none exist.
+
+    Used to snapshot state before a CLI invocation so the max_turns recovery
+    path can filter to dirs created during this invocation only.
+    """
+    if not outputs_dir.exists():
+        return None
+    try:
+        mtimes = [
+            d.stat().st_mtime
+            for d in outputs_dir.iterdir()
+            if d.is_dir() and (d / "test.sh").exists()
+        ]
+    except OSError:
+        return None
+    return max(mtimes) if mtimes else None
+
+
+def _find_actual_reproducer_path(
+    outputs_dir: Path,
+    min_mtime: float | None = None,
+) -> tuple[str, str, str, str]:
     """Search outputs directory for actual reproducer files.
+
+    Args:
+        outputs_dir: Directory containing reproducer subdirectories.
+        min_mtime: If set, only consider subdirectories whose mtime is
+            strictly greater than this timestamp. Used by the max_turns
+            recovery path to avoid picking up a stale reproducer dir from
+            a previous E2E case (the original P0-2 bug).
 
     Returns: (reproducer_dir, test_script_path, reproducer_module_path, expected_signal)"""
     if not outputs_dir.exists():
         return "", "", "", ""
 
     # Find the most recently modified subdirectory with test.sh
+    candidates = [
+        d for d in outputs_dir.iterdir()
+        if d.is_dir() and (d / "test.sh").exists()
+        and (min_mtime is None or d.stat().st_mtime > min_mtime)
+    ]
     reproducer_dirs = sorted(
-        [d for d in outputs_dir.iterdir() if d.is_dir() and (d / "test.sh").exists()],
+        candidates,
         key=lambda d: d.stat().st_mtime,
         reverse=True,
     )
@@ -436,7 +545,11 @@ def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str, str]
     ko_files = list(reproducer_dirs[0].glob("*.ko"))
     reproducer_module_path = str(ko_files[0]) if ko_files else ""
 
-    # Parse expected_signal from test.sh REPRODUCER_SIGNAL lines
+    # Parse expected_signal from test.sh. The agent is instructed to emit a
+    # `REPRODUCER_SIGNAL:` line, but in practice it often writes the signal
+    # only in a comment (e.g. "# Expected serial output: WARNING: ... can_finish_ordered_extent").
+    # Fall back to scanning comment lines for known kernel-error tokens so
+    # the contract carries a useful signal instead of empty.
     expected_signal = ""
     try:
         test_sh_text = (reproducer_dirs[0] / "test.sh").read_text()
@@ -444,10 +557,120 @@ def _find_actual_reproducer_path(outputs_dir: Path) -> tuple[str, str, str, str]
         signal_match = re.search(r'REPRODUCER_SIGNAL:\s*(\S.+)', test_sh_text)
         if signal_match:
             expected_signal = signal_match.group(1).strip()
+        if not expected_signal:
+            expected_signal = _infer_signal_from_test_sh(test_sh_text)
     except Exception:
         pass
 
     return reproducer_dir, test_script_path, reproducer_module_path, expected_signal
+
+
+# Known kernel-error tokens that appear in test.sh comments when the agent
+# documents the expected serial output. Order matters: more-specific signals
+# (KASAN subtypes) come before generic ones (Kernel panic) so we don't grab
+# "Kernel panic" when the real signal is a KASAN report.
+_KNOWN_SIGNAL_TOKENS: list[str] = [
+    "BUG: KASAN: slab-use-after-free",
+    "BUG: KASAN: slab-out-of-bounds",
+    "BUG: KASAN:",
+    "blocked for more than",
+    "hung_task: blocked tasks",
+    "BUG: soft lockup",
+    "unable to handle kernel NULL pointer",
+    "kernel BUG at",
+    "Out of memory",
+    "WARNING: CPU:",
+    "WARNING: at ",
+    "Kernel panic",
+]
+
+
+def _infer_signal_from_test_sh(test_sh_text: str) -> str:
+    """Scan test.sh comments/text for known kernel-error tokens.
+
+    The agent's test.sh typically has a comment like:
+        # Expected serial output (the signal test_expert greps for):
+        #   WARNING: ... at fs/btrfs/ordered-data.c:390 can_finish_ordered_extent
+        #   Kernel panic - not syncing: kernel: panic_on_warn set ...
+    We pick the most specific token that appears in the file.
+    """
+    for token in _KNOWN_SIGNAL_TOKENS:
+        if token.lower() in test_sh_text.lower():
+            return token
+    return ""
+
+
+def _recover_reproducer_from_outputs(
+    input_artifacts: dict, state: dict, *, min_mtime: float | None = None,
+) -> tuple[KernelExpertOutput, str] | None:
+    """Recover a usable contract from reproducer files the agent already wrote.
+
+    Used when the CLI hit max_turns but the agent had already created a
+    reproducer directory with test.sh (and optionally reproducer.c/.ko).
+    Returns (contract, analysis_text) or None if no reproducer dir was found.
+
+    The contract is marked status="ok" with a warning noting it was recovered
+    from partial output, so test_expert can proceed. The analysis_text is a
+    short summary so knowledge_base has something to archive.
+
+    min_mtime: if set, only consider reproducer dirs created after this
+    timestamp (i.e. during the current CLI invocation) to avoid picking up
+    a stale dir from a previous case.
+    """
+    outputs_dir = OUTPUT_DIR
+    reproducer_dir, test_script_path, reproducer_module_path, expected_signal = (
+        _find_actual_reproducer_path(outputs_dir, min_mtime=min_mtime)
+    )
+    if not reproducer_dir or not test_script_path:
+        return None
+
+    fallback_arch = normalize_target_arch(os.uname().machine)
+    fallback_boot = (
+        input_artifacts.get("boot_kernel_path")
+        or input_artifacts.get("vmlinux_path", "")
+    )
+    # binaries_dir: if reproducer dir has executables (user-space trigger),
+    # point binaries_dir at it so test_expert injects them into initramfs.
+    binaries_dir = ""
+    try:
+        rd_path = Path(reproducer_dir)
+        has_executable = any(
+            p.is_file() and os.access(p, os.X_OK)
+            for p in rd_path.iterdir()
+            if p.name not in {"Makefile", "test.sh"}
+        )
+        if has_executable:
+            binaries_dir = reproducer_dir
+    except Exception:
+        pass
+
+    contract = KernelExpertOutput(
+        status="ok",
+        target_arch=fallback_arch,
+        boot_kernel_path=fallback_boot,
+        reproducer_dir=reproducer_dir,
+        reproducer_module_path=reproducer_module_path,
+        test_script_path=test_script_path,
+        expected_signal=expected_signal or "Kernel panic",
+        binaries_dir=binaries_dir,
+        build_status="passed" if reproducer_module_path else "skipped",
+        warnings=[
+            "Contract recovered from partial output after CLI hit max_turns; "
+            "reproducer files were written but KERNEL_CONTRACT was not emitted."
+        ],
+    )
+    contract = _validate_kernel_contract_artifacts(contract)
+
+    analysis_text = (
+        f"## kernel_expert 分析（max_turns 后从已生成文件恢复）\n\n"
+        f"CLI 达到 max_turns 上限，但已生成复现器文件。从 outputs/ 恢复 contract：\n"
+        f"- reproducer_dir: {reproducer_dir}\n"
+        f"- test_script_path: {test_script_path}\n"
+        f"- reproducer_module_path: {reproducer_module_path or '(none — user-space reproducer)'}\n"
+        f"- expected_signal: {contract.expected_signal}\n"
+        f"- binaries_dir: {binaries_dir or '(none)'}\n"
+    )
+    return contract, analysis_text
 
 
 def _generate_auto_contract_fields(

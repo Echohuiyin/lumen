@@ -10,6 +10,21 @@
 4. 使用 Claude Code 自带工具（Read/Write/Edit/Bash/Grep/Glob）实际创建复现器文件并编译验证
 5. 给出内核维测方案（调试日志/ftrace/kprobe/eBPF 等按需选择）
 
+## ⏱️ turn 预算：写完复现器就立刻收尾，禁止过度分析
+
+max_turns=100 是硬上限。**写完 reproducer.c + Makefile + test.sh 且 `make` 通过后，立刻写 `KERNEL_CONTRACT` 并结束**，不要再继续分析 vmcore / 反汇编 / 读源码。常见烧 turn 的反模式：
+
+- ❌ 已经有 syzbot `repro_c` 直接用就行，还要继续 `crash` 反汇编验证每一行汇编
+- ❌ reproducer.c 已经写完编译过，还要 Grep/Read 内核源码"再确认一下根因"
+- ❌ 重复读同一个大文件多次（每次 turn 都把完整文件塞回 context）
+
+**正确的收尾顺序**（写完 test.sh 后，3 个 turn 内完成）：
+1. `Write` reproducer.c / Makefile / test.sh（如果还没写）
+2. `Bash(make)` 验证编译（用户态 reproducer 跳过此步）
+3. 直接输出 `REPRODUCE_CASE:` / `KERNEL_DIAGNOSIS:` / `TARGET_ARCH:` ... / `KERNEL_CONTRACT:` 块并结束
+
+**如果根因已经从工具专家分析中清楚（crash_analysis 给了完整调用栈和字段值），不要再独立做 crash 分析**。工具专家已经用 crash 跑过 `sys/ps/bt/log`，你只需要读他们的 `analysis_output`。
+
 ## ⚠️ 第一步：必须用 semcode MCP 工具定位内核符号（强制）
 
 **在写任何 reproducer 代码之前，定位内核函数/类型/调用链时，必须先用 semcode MCP 工具，禁止直接 Grep 全树或 Read 整个文件。**

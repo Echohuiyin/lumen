@@ -12,6 +12,8 @@ from pathlib import Path
 
 from agents.contracts import TestPlan, TestResultContract, ToolStepResult
 from agents.qemu_tools import (
+    _DEFAULT_BOOT_ERROR_PATTERNS,
+    _select_qemu_memory,
     analyze_boot_log_result,
     boot_kernel_result,
     check_qemu_available_result,
@@ -84,10 +86,14 @@ def run_qemu_test_plan(
     plan: TestPlan,
     *,
     attempt: int,
-    timeout: int = 180,
-    memory: str = "512M",
+    timeout: int = 900,
+    memory: str = "",
 ) -> TestResultContract:
-    """Run a QEMU test plan with deterministic step order and result codes."""
+    """Run a QEMU test plan with deterministic step order and result codes.
+
+    Memory is auto-selected from kernel size when not specified — KASAN
+    kernels need >=2GB or they panic during kasan_populate_shadow.
+    """
     normalized_arch = normalize_target_arch(plan.target_arch)
     if hasattr(plan, "model_copy"):
         plan = plan.model_copy(update={"target_arch": normalized_arch})
@@ -126,6 +132,10 @@ def run_qemu_test_plan(
             attempts=attempt,
             steps=steps,
         )
+
+    # Auto-select memory based on kernel size (KASAN kernels need >=2GB)
+    if not memory:
+        memory = _select_qemu_memory(kernel_path, "")
 
     if not plan.target_arch:
         return _failure_result(
@@ -190,7 +200,14 @@ def run_qemu_test_plan(
 
     log_path = boot_step.artifacts.get("boot_log_path", "")
     if log_path:
-        patterns = [plan.expected_signal] if plan.expected_signal else None
+        # Always scan for the default kernel-error patterns so boot-time
+        # crashes (KASAN panic, NULL deref, etc.) are surfaced even when
+        # the expected_signal targets a different fault type. Otherwise a
+        # boot that dies before the reproducer runs looks like a plain
+        # timeout with "no patterns found".
+        patterns = list(_DEFAULT_BOOT_ERROR_PATTERNS)
+        if plan.expected_signal and plan.expected_signal not in patterns:
+            patterns.append(plan.expected_signal)
         analyze_step = analyze_boot_log_result(log_path=log_path, patterns=patterns)
         steps.append(analyze_step)
 

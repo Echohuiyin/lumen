@@ -792,6 +792,7 @@ class ClaudeCodeBackend:
                     live_log_path=dump["live_log"],
                     tools_stats_path=dump.get("tools_stats") if _STREAM_JSON else None,
                     stream_json=_STREAM_JSON,
+                    timeout=self._cli_timeout,
                 )
             else:
                 result = subprocess.run(
@@ -819,9 +820,22 @@ class ClaudeCodeBackend:
                 or "Invalid MCP" in stderr_str
                 or "mcp" in stderr_str.lower()
             )
-            prefix = "[cli_startup_failure] " if is_startup_failure else ""
+            # Also detect max_turns exhaustion: CLI exits 1 with a JSON
+            # result on stdout (not stderr) containing
+            # "errors":["Reached maximum number of turns (N)"]. The stderr
+            # is empty so the generic startup-failure heuristic misses it.
+            # Tag it so kernel_expert_node routes to a blocked contract
+            # instead of fabricating a stale fallback.
+            is_max_turns = "Reached maximum number of turns" in stdout
+            if is_startup_failure:
+                prefix = "[cli_startup_failure] "
+            elif is_max_turns:
+                prefix = "[cli_max_turns] "
+            else:
+                prefix = ""
+            detail = stderr_str or (stdout[:500] if is_max_turns else "")
             raise RuntimeError(
-                f"{prefix}Claude Code failed (exit {returncode}): {stderr_str}"
+                f"{prefix}Claude Code failed (exit {returncode}): {detail}"
             )
 
         stdout = stdout.strip()
@@ -912,6 +926,7 @@ class ClaudeCodeBackend:
         live_log_path: str,
         tools_stats_path: str | None = None,
         stream_json: bool = False,
+        timeout: int | None = None,
     ) -> tuple[str, str, int]:
         """Popen the CLI, tee stdout/stderr to live_log_path line-by-line.
 
@@ -919,6 +934,12 @@ class ClaudeCodeBackend:
         caller can parse JSON exactly as before. stderr is also captured
         fully even though we stream it, because non-zero exits need the
         trimmed message for the RuntimeError.
+
+        When `timeout` is set, the subprocess is killed when the deadline
+        passes and subprocess.TimeoutExpired is raised so the caller can
+        surface the same "Claude Code timed out after Ns" error as the
+        non-debug path. Without this, the live-logging path would block
+        forever on a hung CLI (proc.wait() with no timeout).
 
         When stream_json is True, stdout is JSONL (one event per line). Each
         line is formatted via _format_stream_event and written to the live
@@ -1013,7 +1034,20 @@ class ClaudeCodeBackend:
                 _tee_raw(proc.stdout, "", stdout_parts)
             stderr_thread.join()
 
-            returncode = proc.wait()
+            # Enforce the deadline: proc.wait() with no timeout would block
+            # forever if the CLI hung. Kill the process tree so partial
+            # stdout/stderr still gets returned for debugging.
+            try:
+                returncode = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                live.write(f"--- timed out after {timeout}s ---\n")
+                live.flush()
+                raise
 
             live.write(f"--- end (exit={returncode}) ---\n")
 

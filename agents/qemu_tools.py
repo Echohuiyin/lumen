@@ -37,14 +37,32 @@ class BootKernelInput(BaseModel):
     kernel_path: str
     initramfs_path: str
     arch: str = "x86_64"
-    timeout: int = 120
-    memory: str = "512M"
+    timeout: int = 300
+    memory: str = ""
 
 
 class AnalyzeLogInput(BaseModel):
     """Input schema for analyze_boot_log."""
     log_path: str
     patterns: Optional[list[str]] = None
+
+
+# Kernel error patterns scanned by default. Boot-time KASAN panics
+# (e.g. "kasan_populate_shadow: Failed to allocate page") surface as a
+# "Kernel panic" line, so keeping that token here is load-bearing for
+# detecting OOM-style boot failures that would otherwise be misclassified
+# as plain timeouts.
+_DEFAULT_BOOT_ERROR_PATTERNS: list[str] = [
+    "Kernel panic",
+    "BUG:",
+    "Oops:",
+    "NULL pointer",
+    "soft lockup",
+    "blocked for more than",
+    "hung task",
+    "stack-overflow",
+    "Call Trace:",
+]
 
 
 def _resolve_runtime_path(path: str | Path) -> Path:
@@ -67,6 +85,25 @@ def _detect_kernel_type(kernel_path: str) -> str:
         return "raw_image"
     except Exception:
         return "unknown"
+
+
+def _select_qemu_memory(kernel_path: str, requested: str = "") -> str:
+    """Pick a QEMU memory size that fits the kernel.
+
+    KASAN-enabled kernels need a large shadow region at boot, so a 512MB QEMU
+    guest panics during `kasan_populate_shadow` before any test code runs.
+    Heuristic: bzImage files >= 20MB almost always come from a KASAN/debug
+    build (syzbot kernels land around 100MB). Such kernels get 2GB; smaller
+    kernels keep the legacy 512MB. An explicit `requested` value overrides
+    the heuristic so kernel_expert / contracts can pin a specific size.
+    """
+    if requested:
+        return requested
+    try:
+        size = os.path.getsize(kernel_path)
+    except OSError:
+        return "512M"
+    return "2G" if size >= 20 * 1024 * 1024 else "512M"
 
 
 def _normalize_arch(arch: str | None) -> str:
@@ -227,8 +264,8 @@ def boot_kernel(
     kernel_path: str,
     initramfs_path: str,
     arch: str = "x86_64",
-    timeout: int = 120,
-    memory: str = "512M",
+    timeout: int = 300,
+    memory: str = "",
 ) -> str:
     """Boot kernel in QEMU and capture boot log.
 
@@ -240,7 +277,7 @@ def boot_kernel(
         initramfs_path: Path to initramfs/initrd
         arch: Target architecture
         timeout: Boot timeout in seconds
-        memory: Memory allocation
+        memory: Memory allocation; empty = auto-select based on kernel size
 
     Returns:
         Boot result with log content or error message
@@ -255,6 +292,10 @@ def boot_kernel(
         return f"Error: kernel not found: {kernel_path}"
     if not initramfs.exists():
         return f"Error: initramfs not found: {initramfs_path}"
+
+    # Auto-select memory: KASAN/debug kernels need >=2GB or they panic during
+    # kasan_populate_shadow before any test code runs.
+    memory = _select_qemu_memory(str(kernel), memory)
 
     # Create log file for serial output (written directly by QEMU)
     serial_log = tempfile.mktemp(suffix=".log", prefix="qemu_serial_")
@@ -405,18 +446,7 @@ def analyze_boot_log(
     except Exception as e:
         return f"Error reading log: {str(e)}"
 
-    # Default patterns for kernel errors
-    default_patterns = [
-        "Kernel panic",
-        "BUG:",
-        "Oops:",
-        "NULL pointer",
-        "soft lockup",
-        "blocked for more than",
-        "hung task",
-        "stack-overflow",
-        "Call Trace:",
-    ]
+    search_patterns = patterns or _DEFAULT_BOOT_ERROR_PATTERNS
 
     search_patterns = patterns or default_patterns
 
@@ -519,8 +549,7 @@ def boot_kernel_result(
     kernel_path: str,
     initramfs_path: str,
     arch: str = "x86_64",
-    timeout: int = 120,
-    memory: str = "512M",
+    timeout: int = 300,    memory: str = "",
 ) -> ToolStepResult:
     """Structured wrapper around boot_kernel."""
     normalized_arch = _normalize_arch(arch)

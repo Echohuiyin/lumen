@@ -2,9 +2,9 @@
   "default": {
     "backend": "anthropic",
     "api_key": "",
-    "settings_file": "~/.claude/settings.json_GLM5",
+    "settings_file": "~/.claude/settings.json",
     "base_url": "",
-    "model_name": "deepseek-v4-flash",
+    "model_name": "",
     "temperature": 0.0
   },
   "agents": {
@@ -14,8 +14,8 @@
       "model": "sonnet",
       "cli_timeout": 600,
       "permission_mode": "bypassPermissions",
-      "max_turns": 50,
-      "settings_file": "~/.claude/settings.json_GLM5_lmr",
+      "max_turns": 100,
+      "settings_file": "~/.claude/settings.json",
       "prompt_file": "prompts/maintenance/kernel_expert.md"
     },
     "test_expert": {
@@ -24,7 +24,7 @@
       "base_url": "",
       "model_name": "",
       "temperature": 0.0,
-      "settings_file": "~/.claude/settings.json_GLM5",
+      "settings_file": "~/.claude/settings.json",
       "prompt_file": "prompts/maintenance/test_expert.md"
     }
   },
@@ -39,7 +39,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
-        "settings_file": "~/.claude/settings.json_GLM5",
+        "settings_file": "~/.claude/settings.json",
         "prompt_file": "prompts/maintenance/knowledge_search.md"
       }
     },
@@ -53,7 +53,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
-        "settings_file": "~/.claude/settings.json_GLM5_lmr",
+        "settings_file": "~/.claude/settings.json",
         "prompt_file": "prompts/maintenance/lock_analysis.md"
       }
     },
@@ -67,7 +67,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
-        "settings_file": "~/.claude/settings.json_GLM5",
+        "settings_file": "~/.claude/settings.json",
         "prompt_file": "prompts/maintenance/crash_analysis.md"
       }
     },
@@ -81,7 +81,7 @@
         "base_url": "",
         "model_name": "",
         "temperature": 0.0,
-        "settings_file": "~/.claude/settings.json_GLM5",
+        "settings_file": "~/.claude/settings.json",
         "prompt_file": "prompts/maintenance/kernel_log_analysis.md"
       }
     }

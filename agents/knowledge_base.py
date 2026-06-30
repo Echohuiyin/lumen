@@ -48,13 +48,26 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"请将以上内容总结为知识库文档。"
     )
 
-    response = call_llm_with_display(
-        "知识库生成", "总结归档", llm,
-        [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
-    )
+    try:
+        response = call_llm_with_display(
+            "知识库生成", "总结归档", llm,
+            [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
+        )
+        knowledge_content = response.content.strip()
+    except Exception as e:
+        # knowledge_base is the terminal node — its LLM failure must not
+        # throw away the entire workflow's analysis. Degrade to saving the
+        # raw structured summary so the case is still archived and
+        # retrievable. Common triggers: 429 budget_exceeded on the proxy,
+        # upstream 5xx, or transient network errors.
+        err_line = f"[knowledge_base LLM failure] {type(e).__name__}: {str(e)[:300]}"
+        knowledge_content = (
+            f"# 知识库归档（LLM 总结失败，已降级保存原始输入）\n\n"
+            f"{err_line}\n\n"
+            f"--- 原始输入 ---\n{user_content}"
+        )
 
     # 保存知识库文件
-    knowledge_content = response.content.strip()
     knowledge_file = _save_knowledge_file(state, knowledge_content, config)
 
     # 自动导入到 Chroma 向量数据库
