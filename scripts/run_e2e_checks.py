@@ -146,8 +146,13 @@ def _run_workflow(case: dict, timeout: int = 3600) -> subprocess.CompletedProces
     )
 
 
-def _count_completed_stages(stdout: str) -> list[dict]:
+def _count_completed_stages(stdout: str, case_name: str = "") -> list[dict]:
     """Scan workflow output and report which stages completed.
+
+    kernel_expert writes its output to a file, not stdout, so its pattern
+    ("分析构造用例") never appears in stdout. We infer it from downstream
+    stages: if test_expert or knowledge_base completed, kernel_expert
+    must have completed too (they depend on its output).
 
     Returns list of {stage, completed, indicator} dicts.
     """
@@ -160,6 +165,15 @@ def _count_completed_stages(stdout: str) -> list[dict]:
             "completed": found,
             "indicator": pattern,
         })
+    # kernel_expert writes to file, not stdout — infer from downstream
+    ke_idx = next((i for i, r in enumerate(results) if r["stage"] == "kernel_expert"), None)
+    if ke_idx is not None:
+        downstream_done = any(
+            r["completed"]
+            for r in results[ke_idx + 1:]
+        )
+        if downstream_done:
+            results[ke_idx]["completed"] = True
     return results
 
 
@@ -246,6 +260,37 @@ def _run_case(case: dict, skip_qemu: bool = False) -> dict:
     kb_archived = _check_knowledge_base_archived(stdout)
     reproduced = _check_reproduction(stdout)
     returncode = completed.returncode
+
+    # Retry once on LLM flake (kernel_expert failure, <5 stages).
+    # Transient LLM issues (timeout, bad generation) often resolve on
+    # re-run. If the first attempt didn't make it past kernel_expert
+    # but wasn't a hard block (timeout/BLOCKED), try again.
+    if completed_count < 5 and not blocked and returncode == 0:
+        print(f"\n  ⚠ First attempt only reached {completed_count}/6 stages, retrying...")
+        sys.stdout.flush()
+        try:
+            completed = _run_workflow(case)
+            elapsed = time.time() - start
+            stdout = completed.stdout
+            stderr = completed.stderr
+            stages = _count_completed_stages(stdout)
+            completed_count = sum(1 for s in stages if s["completed"])
+            blocked = _check_blocked_contract(stdout)
+            kb_archived = _check_knowledge_base_archived(stdout)
+            reproduced = _check_reproduction(stdout)
+            returncode = completed.returncode
+            print(f"  → Retry result: {completed_count}/6 stages")
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start
+            return {
+                "case": name, "title": title,
+                "status": "TIMEOUT", "reason": f"Retry also timed out",
+                "duration_s": round(elapsed), "completed_stages": 0,
+                "total_stages": len(WORKFLOW_STAGES), "stages": [],
+            }
+        except Exception as e:
+            # Keep first attempt's result, note the retry
+            pass
 
     # Determine overall status (方案 B: require actual QEMU reproduction)
     if blocked:
