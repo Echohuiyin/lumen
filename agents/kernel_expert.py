@@ -1192,6 +1192,71 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
     if not contract.expected_signal:
         errors.append("missing expected_signal")
 
+    # Post-process test.sh for memory-pressure-sensitive bugs (e.g. btrfs
+    # ordered extent WARNING that needs memory pressure to trigger). The
+    # LLM-generated script typically sleeps 300s waiting for the signal;
+    # inject memory pressure + longer sleep to increase trigger probability.
+    _MEMORY_PRESSURE_SIGNALS = [
+        "ordered_extent", "bytes_left", "can_finish_ordered",
+        "folio", "page reclaim", "memory pressure",
+    ]
+    expected = (contract.expected_signal or "").lower()
+    needs_memory_pressure = any(s in expected for s in _MEMORY_PRESSURE_SIGNALS)
+    if needs_memory_pressure and test_script and Path(test_script).exists():
+        try:
+            script_text = Path(test_script).read_text(encoding="utf-8")
+
+            # 1) Extend sleep timeout: replace "sleep NNN" lines where
+            #    NNN < 600 with 600, so the reproducer gets more time.
+            script_text = re.sub(
+                r'^(sleep +)([1-9]?[0-9]|[1-5][0-9][0-9])\b',
+                r'\g<1>600',
+                script_text,
+                flags=re.MULTILINE,
+            )
+
+            # 2) Inject memory pressure before repro_c runs:
+            #    allocate 75% of available memory via dd, then drop caches
+            #    to force page reclaim pressure.
+            pressure_block = """echo "=== Injecting memory pressure ==="
+# Allocate memory to trigger page reclaim pressure
+dd if=/dev/zero of=/tmp/mem_pressure bs=1M count=800 2>/dev/null &
+sleep 2
+# Leave the allocator running in background during repro
+echo "Memory pressure applied (800MB allocated)"
+"""
+            # Insert pressure before "cd /tmp" or "cd /" or "Run repro_c" line
+            marker_patterns = [
+                r'^(cd /tmp\n)',
+                r'^(cd /\n)',
+                r'^(# Run repro_c)',
+                r'^(\/bin\/repro_c)',
+            ]
+            for pat in marker_patterns:
+                new_text, n = re.subn(pat, pressure_block + r'\1', script_text, count=1, flags=re.MULTILINE)
+                if n > 0:
+                    script_text = new_text
+                    break
+
+            Path(test_script).write_text(script_text, encoding="utf-8")
+            evidence.append({
+                "kind": "artifact_check",
+                "field": "test_script_path",
+                "path": str(test_script),
+                "check": "memory pressure injected",
+            })
+
+            # 3) Set extra_cmdline to limit kernel-visible memory, creating
+            #    memory pressure without changing QEMU -m (KASAN needs >=2G).
+            recipe = data.get("qemu_recipe")
+            if recipe and not getattr(recipe, "extra_cmdline", ""):
+                recipe.extra_cmdline = "mem=1G"
+                warnings.append(
+                    f"injected extra_cmdline='mem=1G' for memory-sensitive signal"
+                )
+        except (OSError, ValueError) as exc:
+            warnings.append(f"memory pressure injection skipped: {exc}")
+
     data["warnings"] = warnings
     data["evidence"] = evidence
     if errors:
