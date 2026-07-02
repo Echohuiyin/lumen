@@ -178,29 +178,55 @@ def create_session_bound_tools(session: Any) -> dict:
     Returns:
         dict mapping tool_name -> callable function
     """
+    # Extract paths for Cache B (crash command output caching)
+    vmcore_path = str(getattr(session, "vmcore_path", ""))
+    vmlinux_path = str(getattr(session, "vmlinux_path", ""))
+    _cache_available = bool(vmcore_path and vmlinux_path)
+
+    def _cached_run(command: str) -> tuple[str, bool]:
+        """Run a crash command with cache lookup/store. Returns (output, success)."""
+        from agents.cache.crash_cache import lookup_command, store_command
+
+        if _cache_available:
+            cached = lookup_command(vmcore_path, vmlinux_path, command)
+            if cached is not None:
+                return cached
+
+        result = session.run_command(command)
+        output, success = result.output, result.success
+
+        if _cache_available:
+            store_command(vmcore_path, vmlinux_path, command, output, success)
+
+        return output, success
+
     def run_crash_command(command: str) -> str:
         """Execute a single crash command and return output."""
         sanitized, warnings = sanitize_crash_command(command)
         try:
-            result = session.run_command(sanitized)
+            output, success = _cached_run(sanitized)
             prefix = build_sanitized_description(warnings)
-            if result.success:
-                return prefix + result.output
+            if success:
+                return prefix + output
             else:
-                return prefix + f"Error: {result.output}"
+                return prefix + f"Error: {output}"
         except Exception as e:
             return f"Error executing '{command}': {str(e)}"
 
     def run_crash_commands(commands: List[str]) -> str:
-        """Execute multiple crash commands sequentially."""
+        """Execute multiple crash commands sequentially with per-command caching."""
         try:
-            results = session.run_batch(commands)
             output_parts = []
-            for r in results:
-                if r.success:
-                    output_parts.append(f"[{r.command}]\n{r.output}")
-                else:
-                    output_parts.append(f"[{r.command}] Error: {r.output}")
+            for cmd in commands:
+                sanitized, _ = sanitize_crash_command(cmd)
+                try:
+                    output, success = _cached_run(sanitized)
+                    if success:
+                        output_parts.append(f"[{sanitized}]\n{output}")
+                    else:
+                        output_parts.append(f"[{sanitized}] Error: {output}")
+                except Exception as e:
+                    output_parts.append(f"[{sanitized}] Error: {str(e)}")
             return "\n\n".join(output_parts)
         except Exception as e:
             return f"Error executing commands: {str(e)}"

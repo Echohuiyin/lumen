@@ -204,6 +204,10 @@ def create_initramfs(
 
     Returns:
         Path to created initramfs or error message
+
+    Caches the cpio.gz on disk keyed by (arch, script_mtime, test_script,
+    modules, binaries). Test retries with unchanged inputs hit the cache
+    and skip the 10-30s cpio rebuild. See agents/cache/initramfs_cache.py.
     """
     arch = _normalize_arch(arch)
     script_path = find_qemu_script("create_initramfs.sh")
@@ -215,6 +219,27 @@ def create_initramfs(
         output_path = str(tempfile.mktemp(suffix=".cpio.gz", prefix="initramfs_"))
     else:
         output_path = str(_resolve_runtime_path(output_path))
+
+    # ---- Cache C: short-circuit if identical inputs already produced a cpio.gz
+    from agents.cache.initramfs_cache import get_or_build_key, lookup, store
+    cache_key = get_or_build_key(
+        arch=arch,
+        script_path=Path(script_path),
+        test_script_path=test_script_path,
+        modules_dir=modules_dir,
+        binaries_dir=binaries_dir,
+    )
+    cached = lookup(cache_key)
+    if cached:
+        import shutil
+        try:
+            shutil.copy2(cached, output_path)
+            size = Path(output_path).stat().st_size
+            return f"✓ Initramfs created (cached)\n  Path: {output_path}\n  Size: {size // 1024} KB\n  Arch: {arch}"
+        except OSError as e:
+            # Cache copy failed — fall through to rebuild
+            pass
+    # ---- end cache lookup
 
     cmd = ["bash", str(script_path), "--arch", arch, "--output", output_path]
 
@@ -251,6 +276,9 @@ def create_initramfs(
             return f"Error creating initramfs: {result.stderr[:500]}"
 
         if Path(output_path).exists():
+            # ---- Cache C: store the freshly built cpio.gz for future hits
+            store(cache_key, output_path)
+            # ---- end store
             size = Path(output_path).stat().st_size
             return f"✓ Initramfs created\n  Path: {output_path}\n  Size: {size // 1024} KB\n  Arch: {arch}"
         else:
@@ -266,22 +294,6 @@ def create_initramfs(
 # NUMA topology auto-detection
 # ---------------------------------------------------------------------------
 
-_EXTRACT_IKCONFIG_CANDIDATES = [
-    os.path.expanduser("~/linux-next/scripts/extract-ikconfig"),
-    os.path.expanduser("~/code/OLK-6.6/scripts/extract-ikconfig"),
-    "/lib/modules/$(uname -r)/build/scripts/extract-ikconfig",
-]
-
-
-def _find_extract_ikconfig() -> str | None:
-    """Locate extract-ikconfig script in known kernel source paths."""
-    for path in _EXTRACT_IKCONFIG_CANDIDATES:
-        expanded = os.path.expandvars(path)
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
-            return expanded
-    return shutil.which("extract-ikconfig")
-
-
 def _detect_numa_fake(bzimage_path: str) -> int:
     """Extract numa_fake=N from bzImage CONFIG_CMDLINE.
 
@@ -289,28 +301,18 @@ def _detect_numa_fake(bzimage_path: str) -> int:
     parse the numa_fake= parameter.  Returns N (>=2) if found, 0 if the
     kernel doesn't have IKCONFIG embedded or doesn't use numa_fake.
 
+    Cached on disk by bzImage fingerprint — see agents/cache/ikconfig_cache.py.
+
     This lets boot_kernel() auto-configure matching QEMU NUMA topology so
     that set_cpu_sibling_map doesn't WARN on fake NUMA partition, without
     needing per-case configuration or disabling NUMA entirely.
     """
-    ikconfig = _find_extract_ikconfig()
-    if not ikconfig:
+    from agents.cache.ikconfig_cache import get_config_cmdline
+    cmdline = get_config_cmdline(bzimage_path)
+    if not cmdline:
         return 0
-    try:
-        result = subprocess.run(
-            [ikconfig, bzimage_path],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            return 0
-        for line in result.stdout.splitlines():
-            if line.startswith("CONFIG_CMDLINE="):
-                m = re.search(r'numa=fake=(\d+)', line)
-                if m:
-                    return int(m.group(1))
-        return 0
-    except (subprocess.TimeoutExpired, OSError):
-        return 0
+    m = re.search(r'numa=fake=(\d+)', cmdline)
+    return int(m.group(1)) if m else 0
 
 
 def _parse_qemu_memory_mb(memory: str) -> int:

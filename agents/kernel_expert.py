@@ -38,24 +38,6 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
 # Preflight: kernel config + test_assets scan
 # ---------------------------------------------------------------------------
 
-_EXTRACT_IKCONFIG_CANDIDATES = [
-    os.path.expanduser("~/linux-next/scripts/extract-ikconfig"),
-    os.path.expanduser("~/linux-stable/scripts/extract-ikconfig"),
-    os.path.expanduser("~/code/OLK-6.6/scripts/extract-ikconfig"),
-    "/lib/modules/$(uname -r)/build/scripts/extract-ikconfig",
-]
-
-
-def _find_extract_ikconfig() -> str | None:
-    """Locate extract-ikconfig script in known kernel source paths."""
-    import shutil as _shutil
-    for path in _EXTRACT_IKCONFIG_CANDIDATES:
-        expanded = os.path.expandvars(path)
-        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
-            return expanded
-    return _shutil.which("extract-ikconfig")
-
-
 # Config options that influence reproducer strategy. Extracting these up
 # front saves the LLM from running extract-ikconfig itself (and burning
 # turns on Bash + Read).
@@ -88,29 +70,14 @@ def _extract_pertinent_kernel_config(bzimage_path: str) -> dict[str, str]:
     Returns an empty dict when extract-ikconfig isn't available or the kernel
     doesn't have IKCONFIG embedded. Failure is non-fatal — the LLM still has
     the fallback path of running Bash commands itself.
+
+    Cached on disk by bzImage fingerprint — see agents/cache/ikconfig_cache.py.
     """
     if not bzimage_path or not os.path.isfile(bzimage_path):
         return {}
-    ikconfig = _find_extract_ikconfig()
-    if not ikconfig:
-        return {}
-    try:
-        result = subprocess.run(
-            [ikconfig, bzimage_path],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            return {}
-    except Exception:
-        return {}
-    config: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        for opt in _PERTINENT_CONFIG_OPTIONS:
-            if line.startswith(opt + "="):
-                config[opt] = line.split("=", 1)[1].strip()
-            elif line.startswith("# " + opt + " is not set"):
-                config[opt] = "n"
-    return config
+    from agents.cache.ikconfig_cache import get_ikconfig
+    _, pertinent = get_ikconfig(bzimage_path)
+    return pertinent
 
 
 def _scan_test_assets_for_reproducers(test_assets_dir: str) -> list[dict[str, str]]:
