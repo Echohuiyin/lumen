@@ -62,7 +62,63 @@
       "optional_inputs": ["input_artifacts_contract", "test_result", "test_attempts"],
       "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract"],
       "tools": ["create_directory", "write_file", "read_file", "compile_module", "check_file_exists", "list_directory", "search_files", "bash"],
-      "downstream_consumers": ["test_expert", "knowledge_base"]
+      "downstream_consumers": ["test_expert", "knowledge_base"],
+      "bug_type_recipes": {
+        "deadlock": {
+          "reproducer_strategy": "kernel_module",
+          "concurrent_instances": 1,
+          "timeout_sec": 120,
+          "extra_cmdline": "",
+          "expected_signal": "blocked for more than",
+          "detection_panic_on_warn": false,
+          "detection_panic_is_pass": false
+        },
+        "uaf": {
+          "reproducer_strategy": "kernel_module_plus_userspace_trigger",
+          "concurrent_instances": 1,
+          "timeout_sec": 120,
+          "extra_cmdline": "",
+          "expected_signal": "BUG: KASAN: slab-use-after-free",
+          "detection_panic_on_warn": false,
+          "detection_panic_is_pass": false
+        },
+        "race": {
+          "reproducer_strategy": "userspace_or_module",
+          "concurrent_instances": 4,
+          "timeout_sec": 300,
+          "extra_cmdline": "",
+          "expected_signal": "WARNING:",
+          "detection_panic_on_warn": true,
+          "detection_panic_is_pass": false
+        },
+        "warning": {
+          "reproducer_strategy": "match_bug_subsystem",
+          "concurrent_instances": 4,
+          "timeout_sec": 300,
+          "extra_cmdline": "panic_on_warn=1",
+          "expected_signal": "WARNING:",
+          "detection_panic_on_warn": true,
+          "detection_panic_is_pass": false
+        },
+        "null_ptr_deref": {
+          "reproducer_strategy": "kernel_module",
+          "concurrent_instances": 1,
+          "timeout_sec": 120,
+          "extra_cmdline": "",
+          "expected_signal": "unable to handle kernel NULL pointer",
+          "detection_panic_on_warn": false,
+          "detection_panic_is_pass": true
+        },
+        "oom": {
+          "reproducer_strategy": "userspace",
+          "concurrent_instances": 1,
+          "timeout_sec": 180,
+          "extra_cmdline": "",
+          "expected_signal": "Out of memory",
+          "detection_panic_on_warn": false,
+          "detection_panic_is_pass": true
+        }
+      }
     },
     "test_expert": {
       "role": "Run deterministic QEMU validation from a validated kernel_contract and emit test_contract.",

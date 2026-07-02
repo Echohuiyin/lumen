@@ -20,6 +20,7 @@ CHECKS = [
     ["tests/test_kernel_contract.py"],
     ["tests/test_test_runner_contract.py"],
     ["tests/test_tool_evidence.py"],
+    ["tests/test_semcode_mcp.py"],
 ]
 
 

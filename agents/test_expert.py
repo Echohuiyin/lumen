@@ -11,7 +11,7 @@ import os
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
-from agents.contracts import TestPlan, model_to_dict
+from agents.contracts import DetectionSignals, QemuRecipe, TestPlan, model_to_dict
 from agents.llm_display import call_llm_with_persistence, call_llm_with_display, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.qemu_tools import create_qemu_tools
 from agents.test_runner import run_qemu_test_plan
@@ -414,6 +414,8 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         test_script_path=test_script_path,
         expected_signal=expected_signal,
         binaries_dir=binaries_dir,
+        detection_signals=_build_detection_signals(kernel_contract, expected_signal),
+        qemu_recipe=_build_qemu_recipe(kernel_contract),
     )
     runner_result = run_qemu_test_plan(plan, attempt=current_attempts)
     text = _format_runner_result(runner_result)
@@ -455,6 +457,62 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
             )
 
     return result
+
+
+def _build_qemu_recipe(kernel_contract: dict) -> QemuRecipe:
+    """Construct QemuRecipe from kernel_contract.
+
+    kernel_expert can declare a QemuRecipe as part of KERNEL_CONTRACT JSON
+    to override the legacy hardcoded smp=2 / i440FX / memory auto-select.
+    Older contracts won't have it — returns empty QemuRecipe() which
+    boot_kernel() treats as "use defaults" (smp=2, accel=kvm:tcg, etc.).
+    """
+    raw = kernel_contract.get("qemu_recipe") if kernel_contract else None
+    if isinstance(raw, dict):
+        try:
+            return QemuRecipe(**raw)
+        except Exception:
+            pass
+    return QemuRecipe()
+
+
+def _build_detection_signals(
+    kernel_contract: dict,
+    expected_signal: str,
+) -> DetectionSignals:
+    """Construct DetectionSignals from kernel_contract, with safe fallbacks.
+
+    The kernel_expert may emit detection_signals as part of KERNEL_CONTRACT
+    JSON. Older contracts (or max_turns-recovered ones) won't have it — in
+    that case we derive conservative defaults from expected_signal:
+
+      - serial_signals: [expected_signal] if set, plus any matches from
+        _KNOWN_SIGNAL_TOKENS so a WARNING-class bug still has a fallback
+        pattern when the LLM picked a too-specific substring.
+      - panic_on_warn: True when expected_signal mentions "warning" or "panic"
+        (heuristic — kernel_expert should set it explicitly).
+      - panic_is_pass: True when expected_signal literally is "Kernel panic"
+        (the bug IS the panic, not a warning escalating to panic).
+    """
+    raw = kernel_contract.get("detection_signals") if kernel_contract else None
+    if isinstance(raw, dict):
+        try:
+            return DetectionSignals(**raw)
+        except Exception:
+            pass
+
+    serial_signals: list[str] = []
+    if expected_signal:
+        serial_signals.append(expected_signal)
+
+    panic_on_warn = bool(expected_signal) and "warning" in expected_signal.lower()
+    panic_is_pass = expected_signal.strip().lower() == "kernel panic"
+
+    return DetectionSignals(
+        serial_signals=serial_signals,
+        panic_on_warn=panic_on_warn,
+        panic_is_pass=panic_is_pass,
+    )
 
 
 def _generate_improvement_suggestions(state: MaintenanceWorkflowState, test_result: str) -> str:

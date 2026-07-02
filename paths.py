@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 # 复现器输出目录（可通过环境变量覆盖）
 _OUTPUT_DIR_OVERRIDE = os.environ.get("LUMEN_OUTPUT_DIR")
 OUTPUT_DIR = Path(_OUTPUT_DIR_OVERRIDE) if _OUTPUT_DIR_OVERRIDE else (PROJECT_ROOT / "outputs")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Analysis-SKILL 子模块路径（git submodule）
 ANALYSIS_SKILL_PATH = PROJECT_ROOT / "Analysis-SKILL"

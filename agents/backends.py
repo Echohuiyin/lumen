@@ -806,6 +806,10 @@ class ClaudeCodeBackend:
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(f"Claude Code timed out after {self._cli_timeout}s") from exc
         except FileNotFoundError as exc:
+            if exc.filename and exc.filename != self._cli_command:
+                raise RuntimeError(
+                    f"Claude Code workdir does not exist: {exc.filename}"
+                ) from exc
             raise RuntimeError(f"Claude Code CLI not found: {self._cli_command}") from exc
 
         if returncode != 0:

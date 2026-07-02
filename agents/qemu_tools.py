@@ -6,6 +6,8 @@ enabling test_expert to execute real QEMU verification in real execution mode.
 Uses scripts from Analysis-SKILL/skills/qemu-test/scripts/.
 """
 
+import re
+import shutil
 import subprocess
 import tempfile
 import os
@@ -15,7 +17,7 @@ from typing import Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
-from agents.contracts import ToolStepResult
+from agents.contracts import QemuRecipe, ToolStepResult
 from paths import PROJECT_ROOT, get_skill_path_candidates
 
 
@@ -260,12 +262,121 @@ def create_initramfs(
         return f"Error: {str(e)}"
 
 
+# ---------------------------------------------------------------------------
+# NUMA topology auto-detection
+# ---------------------------------------------------------------------------
+
+_EXTRACT_IKCONFIG_CANDIDATES = [
+    os.path.expanduser("~/linux-next/scripts/extract-ikconfig"),
+    os.path.expanduser("~/code/OLK-6.6/scripts/extract-ikconfig"),
+    "/lib/modules/$(uname -r)/build/scripts/extract-ikconfig",
+]
+
+
+def _find_extract_ikconfig() -> str | None:
+    """Locate extract-ikconfig script in known kernel source paths."""
+    for path in _EXTRACT_IKCONFIG_CANDIDATES:
+        expanded = os.path.expandvars(path)
+        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+            return expanded
+    return shutil.which("extract-ikconfig")
+
+
+def _detect_numa_fake(bzimage_path: str) -> int:
+    """Extract numa_fake=N from bzImage CONFIG_CMDLINE.
+
+    Uses extract-ikconfig to read the syzbot kernel's built-in config and
+    parse the numa_fake= parameter.  Returns N (>=2) if found, 0 if the
+    kernel doesn't have IKCONFIG embedded or doesn't use numa_fake.
+
+    This lets boot_kernel() auto-configure matching QEMU NUMA topology so
+    that set_cpu_sibling_map doesn't WARN on fake NUMA partition, without
+    needing per-case configuration or disabling NUMA entirely.
+    """
+    ikconfig = _find_extract_ikconfig()
+    if not ikconfig:
+        return 0
+    try:
+        result = subprocess.run(
+            [ikconfig, bzimage_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return 0
+        for line in result.stdout.splitlines():
+            if line.startswith("CONFIG_CMDLINE="):
+                m = re.search(r'numa=fake=(\d+)', line)
+                if m:
+                    return int(m.group(1))
+        return 0
+    except (subprocess.TimeoutExpired, OSError):
+        return 0
+
+
+def _parse_qemu_memory_mb(memory: str) -> int:
+    """Parse QEMU -m string (e.g. '2G', '1024M') to MiB.
+
+    Returns 512 (the default) when the string can't be parsed.
+    """
+    m = re.match(r"(\d+)\s*([MG])", memory.upper())
+    if not m:
+        return 512
+    val = int(m.group(1))
+    unit = m.group(2)
+    return val * 1024 if unit == "G" else val
+
+
+def _build_numa_qemu_args(n: int, smp_spec: str, memory: str) -> list[str]:
+    """Build QEMU -numa arguments for N NUMA nodes.
+
+    Distributes CPUs evenly across nodes so the physical topology matches
+    what numa_fake=N would create — avoiding set_cpu_sibling_map WARNING
+    while preserving NUMA coverage for downstream test cases.
+
+    Also allocates memory per node via ``-object memory-backend-ram`` and
+    ``-numa node,memdev=...`` so QEMU >= 8.2 (Debian) doesn't reject the
+    config with "total memory for NUMA nodes (0x0) should equal RAM size".
+
+    Returns an empty list when N <= 1 (no NUMA args needed).
+    """
+    if n <= 1:
+        return []
+    try:
+        smp = int(smp_spec)
+    except ValueError:
+        m = re.search(r"(\d+)", smp_spec)
+        if not m:
+            return []
+        smp = int(m.group(1))
+    if smp <= 1:
+        return []
+
+    total_mb = _parse_qemu_memory_mb(memory)
+    per_node_mb = total_mb // n
+
+    cpus_per = max(1, smp // n)
+    args: list[str] = []
+    for i in range(n):
+        start = i * cpus_per
+        end = start + cpus_per - 1
+        if start >= smp:
+            break
+        if end >= smp:
+            end = smp - 1
+        args.extend([
+            "-object", f"memory-backend-ram,id=mem{i},size={per_node_mb}M",
+            "-numa", f"node,nodeid={i},memdev=mem{i},cpus={start}-{end}",
+        ])
+    return args
+
+
 def boot_kernel(
     kernel_path: str,
     initramfs_path: str,
     arch: str = "x86_64",
     timeout: int = 300,
     memory: str = "",
+    qemu_recipe: "QemuRecipe | None" = None,
 ) -> str:
     """Boot kernel in QEMU and capture boot log.
 
@@ -278,6 +389,9 @@ def boot_kernel(
         arch: Target architecture
         timeout: Boot timeout in seconds
         memory: Memory allocation; empty = auto-select based on kernel size
+        qemu_recipe: Optional structured QEMU config from kernel_expert contract.
+            When provided, overrides the legacy hardcoded smp_spec="2" / i440FX /
+            memory auto-select. Empty fields fall back to defaults.
 
     Returns:
         Boot result with log content or error message
@@ -323,9 +437,32 @@ def boot_kernel(
             "oops=panic kasan.fault=panic "
             "hung_task_panic=1 hung_task_timeout_secs=60"
         )
+
+        # Apply QemuRecipe overrides from kernel_expert contract.
+        # Empty fields fall back to legacy defaults so an empty recipe() is
+        # equivalent to calling boot_kernel without a recipe.
+        recipe = qemu_recipe
+        machine_spec = (recipe.machine if recipe and recipe.machine else "accel=kvm:tcg")
+        cpu_spec = (recipe.cpu if recipe and recipe.cpu else "host")
+        smp_spec = (recipe.smp if recipe and recipe.smp else "2")
+        if recipe and recipe.extra_cmdline:
+            cmdline = cmdline + " " + recipe.extra_cmdline
+
+        # Auto-detect numa_fake=N from syzbot kernel config and generate
+        # matching QEMU NUMA topology.  Syzbot kernels commonly embed
+        # numa_fake=N + panic_on_warn=1 in CONFIG_CMDLINE; without real
+        # NUMA topology, set_cpu_sibling_map WARNINGs on the fake split,
+        # which panic_on_warn=1 escalates to a boot-time panic.
+        # Using real NUMA nodes avoids the WARNING while preserving NUMA
+        # coverage for downstream test cases.
+        numa_fake_n = _detect_numa_fake(str(kernel))
+        numa_args = _build_numa_qemu_args(numa_fake_n, smp_spec, memory)
+
         qemu_cmd = [
             "qemu-system-x86_64",
-            "-smp", "2",
+            "-machine", machine_spec,
+            "-cpu", cpu_spec,
+            "-smp", smp_spec,
             "-m", memory,
             "-display", "none",
             "-serial", f"file:{serial_log}",
@@ -334,6 +471,11 @@ def boot_kernel(
             "-initrd", str(initramfs),
             "-append", cmdline,
         ]
+        # Inject auto-detected NUMA topology after -smp so the node
+        # config is available when QEMU parses the CPU topology.
+        if numa_args:
+            ins = qemu_cmd.index("-smp") + 2
+            qemu_cmd[ins:ins] = numa_args
 
         result = subprocess.run(
             qemu_cmd,
@@ -448,8 +590,6 @@ def analyze_boot_log(
 
     search_patterns = patterns or _DEFAULT_BOOT_ERROR_PATTERNS
 
-    search_patterns = patterns or default_patterns
-
     findings = []
     for pattern in search_patterns:
         matches = []
@@ -549,7 +689,9 @@ def boot_kernel_result(
     kernel_path: str,
     initramfs_path: str,
     arch: str = "x86_64",
-    timeout: int = 300,    memory: str = "",
+    timeout: int = 300,
+    memory: str = "",
+    qemu_recipe: Optional[QemuRecipe] = None,
 ) -> ToolStepResult:
     """Structured wrapper around boot_kernel."""
     normalized_arch = _normalize_arch(arch)
@@ -559,6 +701,7 @@ def boot_kernel_result(
         arch=normalized_arch,
         timeout=timeout,
         memory=memory,
+        qemu_recipe=qemu_recipe,
     )
     log_path = _extract_labeled_value(output, "Boot Log saved to")
     artifacts = {"boot_log_path": log_path} if log_path else {}

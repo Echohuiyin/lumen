@@ -78,18 +78,20 @@ Checks:
 ### Stage 3: Full Pytest Suite (--full)
 
 ```bash
-# All offline tests (including QEMU tool mocks)
-python -m pytest tests/ -v --ignore=tests/test_tool_expert_mcp.py -x
+# All offline + agent capability tests
+python -m pytest tests/ -v --ignore=tests/test_tool_expert_mcp.py --run-online -x
 ```
 
 Additional tests:
-- `test_agent_capabilities.py` — Agent capability matrix
+- `test_agent_capabilities.py` — Agent capability matrix (逐一调用真实 LLM + vmcore 验证)
 - `test_agent_tool_calling.py` — Tool dispatch correctness
 - `test_expert_io_format.py` — Expert I/O format contracts
 - `test_kernel_expert.py` — Kernel expert state machine
 - `test_test_expert.py` — Test expert routing
 - `test_qemu_tools.py` — QEMU tool mocks
 - `test_tool_experts.py` — Tool expert orchestration
+
+**注意**：`test_agent_capabilities.py` 会调用真实 LLM API + 加载 vmcore，耗时约 20-30 分钟。`--full` 会包含它，如需跳过用无 flag 默认门禁即可。
 
 ### Stage 4: Online Tests (--online)
 

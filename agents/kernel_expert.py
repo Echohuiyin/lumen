@@ -2,6 +2,7 @@ from pathlib import Path
 import json
 import os
 import re
+import subprocess
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
@@ -33,6 +34,191 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
         f.write(footer)
 
 
+# ---------------------------------------------------------------------------
+# Preflight: kernel config + test_assets scan
+# ---------------------------------------------------------------------------
+
+_EXTRACT_IKCONFIG_CANDIDATES = [
+    os.path.expanduser("~/linux-next/scripts/extract-ikconfig"),
+    os.path.expanduser("~/linux-stable/scripts/extract-ikconfig"),
+    os.path.expanduser("~/code/OLK-6.6/scripts/extract-ikconfig"),
+    "/lib/modules/$(uname -r)/build/scripts/extract-ikconfig",
+]
+
+
+def _find_extract_ikconfig() -> str | None:
+    """Locate extract-ikconfig script in known kernel source paths."""
+    import shutil as _shutil
+    for path in _EXTRACT_IKCONFIG_CANDIDATES:
+        expanded = os.path.expandvars(path)
+        if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
+            return expanded
+    return _shutil.which("extract-ikconfig")
+
+
+# Config options that influence reproducer strategy. Extracting these up
+# front saves the LLM from running extract-ikconfig itself (and burning
+# turns on Bash + Read).
+_PERTINENT_CONFIG_OPTIONS = [
+    "CONFIG_KVM",
+    "CONFIG_KVM_INTEL",
+    "CONFIG_KVM_AMD",
+    "CONFIG_HYPERV",
+    "CONFIG_PARAVIRT_SPINLOCKS",
+    "CONFIG_KVM_GUEST",
+    "CONFIG_PREEMPT",
+    "CONFIG_PREEMPT_DYNAMIC",
+    "CONFIG_MODULE_FORCE_LOAD",
+    "CONFIG_MODVERSIONS",
+    "CONFIG_BASIC_MODVERSIONS",
+    "CONFIG_KASAN",
+    "CONFIG_KASAN_GENERIC",
+    "CONFIG_KASAN_INLINE",
+    "CONFIG_PANIC_ON_WARN",
+    "CONFIG_PANIC_ON_OOPS",
+    "CONFIG_CMDLINE",
+    "CONFIG_NR_CPUS",
+    "CONFIG_NR_CPUS_RANGE_END",
+]
+
+
+def _extract_pertinent_kernel_config(bzimage_path: str) -> dict[str, str]:
+    """Run extract-ikconfig on a bzImage and return pertinent CONFIG options.
+
+    Returns an empty dict when extract-ikconfig isn't available or the kernel
+    doesn't have IKCONFIG embedded. Failure is non-fatal — the LLM still has
+    the fallback path of running Bash commands itself.
+    """
+    if not bzimage_path or not os.path.isfile(bzimage_path):
+        return {}
+    ikconfig = _find_extract_ikconfig()
+    if not ikconfig:
+        return {}
+    try:
+        result = subprocess.run(
+            [ikconfig, bzimage_path],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0:
+            return {}
+    except Exception:
+        return {}
+    config: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        for opt in _PERTINENT_CONFIG_OPTIONS:
+            if line.startswith(opt + "="):
+                config[opt] = line.split("=", 1)[1].strip()
+            elif line.startswith("# " + opt + " is not set"):
+                config[opt] = "n"
+    return config
+
+
+def _scan_test_assets_for_reproducers(test_assets_dir: str) -> list[dict[str, str]]:
+    """Scan a test_assets/<case>/ directory for existing reproducer files.
+
+    Looks for:
+      - repro_c / repro.c / repro (syzbot C reproducer, often precompiled)
+      - *.ko (prebuilt kernel module)
+      - REPRODUCTION.md (syzbot's notes on the trigger config)
+      - any executable binary (userspace trigger)
+
+    Returns a list of {"name", "path", "kind"} dicts. Empty list if the
+    directory doesn't exist or has nothing useful.
+    """
+    if not test_assets_dir:
+        return []
+    assets_path = Path(os.path.expanduser(test_assets_dir))
+    if not assets_path.is_dir():
+        return []
+    findings: list[dict[str, str]] = []
+    try:
+        for entry in sorted(assets_path.iterdir()):
+            name = entry.name
+            if entry.is_file():
+                if name in {"repro_c", "repro", "repro.bin"}:
+                    findings.append({"name": name, "path": str(entry), "kind": "syzbot_repro_binary"})
+                elif name in {"repro.c", "repro_C", "repro.cc"}:
+                    findings.append({"name": name, "path": str(entry), "kind": "syzbot_repro_source"})
+                elif name.endswith(".ko"):
+                    findings.append({"name": name, "path": str(entry), "kind": "kernel_module"})
+                elif name == "REPRODUCTION.md":
+                    findings.append({"name": name, "path": str(entry), "kind": "reproduction_notes"})
+                elif entry.stat().st_size > 0 and os.access(entry, os.X_OK):
+                    findings.append({"name": name, "path": str(entry), "kind": "userspace_trigger"})
+            elif entry.is_dir():
+                # Nested reproducer dir (e.g. test_assets/<case>/poc/)
+                for sub in sorted(entry.iterdir()):
+                    if sub.is_file() and sub.name in {"repro_c", "repro", "poc"} and os.access(sub, os.X_OK):
+                        findings.append({"name": f"{name}/{sub.name}", "path": str(sub), "kind": "syzbot_repro_binary"})
+    except OSError:
+        pass
+    return findings
+
+
+def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str:
+    """Build a context string summarizing kernel config + test_assets findings.
+
+    This is injected into the kernel_expert system prompt so the LLM starts
+    with concrete knowledge of:
+      - whether CONFIG_KVM=y (nested KVM PoC is viable for KVM/HyperV bugs)
+      - whether CONFIG_MODULE_FORCE_LOAD=y (kernel module reproducer will load)
+      - whether a syzbot repro_c is already in test_assets (reuse it)
+      - whether a prebuilt .ko exists (skip compilation)
+    """
+    parts: list[str] = []
+
+    config = _extract_pertinent_kernel_config(boot_kernel_path)
+    if config:
+        parts.append("## 目标内核配置（extract-ikconfig 自动提取）")
+        parts.append("复现器策略相关 CONFIG 选项（已为你预提取，不要再自己跑 extract-ikconfig）：")
+        for opt in _PERTINENT_CONFIG_OPTIONS:
+            if opt in config:
+                val = config[opt]
+                # Annotate key options with strategy implications
+                note = ""
+                if opt == "CONFIG_KVM" and val == "y":
+                    note = "  → KVM 内置，nested KVM PoC 可行"
+                elif opt == "CONFIG_HYPERV" and val == "y":
+                    note = "  → HyperV 客户机驱动启用"
+                elif opt == "CONFIG_PARAVIRT_SPINLOCKS" and val == "y":
+                    note = "  → PV spinlock 启用（pvqspinlock bug 可触发）"
+                elif opt == "CONFIG_MODULE_FORCE_LOAD" and val != "y":
+                    note = "  → 模块强制加载禁用，vermagic 不匹配的 .ko 加载会失败"
+                elif opt == "CONFIG_KASAN" and val == "y":
+                    note = "  → KASAN 启用，UAF/OOB 会触发 BUG: KASAN: 报告"
+                elif opt == "CONFIG_PANIC_ON_WARN" and val == "y":
+                    note = "  → WARNING 自动升级为 panic"
+                parts.append(f"- {opt}={val}{note}")
+        # Surface CONFIG_CMDLINE which often embeds panic_on_warn / numa_fake
+        cmdline = config.get("CONFIG_CMDLINE", "")
+        if cmdline:
+            parts.append(f"- 内核内置 cmdline: {cmdline}")
+
+    assets = _scan_test_assets_for_reproducers(test_assets_dir)
+    if assets:
+        parts.append("\n## test_assets 中已有的复现器文件（优先复用，不要重写）")
+        parts.append("扫描到以下现成复现器资源，**优先复用而不是从头写**：")
+        for f in assets:
+            kind_label = {
+                "syzbot_repro_binary": "syzbot 预编译复现器（直接塞 initramfs /bin/）",
+                "syzbot_repro_source": "syzbot 复现器源码（需编译）",
+                "kernel_module": "预编译内核模块（直接塞 initramfs /modules/）",
+                "userspace_trigger": "用户态触发程序（直接塞 initramfs /bin/）",
+                "reproduction_notes": "复现说明文档（含触发配置，必读）",
+            }.get(f["kind"], f["kind"])
+            parts.append(f"- {f['name']} ({kind_label}): {f['path']}")
+        parts.append("")
+        parts.append("**决策树**：")
+        parts.append("1. 有 syzbot_repro_binary → 直接复用，binaries_dir 填该目录，test.sh 跑 `/bin/<repro>`")
+        parts.append("2. 有 syzbot_repro_source → 先尝试编译（gcc -static），失败则降级到自写 PoC")
+        parts.append("3. 有 kernel_module → 直接复用，reproducer_module_path 填该 .ko")
+        parts.append("4. 有 reproduction_notes → 必读，里面有 smp/numa/timeout 等关键配置")
+
+    if not parts:
+        return ""
+    return "\n".join(parts)
+
+
 def _run_kernel_expert_with_claude_code(
     llm,
     system_prompt: str,
@@ -40,6 +226,8 @@ def _run_kernel_expert_with_claude_code(
     expert_name: str,
     output_file: str,
     target_kernel_dir: str = "",
+    boot_kernel_path: str = "",
+    test_assets_dir: str = "",
 ) -> AIMessage:
     """Execute kernel expert analysis via Claude Code CLI.
 
@@ -65,6 +253,16 @@ def _run_kernel_expert_with_claude_code(
 - Host kernel headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
 - Target kernel source for module compilation: {target_kernel_dir or '(not detected — ask user or use boot_kernel_path-derived dir)'}
 """
+
+        # Preflight: extract kernel config + scan test_assets for existing
+        # reproducers. Injected into context so the LLM doesn't waste turns
+        # re-discovering that, e.g., the kernel has CONFIG_KVM=y (so nested
+        # KVM PoC is viable) or that a syzbot repro_c binary is already in
+        # test_assets (so it can be reused directly instead of writing a
+        # new PoC from scratch).
+        preflight = _build_preflight_context(boot_kernel_path, test_assets_dir)
+        if preflight:
+            context_info += "\n" + preflight
 
         messages = [
             SystemMessage(content=system_prompt + "\n\n" + context_info),
@@ -110,6 +308,23 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("kernel_expert", {})
     default_config = config.get("default", {})
+
+    # If the input specifies kernel_source_path, point semcode MCP's db to
+    # that tree's index so cross-tree lookups (kvm/btrfs in linux-next vs
+    # deadlock/UAF in OLK-6.6) resolve against the correct source.
+    input_artifacts = state.get("input_artifacts_contract", {})
+    kernel_source_path = input_artifacts.get("kernel_source_path", "")
+    if kernel_source_path and "semcode_mcp" in agent_config:
+        candidate_db = os.path.join(
+            os.path.expanduser(kernel_source_path), ".semcode.db"
+        )
+        if os.path.exists(candidate_db):
+            agent_config = {**agent_config}
+            agent_config["semcode_mcp"] = {
+                **agent_config["semcode_mcp"],
+                "args": ["-d", candidate_db],
+            }
+
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="kernel_expert")
     system_prompt = load_prompt_from_file(
         agent_config.get("prompt_file", "prompts/maintenance/kernel_expert.md")
@@ -117,7 +332,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     # 汇总所有工具专家的分析结果
     expert_results = state.get("expert_results", [])
-    input_artifacts = state.get("input_artifacts_contract", {})
 
     # Only display expert outputs on first invocation (not on retries after test failures)
     if state.get("test_attempts", 0) == 0:
@@ -199,6 +413,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             if os.path.isdir(os.path.join(_p, "include")):
                 target_kernel_dir = _p
 
+    # Derive test_assets_dir from boot_kernel_path: if bzImage is at
+    # test_assets/<case>/bzImage, the parent dir is the case assets dir.
+    test_assets_dir = ""
+    if boot_kernel_path:
+        _bk = Path(os.path.expanduser(boot_kernel_path))
+        if _bk.parent.is_dir() and (_bk.parent / "input.txt").exists():
+            test_assets_dir = str(_bk.parent)
+
     # 执行 Claude Code agent 分析
     # Snapshot the mtime of the newest reproducer dir BEFORE the CLI runs,
     # so the max_turns recovery path can distinguish files the agent wrote
@@ -212,6 +434,8 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             expert_name="内核专家",
             output_file=output_file,
             target_kernel_dir=target_kernel_dir,
+            boot_kernel_path=boot_kernel_path,
+            test_assets_dir=test_assets_dir,
         )
     except RuntimeError as e:
         # CLI startup failure (MCP config missing, CLI crash), max_turns
@@ -309,6 +533,8 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 expert_name="内核专家（hint 重跑）",
                 output_file=output_file,
                 target_kernel_dir=target_kernel_dir,
+                boot_kernel_path=boot_kernel_path,
+                test_assets_dir=test_assets_dir,
             )
             text = response.content.strip()
         except RuntimeError:

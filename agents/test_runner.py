@@ -10,7 +10,12 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from agents.contracts import TestPlan, TestResultContract, ToolStepResult
+from agents.contracts import (
+    DetectionSignals,
+    TestPlan,
+    TestResultContract,
+    ToolStepResult,
+)
 from agents.qemu_tools import (
     _DEFAULT_BOOT_ERROR_PATTERNS,
     _select_qemu_memory,
@@ -193,8 +198,9 @@ def run_qemu_test_plan(
         kernel_path=kernel_path,
         initramfs_path=initramfs_path,
         arch=plan.target_arch,
-        timeout=timeout,
-        memory=memory,
+        timeout=plan.qemu_recipe.timeout_sec if plan.qemu_recipe.timeout_sec else timeout,
+        memory=plan.qemu_recipe.memory or memory,
+        qemu_recipe=plan.qemu_recipe,
     )
     steps.append(boot_step)
 
@@ -217,25 +223,38 @@ def run_qemu_test_plan(
 
     log_content = _read_artifact(log_path) if log_path else ""
     expected_signal = plan.expected_signal.strip()
-    if not expected_signal:
+
+    # Detection signals: kernel_expert can declare a structured list of
+    # patterns to grep on the host-side serial log. The serial log is the
+    # ground truth — guest test.sh's `dmesg | grep` never fires when
+    # panic_on_warn=1 escalates WARNING → panic → reboot before the script
+    # gets a chance to check.
+    detection = plan.detection_signals
+    matched_signal = _match_serial_signals(
+        log_content=log_content,
+        detection=detection,
+        expected_signal=expected_signal,
+    )
+
+    if matched_signal:
+        return TestResultContract(
+            status="ok",
+            code="PASSED_REPRODUCED",
+            test_passed=True,
+            attempts=attempt,
+            summary=f"Expected signal was found in QEMU boot log: {matched_signal}",
+            plan=plan,
+            steps=steps,
+            artifacts=artifacts,
+        )
+
+    if not expected_signal and not detection.serial_signals:
         return TestResultContract(
             status="inconclusive",
             code="INCONCLUSIVE_NO_EXPECTED_SIGNAL",
             test_passed=False,
             attempts=attempt,
             summary="QEMU ran, but no expected signal was provided to prove reproduction.",
-            plan=plan,
-            steps=steps,
-            artifacts=artifacts,
-        )
-
-    if expected_signal.lower() in log_content.lower():
-        return TestResultContract(
-            status="ok",
-            code="PASSED_REPRODUCED",
-            test_passed=True,
-            attempts=attempt,
-            summary=f"Expected signal was found in QEMU boot log: {expected_signal}",
             plan=plan,
             steps=steps,
             artifacts=artifacts,
@@ -254,9 +273,93 @@ def run_qemu_test_plan(
 
     return _failure_result(
         code="FAILED_SIGNAL_NOT_FOUND",
-        summary=f"QEMU completed, but expected signal was not found: {expected_signal}",
+        summary=_build_signal_not_found_summary(expected_signal, detection),
         plan=plan,
         attempts=attempt,
         steps=steps,
         status="failed",
     )
+
+
+def _match_serial_signals(
+    *,
+    log_content: str,
+    detection: "DetectionSignals",
+    expected_signal: str,
+) -> str:
+    """Return the first matching signal pattern, or empty string if none match.
+
+    Detection order (first match wins):
+      1. detection.serial_signals — structured patterns declared by kernel_expert.
+         Searched in order; most-specific first.
+      2. expected_signal — legacy single-pattern field (substring match).
+      3. panic_on_warn fallback — if kernel was booted with panic_on_warn=1
+         and a `Kernel panic` line appears in the log, treat as PASS *only if*
+         a WARNING/Oops/BUG line appears within the preceding ~100 lines
+         (i.e. the panic is the escalation of a real warning, not a boot crash).
+         If panic_is_pass is True, treat any `Kernel panic` as PASS without
+         the WARNING proximity requirement.
+
+    All matching is case-insensitive substring (NOT regex) — the `.*` in
+    pattern literals will be treated as characters. kernel_expert should
+    emit short literal substrings (e.g. "pvqspinlock: lock" not
+    "pvqspinlock: lock.*corrupted value") for reliable matching.
+    """
+    log_lower = log_content.lower()
+    if not log_lower:
+        return ""
+
+    for sig in detection.serial_signals:
+        sig = sig.strip()
+        if sig and sig.lower() in log_lower:
+            return sig
+
+    if expected_signal and expected_signal.lower() in log_lower:
+        return expected_signal
+
+    if detection.panic_on_warn and "kernel panic" in log_lower:
+        if detection.panic_is_pass:
+            return "Kernel panic (panic_on_warn=1, panic_is_pass=True)"
+        # Check if a WARNING/Oops/BUG precedes the panic within ~100 lines.
+        if _warning_precedes_panic(log_content):
+            return "Kernel panic (panic_on_warn=1, preceded by WARNING)"
+
+    return ""
+
+
+def _warning_precedes_panic(log_content: str) -> bool:
+    """True if a WARNING/Oops/BUG line appears within 100 lines before a panic.
+
+    Used to distinguish panic_on_warn escalation (real WARNING → panic, should
+    count as PASS) from spurious boot-time panics (e.g. kasan_populate_shadow
+    OOM, missing rootfs — those are NOT the target bug).
+    """
+    lines = log_content.splitlines()
+    warning_tokens = ("warning:", "oops:", "bug:", "kernel bug at", "---[ cut here ]---")
+    panic_idx = -1
+    for i, line in enumerate(lines):
+        if "kernel panic" in line.lower():
+            panic_idx = i
+            break
+    if panic_idx < 0:
+        return False
+    start = max(0, panic_idx - 100)
+    for line in lines[start:panic_idx]:
+        low = line.lower()
+        if any(tok in low for tok in warning_tokens):
+            return True
+    return False
+
+
+def _build_signal_not_found_summary(
+    expected_signal: str,
+    detection: "DetectionSignals",
+) -> str:
+    parts = []
+    if expected_signal:
+        parts.append(f"expected_signal not found: {expected_signal}")
+    if detection.serial_signals:
+        parts.append(f"detection.serial_signals not found: {detection.serial_signals}")
+    if detection.panic_on_warn:
+        parts.append("panic_on_warn=1 but no WARNING-precedes-panic pattern matched")
+    return "; ".join(parts) or "QEMU completed, but no expected signal was found."
