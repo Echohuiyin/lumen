@@ -173,6 +173,14 @@ def _check_knowledge_base_archived(stdout: str) -> bool:
     return "Chroma" in stdout or "知识库" in stdout or "knowledge_base" in stdout.lower()
 
 
+def _check_reproduction(stdout: str) -> bool:
+    """Check if the workflow reports successful QEMU reproduction.
+
+    Looks for '成功复现' without the negative prefix '未成功复现'.
+    """
+    return "成功复现" in stdout and "未成功复现" not in stdout
+
+
 def _run_case(case: dict, skip_qemu: bool = False) -> dict:
     """Run E2E verification for a single case.
 
@@ -236,15 +244,19 @@ def _run_case(case: dict, skip_qemu: bool = False) -> dict:
     completed_count = sum(1 for s in stages if s["completed"])
     blocked = _check_blocked_contract(stdout)
     kb_archived = _check_knowledge_base_archived(stdout)
+    reproduced = _check_reproduction(stdout)
     returncode = completed.returncode
 
-    # Determine overall status
+    # Determine overall status (方案 B: require actual QEMU reproduction)
     if blocked:
         status = "BLOCKED"
         reason = "Workflow emitted a blocked contract (CLI startup/max_turns failure)"
-    elif completed_count >= 5:
+    elif completed_count >= 5 and reproduced:
         status = "PASS"
-        reason = f"{completed_count}/{len(WORKFLOW_STAGES)} stages completed"
+        reason = f"{completed_count}/{len(WORKFLOW_STAGES)} stages completed, reproduced in QEMU"
+    elif completed_count >= 5 and not reproduced:
+        status = "PASS_NO_REPRODUCE"
+        reason = f"{completed_count}/{len(WORKFLOW_STAGES)} stages completed but NOT reproduced in QEMU"
     elif completed_count >= 3:
         status = "PARTIAL"
         reason = f"Only {completed_count}/{len(WORKFLOW_STAGES)} stages completed"
@@ -264,6 +276,7 @@ def _run_case(case: dict, skip_qemu: bool = False) -> dict:
         "stages": stages,
         "knowledge_base_archived": kb_archived,
         "workflow_blocked": blocked,
+        "reproduced": reproduced,
         "stdout_snippet": stdout[-2000:] if len(stdout) > 2000 else stdout,
     }
 
@@ -333,6 +346,7 @@ def main() -> int:
     for r in results:
         status_tag = {
             "PASS": "✓ PASS",
+            "PASS_NO_REPRODUCE": "~ PASS (no reproduce)",
             "PARTIAL": "~ PARTIAL",
             "BLOCKED": "✗ BLOCKED",
             "TIMEOUT": "✗ TIMEOUT",
@@ -349,7 +363,7 @@ def main() -> int:
             print(f"       [{stage_flags}] {stage_names}")
 
     print(f"\nOverall: {'✓ ALL PASS' if all_pass else '✗ SOME FAILED'}")
-    print(f"Pass criteria: All selected cases reach >=5/6 workflow stages.")
+    print(f"Pass criteria: All cases must reach >=5/6 stages AND reproduce in QEMU.")
 
     if args.json:
         print(f"\n--- JSON ---")
