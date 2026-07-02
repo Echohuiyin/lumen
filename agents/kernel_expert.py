@@ -1183,6 +1183,33 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
         data[field] = str(resolved)
         evidence.append({"kind": "artifact", "field": field, "path": str(resolved)})
 
+    # Syntax-check test.sh so a broken reproducer is caught before QEMU
+    # boots, not after. LLM-generated test.sh occasionally has unbalanced
+    # quotes, dangling redirects, or half-rewritten control flow that
+    # busybox sh rejects at runtime — surfacing it here lets the next
+    # kernel_expert retry fix it instead of wasting a QEMU boot.
+    test_script = data.get("test_script_path", "")
+    if test_script and Path(test_script).exists():
+        try:
+            check = subprocess.run(
+                ["bash", "-n", str(test_script)],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if check.returncode != 0:
+                msg = check.stderr.strip()[:200] or check.stdout.strip()[:200]
+                errors.append(f"test_script_path syntax error: {msg}")
+            else:
+                evidence.append({
+                    "kind": "artifact_check",
+                    "field": "test_script_path",
+                    "path": str(test_script),
+                    "check": "bash -n OK",
+                })
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            warnings.append(f"test_script_path syntax check skipped: {exc}")
+
     boot_kernel = data.get("boot_kernel_path", "")
     if boot_kernel and Path(boot_kernel).exists():
         kernel_type = detect_kernel_type(boot_kernel)

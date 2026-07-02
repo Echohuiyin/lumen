@@ -144,6 +144,55 @@ def test_validate_kernel_contract_missing_script_generates_warning():
         assert any("test_script_path" in w for w in validated.warnings)
 
 
+def test_validate_kernel_contract_rejects_syntactically_broken_test_script():
+    """test.sh with bash syntax error should block the contract before QEMU."""
+    with tempfile.NamedTemporaryFile() as kernel_file, \
+         tempfile.NamedTemporaryFile(suffix=".sh") as script_file:
+        kernel_file.write(b"MZ\x00\x00")
+        kernel_file.flush()
+        # Unbalanced quote — busybox sh rejects this at runtime
+        script_file.write(b'#!/bin/sh\necho "unterminated\n')
+        script_file.flush()
+        contract = _kernel_contract_from_markers(
+            target_arch="x86_64",
+            boot_kernel_path=kernel_file.name,
+            reproducer_dir="",
+            reproducer_module_path="",
+            test_script_path=script_file.name,
+            expected_signal="Kernel panic",
+        )
+        validated = _validate_kernel_contract_artifacts(contract)
+        assert validated.status == "blocked", \
+            "broken test.sh must block contract before QEMU boot"
+        assert any("syntax error" in e for e in [validated.blocked_reason or ""])
+
+
+def test_validate_kernel_contract_valid_test_script_adds_evidence():
+    """test.sh that passes bash -n should record an artifact_check evidence."""
+    with tempfile.NamedTemporaryFile() as kernel_file, \
+         tempfile.NamedTemporaryFile(suffix=".sh") as script_file:
+        kernel_file.write(b"MZ\x00\x00")
+        kernel_file.flush()
+        script_file.write(b'#!/bin/sh\necho hello\n')
+        script_file.flush()
+        contract = _kernel_contract_from_markers(
+            target_arch="x86_64",
+            boot_kernel_path=kernel_file.name,
+            reproducer_dir="",
+            reproducer_module_path="",
+            test_script_path=script_file.name,
+            expected_signal="Kernel panic",
+        )
+        validated = _validate_kernel_contract_artifacts(contract)
+        assert validated.status == "ok"
+        checks = [e for e in validated.evidence
+                  if isinstance(e, dict)
+                  and e.get("kind") == "artifact_check"
+                  and e.get("field") == "test_script_path"]
+        assert checks, "valid test.sh must produce bash -n OK evidence"
+        assert checks[0].get("check") == "bash -n OK"
+
+
 def test_route_after_kernel_uses_contract():
     ready_state = {
         "kernel_contract": {
