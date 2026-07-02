@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Run E2E workflow verification on mutex deadlock + UAF test cases.
+"""Run E2E workflow verification on all maintenance test cases.
 
 Runs the full maintenance workflow (validator → pm → tool_experts →
 kernel_expert → test_expert → knowledge_base) on each case and reports
 how many workflow stages completed successfully.
 
+Cases run in parallel via ThreadPoolExecutor to reduce gate time.
+
 Usage:
-    python scripts/run_e2e_checks.py              # Run both cases
-    python scripts/run_e2e_checks.py --cases deadlock  # Single case
-    python scripts/run_e2e_checks.py --json       # Machine-readable output
-    python scripts/run_e2e_checks.py --skip-qemu  # Skip test_expert stage
+    python scripts/run_e2e_checks.py                          # All 4 cases
+    python scripts/run_e2e_checks.py --cases deadlock uaf     # Specific cases
+    python scripts/run_e2e_checks.py --json                   # Machine-readable output
+    python scripts/run_e2e_checks.py --skip-qemu              # Skip test_expert stage
+    python scripts/run_e2e_checks.py --parallel 2             # Max 2 parallel (default: all)
 """
 
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -53,6 +57,32 @@ E2E_CASES: list[dict] = [
             "input.txt",
         ],
     },
+    {
+        "name": "btrfs",
+        "title": "Syzbot btrfs WARNING (ordered extent)",
+        "input": str(PROJECT_ROOT / "test_assets" / "syzbot_btrfs_085adc3f" / "input.txt"),
+        "config": str(PROJECT_ROOT / "maintenance_config.json"),
+        "expected_signal": "WARNING in can_finish_ordered_extent",
+        "required_assets": [
+            "vmlinux",
+            "bzImage",
+            "vmcore.elf",
+            "input.txt",
+        ],
+    },
+    {
+        "name": "kvm-x86",
+        "title": "Syzbot kvm-x86 WARNING (pvqspinlock)",
+        "input": str(PROJECT_ROOT / "test_assets" / "syzbot_kvm_x86_5d2b94b7" / "input.txt"),
+        "config": str(PROJECT_ROOT / "maintenance_config.json"),
+        "expected_signal": "WARNING in hv_tlb_flush_enqueue",
+        "required_assets": [
+            "vmlinux",
+            "bzImage",
+            "vmcore.elf",
+            "input.txt",
+        ],
+    },
 ]
 
 # Workflow stages in execution order
@@ -82,7 +112,7 @@ STAGE_PATTERNS = {
 
 def _check_assets(case: dict) -> list[str]:
     """Verify required test assets exist. Return list of missing paths."""
-    asset_dir = PROJECT_ROOT / "test_assets" / case["name"]
+    asset_dir = Path(case["input"]).resolve().parent
     missing = []
     for asset in case["required_assets"]:
         if not (asset_dir / asset).exists():
@@ -163,6 +193,7 @@ def _run_case(case: dict, skip_qemu: bool = False) -> dict:
             "title": title,
             "status": "BLOCKED",
             "reason": f"Missing assets: {', '.join(missing)}",
+            "duration_s": 0,
             "completed_stages": 0,
             "total_stages": len(WORKFLOW_STAGES),
             "stages": [{"stage": s, "completed": False, "indicator": STAGE_PATTERNS[s]} for s in WORKFLOW_STAGES],
@@ -240,14 +271,18 @@ def _run_case(case: dict, skip_qemu: bool = False) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run E2E workflow verification")
     parser.add_argument(
-        "--cases", nargs="+", choices=["deadlock", "uaf"],
-        default=["deadlock", "uaf"],
-        help="E2E cases to run (default: both)",
+        "--cases", nargs="+", choices=["deadlock", "uaf", "btrfs", "kvm-x86"],
+        default=["deadlock", "uaf", "btrfs", "kvm-x86"],
+        help="E2E cases to run (default: all 4)",
     )
     parser.add_argument("--json", action="store_true", help="Output JSON report")
     parser.add_argument(
         "--skip-qemu", action="store_true",
         help="Skip test_expert stage (useful for quick workflow validation)",
+    )
+    parser.add_argument(
+        "--parallel", type=int, default=None,
+        help="Max parallel cases (default: all)",
     )
     args = parser.parse_args()
 
@@ -258,15 +293,38 @@ def main() -> int:
     print(f"Cases: {', '.join(c['name'] for c in selected)}")
     print(f"Config: maintenance_config.json")
     print(f"Workflow: {' → '.join(WORKFLOW_STAGES)}")
+    print(f"Parallel: {args.parallel or 'all'}")
     print("=" * 60)
 
-    results = []
-    all_pass = True
-    for case in selected:
-        result = _run_case(case, skip_qemu=args.skip_qemu)
-        results.append(result)
-        if result["status"] not in ("PASS",):
-            all_pass = False
+    results: list[dict] = []
+    max_workers = args.parallel if args.parallel else len(selected)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_run_case, case, skip_qemu=args.skip_qemu): case
+            for case in selected
+        }
+        for future in concurrent.futures.as_completed(futures):
+            case = futures[future]
+            try:
+                result = future.result()
+                results.append(result)
+            except Exception as e:
+                results.append({
+                    "case": case["name"],
+                    "title": case["title"],
+                    "status": "ERROR",
+                    "reason": str(e),
+                    "duration_s": 0,
+                    "completed_stages": 0,
+                    "total_stages": len(WORKFLOW_STAGES),
+                    "stages": [],
+                })
+
+    # Reorder results to match selection order
+    order = {c["name"]: i for i, c in enumerate(selected)}
+    results.sort(key=lambda r: order.get(r["case"], 999))
+
+    all_pass = all(r.get("status") in ("PASS",) for r in results)
 
     # Summary
     print(f"\n{'=' * 60}")
