@@ -133,6 +133,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             max_turns=int(agent_config.get("max_turns") if agent_config.get("max_turns") is not None else defaults.get("max_turns", 100)),
             settings_file=agent_config.get("settings_file") or defaults.get("settings_file", ""),
             semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
+            disable_skills=bool(agent_config.get("disable_skills", defaults.get("disable_skills", False))),
         )
     elif backend == "http":
         url = agent_config.get("http_url") or defaults.get("http_url", "")

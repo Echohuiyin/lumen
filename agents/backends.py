@@ -94,9 +94,16 @@ def _format_stream_event(line: str) -> str:
                     return f"[tool_result]{' ERROR' if is_err else ''} {txt[:300]}"
         return f"[user] {line[:300]}"
     if etype == "result":
+        u = evt.get("usage") or {}
+        usage_str = (
+            f" input_tokens={u.get('input_tokens')} output_tokens={u.get('output_tokens')} "
+            f"total_cost_usd={u.get('total_cost_usd')}"
+            if u
+            else ""
+        )
         return (
             f"[result] subtype={subtype} is_error={evt.get('is_error')} "
-            f"num_turns={evt.get('num_turns')} duration_ms={evt.get('duration_ms')} "
+            f"num_turns={evt.get('num_turns')} duration_ms={evt.get('duration_ms')}{usage_str} "
             f"result={str(evt.get('result',''))[:300]}"
         )
     return f"[{etype}/{subtype}] {line[:300]}"
@@ -602,6 +609,7 @@ class ClaudeCodeBackend:
         max_turns: int = 100,
         settings_file: str = "",
         semcode_mcp: dict | None = None,
+        disable_skills: bool = False,
     ):
         self._cli_command = cli_command
         self._cli_timeout = cli_timeout
@@ -609,6 +617,7 @@ class ClaudeCodeBackend:
         self._permission_mode = permission_mode
         self._max_turns = max_turns
         self._settings_file = settings_file
+        self._disable_skills = disable_skills
         # Inline MCP server config for semcode, e.g.
         # {"command": "/path/to/semcode-mcp", "args": ["-d", "/path/to/.semcode.db"]}
         # When set, the backend writes a temp mcp config file in CLI format
@@ -766,6 +775,14 @@ class ClaudeCodeBackend:
             mcp_path = self._write_semcode_mcp_config()
             if mcp_path and os.path.exists(mcp_path):
                 cmd.extend(["--mcp-config", mcp_path])
+
+        # kernel_expert's prompt has no /<skill> slash commands, so the 57
+        # skills auto-loaded from ~/.claude/skills/ waste ~23k input tokens
+        # per invoke (Q2 experiment showed ~24% total token savings and 20%
+        # fewer turns to converge, with no regression). Config-gated so other
+        # claude_code agents can opt in later if they share the same property.
+        if self._disable_skills:
+            cmd.append("--disable-slash-commands")
 
         # Debug dump: write the full command + prompts to disk so the call
         # can be inspected or rerun. Tag includes a uuid suffix in case

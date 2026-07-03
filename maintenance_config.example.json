@@ -88,7 +88,8 @@
       "cli_timeout": 600,
       "permission_mode": "bypassPermissions",
       "max_turns": 50,
-      "settings_file": "~/.claude/settings.json"
+      "settings_file": "~/.claude/settings.json",
+      "disable_skills": true
     },
     "test_expert": {
       "prompt_file": "prompts/maintenance/test_expert.md",
