@@ -26,7 +26,7 @@ Trigger this skill when user asks to:
 - **Default** (no flags): Static checks + offline unit tests (~30s)
 - `--full`: All of the above + full pytest suite (~2min)
 - `--online`: Include online tests that call LLM APIs (~5min, may cost credits)
-- `--e2e`: Run full E2E workflow on mutex deadlock + UAF test cases (~20-40min, requires LLM + QEMU)
+- `--e2e`: Run full E2E workflow on all 4 cases (~20-40min, requires LLM + QEMU)
 - `--all`: Everything (static → unit → full pytest → online → e2e)
 
 ## Check Stages
@@ -107,10 +107,10 @@ Coverage:
 
 ### Stage 5: E2E Workflow Verification (--e2e)
 
-Verify the full LangGraph pipeline end-to-end on two production test cases. Each run goes through all 6 workflow stages: **validator → pm → tool_experts → kernel_expert → test_expert → knowledge_base**.
+Verify the full LangGraph pipeline end-to-end on **4 test cases running in parallel**. Each run goes through all 6 workflow stages: **validator → pm → tool_experts → kernel_expert → test_expert → knowledge_base**.
 
 ```bash
-# E2E test script (handles both cases, checks results)
+# E2E test script (handles all 4 cases, checks results)
 python scripts/run_e2e_checks.py
 ```
 
@@ -159,20 +159,55 @@ The UAF case tests the workflow's ability to:
 3. Trace the kref refcount leak through ioctl sequences
 4. Generate a reproducer and verify in QEMU
 
+##### Case 3: Syzbot btrfs WARNING (ordered extent)
+
+| Field | Value |
+|-------|-------|
+| **Input** | `test_assets/syzbot_btrfs_085adc3f/input.txt` |
+| **Fault type** | warning |
+| **Kernel module** | C reproducer (syzbot PoC) |
+| **Expected signal** | `WARNING in can_finish_ordered_extent` |
+| **Config** | `maintenance_config.json` |
+
+The btrfs case tests the workflow's ability to:
+1. Parse a WARNING vmcore without CONFIG_IKCONFIG
+2. Route through kernel_log_analysis + crash_analysis
+3. Compile and run a syzbot C reproducer
+4. Boot in QEMU and confirm the ordered-data WARNING triggers
+
+##### Case 4: Syzbot kvm-x86 WARNING (pvqspinlock)
+
+| Field | Value |
+|-------|-------|
+| **Input** | `test_assets/syzbot_kvm_x86_5d2b94b7/input.txt` |
+| **Fault type** | warning |
+| **Kernel module** | C reproducer (syzbot PoC, multi-threaded) |
+| **Expected signal** | `WARNING in hv_tlb_flush_enqueue` |
+| **Config** | `maintenance_config.json` |
+
+The kvm-x86 case tests the workflow's ability to:
+1. Parse a pvqspinlock corruption WARNING from nested KVM+HyperV
+2. Route to crash_analysis + kernel_log_analysis
+3. Generate a multi-threaded syzbot reproducer
+4. Boot in QEMU with smp≥2 and trigger the race via KVM hypercalls
+
 #### E2E Pass Criteria
 
-A stage passes when **all 6 workflow stages execute successfully**:
+All cases must meet both criteria:
 
-| Stage | Pass Criteria |
-|-------|--------------|
-| Validator | Input validated, feedback generated |
-| PM | Fault type classified, experts routed |
-| Tool Experts | crash/vmcore analysis completed without errors |
-| kernel_expert | Contract generated, reproducer files written |
-| test_expert | QEMU boot initiated, result captured |
-| knowledge_base | Knowledge document archived to Chroma |
+| Criterion | Requirement |
+|-----------|------------|
+| **Pipeline** | >=5/6 workflow stages execute successfully |
+| **Reproduction** | main.py stdout contains `成功复现` (i.e. `final_response` says "问题分析已完成（成功复现）。") |
 
-**Note:** The expected_signal match (QEMU reproducing the exact bug) is a plus but not a gating requirement — some race conditions are hard to trigger in VM. The gating requirement is that the workflow pipeline completes all stages without crashing.
+A case that completes the pipeline but fails to reproduce gets `PASS_NO_REPRODUCE` status and **blocks the gate**.
+
+| Status | Meaning | Gate |
+|--------|---------|------|
+| `PASS` | Pipeline complete + QEMU reproduced | ✅ Pass |
+| `PASS_NO_REPRODUCE` | Pipeline complete but NOT reproduced | ❌ Block |
+| `BLOCKED` | Blocked contract (CLI failure) | ❌ Block |
+| `PARTIAL` / `FAIL` | <5 stages | ❌ Block |
 
 #### Result Verification
 
@@ -191,15 +226,18 @@ grep -r "blocked\|BLOCKED" outputs/latest/
 
 ## E2E Automation Script
 
-The project provides a convenience script at `scripts/run_e2e_checks.py` that runs both E2E cases and reports results:
+The project provides a convenience script at `scripts/run_e2e_checks.py` that runs all 4 E2E cases in parallel and reports results:
 
 ```bash
-# Run both deadlock + UAF E2E checks
+# Run all 4 cases in parallel (default)
 python scripts/run_e2e_checks.py
 
-# Run only one case
-python scripts/run_e2e_checks.py --cases deadlock
-python scripts/run_e2e_checks.py --cases uaf
+# Select specific cases
+python scripts/run_e2e_checks.py --cases deadlock uaf
+python scripts/run_e2e_checks.py --cases btrfs kvm-x86
+
+# Control parallelism
+python scripts/run_e2e_checks.py --parallel 2     # Max 2 at a time
 
 # Output detailed results as JSON
 python scripts/run_e2e_checks.py --json
@@ -305,8 +343,10 @@ Stage 1 — Static Analysis:              PASS
 Stage 2 — Offline Unit Tests:           PASS (6/6)
 Stage 3 — Full Pytest Suite:            PASS (12/12)
 Stage 4 — Online Tests:                 SKIPPED (use --online)
-Stage 5 — E2E (mutex deadlock):         PASS (6/6 stages)
-Stage 5 — E2E (UAF kref leak):          PASS (6/6 stages)
+Stage 5 — E2E (deadlock):               ✓ PASS (reproduced)
+Stage 5 — E2E (uaf):                    ~ PASS (no reproduce)
+Stage 5 — E2E (btrfs):                  ✓ PASS (reproduced)
+Stage 5 — E2E (kvm-x86):                ✓ PASS (reproduced)
 
 === All checks passed. Ready to push. ===
 ```

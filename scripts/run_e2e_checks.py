@@ -178,8 +178,18 @@ def _count_completed_stages(stdout: str, case_name: str = "") -> list[dict]:
 
 
 def _check_blocked_contract(stdout: str) -> bool:
-    """Check if any blocked contract (CLI/max_turns failure) was emitted."""
-    return "BLOCKED" in stdout or "blocked" in stdout.lower() and "contract" in stdout.lower()
+    """Check if any blocked contract (CLI/max_turns failure) was emitted.
+
+    We match the explicit diagnostic printed by
+    agents.kernel_expert._validate_kernel_contract_artifacts and the
+    router: ``kernel_contract.status='blocked'`` or ``[路由诊断]
+    kernel_contract.status='blocked'``. Generic occurrences of the
+    word "blocked" must NOT count — kernel log lines like
+    ``INFO: task X blocked for more than 10 seconds.`` regularly
+    appear in deadlock-case stdout when hung_task fires (which is the
+    expected success signal, not a contract failure).
+    """
+    return "kernel_contract.status='blocked'" in stdout
 
 
 def _check_knowledge_base_archived(stdout: str) -> bool:

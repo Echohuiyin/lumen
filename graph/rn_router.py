@@ -39,16 +39,27 @@ def route_after_kernel(state: MaintenanceWorkflowState):
     contract = state.get("kernel_contract") or {}
     if contract:
         required = ("target_arch", "boot_kernel_path", "test_script_path", "expected_signal")
-        if contract.get("status") == "ok" and all(contract.get(field) for field in required):
+        ok = contract.get("status") == "ok"
+        fields_ok = all(contract.get(field) for field in required)
+        if ok and fields_ok:
             return "test_expert"
+        # diagnostic logging
+        if ok is False:
+            print(f"  [路由诊断] kernel_contract.status={contract.get('status')!r}", flush=True)
+        missing = [f for f in required if not contract.get(f)]
+        if missing:
+            print(f"  [路由诊断] contract 缺少必填字段: {missing}", flush=True)
         return "knowledge_base"
 
     if state.get("kernel_ready_for_test") is False:
+        print("  [路由诊断] 无 kernel_contract 且 kernel_ready_for_test=False", flush=True)
         return "knowledge_base"
 
     if state.get("final_response") and not state.get("reproduce_case"):
+        print("  [路由诊断] 有 final_response 但无 reproduce_case → END", flush=True)
         return END
 
+    print("  [路由诊断] 无 contract 但 fallthrough → test_expert", flush=True)
     return "test_expert"
 
 

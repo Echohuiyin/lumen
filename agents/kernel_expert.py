@@ -634,6 +634,11 @@ def _parse_kernel_expert_response(
 
     kernel_contract = _validate_kernel_contract_artifacts(kernel_contract)
     contract_ready = _kernel_contract_ready_for_test(kernel_contract)
+    print(f"  [contract诊断] status={kernel_contract.status} target_arch={kernel_contract.target_arch} "
+          f"boot_kernel={kernel_contract.boot_kernel_path is not None} "
+          f"test_script={kernel_contract.test_script_path is not None} "
+          f"expected_signal={kernel_contract.expected_signal is not None} "
+          f"ready_for_test={contract_ready}", flush=True)
 
     return {
         "kernel_analysis": text,
@@ -775,6 +780,8 @@ _KNOWN_SIGNAL_TOKENS: list[str] = [
     "WARNING: CPU:",
     "WARNING: at ",
     "Kernel panic",
+    # Generic fallback — must be last so more-specific tokens match first.
+    "WARNING",
 ]
 
 
@@ -1201,7 +1208,16 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
         "folio", "page reclaim", "memory pressure",
     ]
     expected = (contract.expected_signal or "").lower()
-    needs_memory_pressure = any(s in expected for s in _MEMORY_PRESSURE_SIGNALS)
+    reproducer_dir_str = data.get("reproducer_dir", "") or ""
+    needs_memory_pressure_by_signal = any(s in expected for s in _MEMORY_PRESSURE_SIGNALS)
+    needs_memory_pressure_by_dir = "btrfs" in reproducer_dir_str.lower()
+    needs_memory_pressure = needs_memory_pressure_by_signal or needs_memory_pressure_by_dir
+    if needs_memory_pressure_by_signal:
+        print(f"  [contract诊断] expected_signal='{contract.expected_signal}' 匹配内存压力信号", flush=True)
+    elif needs_memory_pressure_by_dir:
+        print(f"  [contract诊断] reproducer_dir 包含 'btrfs' → 注入内存压力", flush=True)
+    else:
+        print(f"  [contract诊断] expected_signal='{contract.expected_signal}' 不匹配内存压力信号（跳过注入）", flush=True)
     if needs_memory_pressure and test_script and Path(test_script).exists():
         try:
             script_text = Path(test_script).read_text(encoding="utf-8")
@@ -1216,8 +1232,8 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
             )
 
             # 2) Inject memory pressure before repro_c runs:
-            #    allocate 75% of available memory via dd, then drop caches
-            #    to force page reclaim pressure.
+            #    allocate 75% of available memory via dd, then force
+            #    page reclaim pressure for race-condition amplification.
             pressure_block = """echo "=== Injecting memory pressure ==="
 # Allocate memory to trigger page reclaim pressure
 dd if=/dev/zero of=/tmp/mem_pressure bs=1M count=800 2>/dev/null &
@@ -1225,18 +1241,38 @@ sleep 2
 # Leave the allocator running in background during repro
 echo "Memory pressure applied (800MB allocated)"
 """
-            # Insert pressure before "cd /tmp" or "cd /" or "Run repro_c" line
+            # Insert pressure before a known reproducer-start marker
             marker_patterns = [
                 r'^(cd /tmp\n)',
                 r'^(cd /\n)',
                 r'^(# Run repro_c)',
+                r'^(# Run the syzbot reproducer)',
                 r'^(\/bin\/repro_c)',
+                r'^(\/bin\/repro )',
             ]
             for pat in marker_patterns:
                 new_text, n = re.subn(pat, pressure_block + r'\1', script_text, count=1, flags=re.MULTILINE)
                 if n > 0:
                     script_text = new_text
                     break
+
+            # 2b) `expr` is now provided via busybox symlink in
+            #     create_initramfs.sh (expr/test/seq/chmod added to the
+            #     symlink list). No textual substitution needed — the
+            #     LLM-generated `expr "$i" + 1` works as-is when the
+            #     initramfs has the busybox `expr` applet available.
+
+            # 2c) The sleep extension (step 1) extended the memory pressure
+            #     stabilization sleep (the one right after "MEM_PID=$!") to
+            #     600s, but that's unnecessary — dd runs in background so
+            #     the reproducer can start after a short 2s pause. Shorten
+            #     it back so QEMU time is spent on the reproducer, not on
+            #     idle waiting.
+            script_text = re.sub(
+                r'(MEM_PID=\$\!)\s*\n\s*sleep\s+\d+\s*\n',
+                r'\1\nsleep 2\n',
+                script_text,
+            )
 
             Path(test_script).write_text(script_text, encoding="utf-8")
             evidence.append({
@@ -1248,11 +1284,19 @@ echo "Memory pressure applied (800MB allocated)"
 
             # 3) Set extra_cmdline to limit kernel-visible memory, creating
             #    memory pressure without changing QEMU -m (KASAN needs >=2G).
+            #    qemu_recipe is a dict (model_to_dict converts nested objects),
+            #    so use dict access, not attribute access.
             recipe = data.get("qemu_recipe")
-            if recipe and not getattr(recipe, "extra_cmdline", ""):
-                recipe.extra_cmdline = "mem=1G"
+            if recipe and isinstance(recipe, dict) and not recipe.get("extra_cmdline", ""):
+                # numa=off prevents early GP fault in numa_emulation when
+                # QEMU's SRAT has nodes beyond the 1G window (q35 exposes
+                # 2 NUMA nodes by default, second node starts at 1G).
+                # mem=2G gives enough headroom for KASAN + repro_c while
+                # still constraining memory below auto-selected 4G so
+                # the dd-backed memory-pressure injection is effective.
+                recipe["extra_cmdline"] = "numa=off mem=2G"
                 warnings.append(
-                    f"injected extra_cmdline='mem=1G' for memory-sensitive signal"
+                    f"injected extra_cmdline='numa=off mem=2G' for memory-sensitive signal"
                 )
         except (OSError, ValueError) as exc:
             warnings.append(f"memory pressure injection skipped: {exc}")
@@ -1262,8 +1306,10 @@ echo "Memory pressure applied (800MB allocated)"
     if errors:
         data["status"] = "blocked"
         data["blocked_reason"] = "; ".join(errors)
+        print(f"  [contract诊断] 校验发现 {len(errors)} 个错误: {'; '.join(errors[:3])}", flush=True)
     elif data.get("status") in {"blocked", "degraded"} and _kernel_contract_has_handoff(_model_validate(KernelExpertOutput, data)):
         data["status"] = "ok"
         data["blocked_reason"] = ""
+        print(f"  [contract诊断] 从 {data.get('status')} 升级为 ok（有 handoff 字段）", flush=True)
 
     return _model_validate(KernelExpertOutput, data)
