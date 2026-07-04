@@ -34,6 +34,8 @@ def save_agent_file(
     messages: list,
     response: str,
     elapsed: float,
+    model_name: str = "",
+    usage: dict | None = None,
     reasoning: str = "",
 ) -> str:
     """Save an agent's full input/output to a file and update session metadata.
@@ -52,6 +54,18 @@ def save_agent_file(
         "",
         f"**用时**: {elapsed:.1f} 秒",
         "",
+    ]
+    if model_name:
+        parts += [f"**模型**: {model_name}", ""]
+    if usage:
+        u = usage
+        prompt = u.get("prompt_tokens", 0)
+        completion = u.get("completion_tokens", 0)
+        total = u.get("total_tokens", 0)
+        parts += [f"**Token**: {prompt}+{completion}={total}" if prompt and completion
+                  else f"**Token**: {total}" if total else "", ""]
+
+    parts += [
         "## 输入 Messages",
         "",
     ]
@@ -80,6 +94,8 @@ def save_agent_file(
         "agent": agent_label,
         "phase": phase,
         "file": filename,
+        "model": model_name,
+        "usage": usage,
         "elapsed": round(elapsed, 1),
     })
     _write_metadata(session_dir, meta)

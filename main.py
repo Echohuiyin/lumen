@@ -17,42 +17,43 @@ logging.getLogger("langchain").setLevel(logging.WARNING)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="维护接口人工作流")
+    parser = argparse.ArgumentParser(description="Kernel Debuger Workflow")
     parser.add_argument(
-        "--input-file",
+        "input_file",
+        nargs="?",
         default="input.txt",
-        help="输入文件路径（默认 input.txt），包含问题描述、故障类型、vmcore/vmlinux/source 路径等",
+        help="Input file describing the problem (fault type, vmcore/vmlinux/source paths, etc.)",
     )
     parser.add_argument(
         "--config",
         default="config.json",
-        help="工作流配置文件路径（默认 config.json）",
+        help="Workflow config file (default config.json)",
     )
     parser.add_argument(
         "--session-id",
         default=None,
-        help="Session ID（默认自动生成）",
+        help="Session ID (auto-generated if omitted)",
     )
     args = parser.parse_args()
 
-    # 解析 input.txt 获取结构化字段
+    # Parse input file into structured fields
     fields = parse_input_file(args.input_file)
     user_input = format_user_input(fields)
     if not user_input:
-        print(f"[错误] 输入文件 {args.input_file} 为空或格式不正确。")
-        print("文件应包含以下字段（每行一个 key: value）：")
-        print("  问题描述: <描述>")
-        print("  故障类型: <deadlock|panic|softlockup>")
-        print("  vmcore 文件: <路径>")
-        print("  vmlinux 文件: <路径>")
-        print("  boot_kernel 文件: <路径>")
-        print("  kernel_source 文件: <路径>")
+        print("[Error] Input file {args.input_file} is empty or malformed.")
+        print("Expected fields (one per line, key: value):")
+        print("  Bug Promote: <description>")
+        print("  vmcore 文件: <path>")
+        print("  vmlinux 文件: <path>")
+        print("  boot_kernel 文件: <path>")
+        print("  kernel_source 文件: <path>")
+        print("See input.txt.template for a working example.")
         return
 
-    # 加载配置
+    # Load config
     config = load_config(args.config)
 
-    # ── 初始化 Session ───────────────────────────────────────────────────
+    # ── Init Session ──────────────────────────────────────────────────────
     session_id = args.session_id or (
         datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
     )
@@ -69,28 +70,42 @@ def main():
         session_dir=str(session_dir),
     )
 
+    # ── list parsed input fields for display ──────────────────────────────
+    model_name = config.get("model_name", "?")
+    field_lines = []
+    for key, val in fields.items():
+        # short label for display
+        if val:
+            field_lines.append(f"  {key}: {val}")
+    input_summary = "\n".join(field_lines)
+
     print(f"\n{'=' * 60}")
-    print(f"  维护接口人工作流")
-    print(f"  输入文件: {args.input_file}")
-    print(f"  配置: {args.config}")
+    print(f"  Kernel Debuger Workflow")
+    print(f"  {'─' * 56}")
+    if input_summary:
+        print(input_summary)
+        print(f"  {'─' * 56}")
+    print(f"  Model: {model_name}")
+    print(f"  Input: {args.input_file}")
+    print(f"  Config: {args.config}")
     print(f"  Session: {session_id}")
     print(f"{'=' * 60}\n")
 
     result = graph.invoke(initial_state, run_config)
 
     print(f"\n{'=' * 60}")
-    print("最终结果:")
+    print("  Result")
     print(f"{'=' * 60}")
 
     if result.get("validation_passed") is False and result.get("validation_feedback"):
-        print("输入信息不完整，请补充以下信息：")
+        print("Input validation failed — please provide more info:")
         print(result["validation_feedback"])
     elif result.get("final_response"):
         print(result["final_response"])
     else:
-        print("工作流已完成，但未生成最终回复。")
+        print("Workflow completed but no final response was generated.")
 
-    print(f"\nSession 文件: {session_dir}/")
+    print(f"\nSession files: {session_dir}/")
 
 
 if __name__ == "__main__":

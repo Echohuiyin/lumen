@@ -115,8 +115,7 @@ def resolve_project_path(path: str) -> Path:
 # ---------------------------------------------------------------------------
 
 INPUT_FILE_FIELDS = {
-    "问题描述",
-    "故障类型",
+    "Bug Promote",
     "vmcore 文件",
     "vmlinux 文件",
     "boot_kernel 文件",
@@ -127,10 +126,9 @@ INPUT_FILE_FIELDS = {
 def parse_input_file(file_path: str) -> dict[str, str]:
     """Parse a structured input file (key: value per line) into a field dict.
 
-    Expected format::
+    Expected format (see ``input.txt.template``)::
 
-        问题描述: <description>
-        故障类型: <fault type>
+        Bug Promote: <description+fault type>
         vmcore 文件: <path>
         vmlinux 文件: <path>
         boot_kernel 文件: <path>
