@@ -9,18 +9,18 @@ import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 CHECKS = [
-    ["scripts/check_agent_contracts.py"],
-    ["-m", "compileall", "-q", "agents", "graph", "scripts", "tests/test_agent_contracts.py"],
-    ["tests/test_agent_contracts.py"],
-    ["tests/test_validator_rules.py"],
-    ["tests/test_pm_rules.py"],
-    ["tests/test_kernel_contract.py"],
-    ["tests/test_test_runner_contract.py"],
-    ["tests/test_tool_evidence.py"],
-    ["tests/test_semcode_mcp.py"],
+    ["dev/scripts/check_agent_contracts.py"],
+    ["-m", "compileall", "-q", "agents", "graph", "dev/scripts", "dev/tests/test_agent_contracts.py"],
+    ["dev/tests/test_agent_contracts.py"],
+    ["dev/tests/test_validator_rules.py"],
+    ["dev/tests/test_pm_rules.py"],
+    ["dev/tests/test_kernel_contract.py"],
+    ["dev/tests/test_test_runner_contract.py"],
+    ["dev/tests/test_tool_evidence.py"],
+    ["dev/tests/test_semcode_mcp.py"],
 ]
 
 

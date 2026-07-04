@@ -12,13 +12,13 @@ import pytest
 
 
 ONLINE_TEST_NODEIDS = (
-    "tests/test_agent_capabilities.py",
-    "tests/test_expert_io_format.py",
-    "tests/test_kernel_expert.py::test_kernel_expert_tool_calling",
-    "tests/test_test_expert.py::test_qemu_tool_calling",
-    "tests/test_tool_expert_mcp.py::test_tool_calling_loop",
-    "tests/test_tool_experts.py::test_expert_direct",
-    "tests/test_tool_experts.py::test_all_experts",
+    "dev/tests/test_agent_capabilities.py",
+    "dev/tests/test_expert_io_format.py",
+    "dev/tests/test_kernel_expert.py::test_kernel_expert_tool_calling",
+    "dev/tests/test_test_expert.py::test_qemu_tool_calling",
+    "dev/tests/test_tool_expert_mcp.py::test_tool_calling_loop",
+    "dev/tests/test_tool_experts.py::test_expert_direct",
+    "dev/tests/test_tool_experts.py::test_all_experts",
 )
 
 

@@ -186,7 +186,7 @@ Phase 5：端到端回归
    - `outputs`
    - `tools`
    - `downstream_consumers`
-3. 新增静态检查脚本，例如 `scripts/check_agent_contracts.py`
+3. 新增静态检查脚本，例如 `dev/scripts/check_agent_contracts.py`
 4. 检查 prompt 中声明的工具、配置中启用的工具、代码中绑定的工具是否一致
 5. 将检查纳入现有测试或 smoke test 流程
 
@@ -408,7 +408,7 @@ Phase 5：端到端回归
 执行命令：
 
 ```bash
-.venv/bin/python scripts/check_agent_contracts.py
+.venv/bin/python dev/scripts/check_agent_contracts.py
 ```
 
 当前检查失败，说明能力清单、prompt 和运行时工具绑定仍存在不一致。已确认问题如下：
@@ -774,7 +774,7 @@ Phase 5：端到端回归
 
 验收：
 
-- `.venv/bin/python scripts/check_agent_contracts.py` 通过。
+- `.venv/bin/python dev/scripts/check_agent_contracts.py` 通过。
 - 本地测试命令可执行。
 
 #### P0：统一输入 artifact 解析
@@ -888,23 +888,23 @@ Phase 5：端到端回归
 4. 修正 dev 依赖声明：
    - `requirements-dev.txt` 加入 `pytest>=8.0.0`
    - `pyproject.toml` 的 dev extra 加入 `pytest>=8.0.0`
-5. 修正 `tests/test_pm_rules.py` 中依赖全局 `config.json` 形状的旧夹具，让 only-crash 路由测试自包含。
+5. 修正 `dev/tests/test_pm_rules.py` 中依赖全局 `config.json` 形状的旧夹具，让 only-crash 路由测试自包含。
 
 ### 验证结果
 
 已通过：
 
 ```bash
-.venv/bin/python scripts/check_agent_contracts.py
-.venv/bin/python tests/test_pm_rules.py
-.venv/bin/python tests/test_kernel_contract.py
-.venv/bin/python tests/test_test_runner_contract.py
-.venv/bin/python tests/test_validator_rules.py
-.venv/bin/python tests/test_tool_evidence.py
-.venv/bin/python tests/test_qemu_tools.py
+.venv/bin/python dev/scripts/check_agent_contracts.py
+.venv/bin/python dev/tests/test_pm_rules.py
+.venv/bin/python dev/tests/test_kernel_contract.py
+.venv/bin/python dev/tests/test_test_runner_contract.py
+.venv/bin/python dev/tests/test_validator_rules.py
+.venv/bin/python dev/tests/test_tool_evidence.py
+.venv/bin/python dev/tests/test_qemu_tools.py
 ```
 
-直接运行 `tests/test_expert_io_format.py` 时，依赖真实 LLM 的专家测试被当前无效 API key 阻断，错误为 OpenAI-compatible backend 返回 401。该失败不是本轮 prompt/contract 静态一致性修复引入的功能回归，但说明后续测试需要区分离线 contract 测试和在线 LLM 集成测试。
+直接运行 `dev/tests/test_expert_io_format.py` 时，依赖真实 LLM 的专家测试被当前无效 API key 阻断，错误为 OpenAI-compatible backend 返回 401。该失败不是本轮 prompt/contract 静态一致性修复引入的功能回归，但说明后续测试需要区分离线 contract 测试和在线 LLM 集成测试。
 
 ### 新增后续任务
 
@@ -940,13 +940,13 @@ Phase 5：端到端回归
 已通过：
 
 ```bash
-.venv/bin/python scripts/check_agent_contracts.py
-.venv/bin/python tests/test_validator_rules.py
-.venv/bin/python tests/test_pm_rules.py
-.venv/bin/python tests/test_kernel_contract.py
-.venv/bin/python tests/test_test_runner_contract.py
-.venv/bin/python tests/test_tool_evidence.py
-.venv/bin/python tests/test_qemu_tools.py
+.venv/bin/python dev/scripts/check_agent_contracts.py
+.venv/bin/python dev/tests/test_validator_rules.py
+.venv/bin/python dev/tests/test_pm_rules.py
+.venv/bin/python dev/tests/test_kernel_contract.py
+.venv/bin/python dev/tests/test_test_runner_contract.py
+.venv/bin/python dev/tests/test_tool_evidence.py
+.venv/bin/python dev/tests/test_qemu_tools.py
 ```
 
 ### 剩余问题
@@ -976,10 +976,10 @@ Phase 5：端到端回归
 ### 验证结果
 
 ```bash
-.venv/bin/python tests/test_validator_rules.py
-.venv/bin/python -m pytest tests/test_validator_rules.py -q
+.venv/bin/python dev/tests/test_validator_rules.py
+.venv/bin/python -m pytest dev/tests/test_validator_rules.py -q
 .venv/bin/python -m pytest -q
-.venv/bin/python scripts/check_agent_contracts.py
+.venv/bin/python dev/scripts/check_agent_contracts.py
 .venv/bin/python -m pytest -q --run-online
 ```
 
@@ -1019,10 +1019,10 @@ agent contract check passed
 ### 验证结果
 
 ```bash
-.venv/bin/python tests/test_validator_rules.py
-.venv/bin/python -m pytest tests/test_validator_rules.py -q
+.venv/bin/python dev/tests/test_validator_rules.py
+.venv/bin/python -m pytest dev/tests/test_validator_rules.py -q
 .venv/bin/python -m pytest -q
-.venv/bin/python scripts/check_agent_contracts.py
+.venv/bin/python dev/scripts/check_agent_contracts.py
 .venv/bin/python -m pytest -q --run-online
 ```
 
@@ -1100,12 +1100,12 @@ PY
 1. 增加 pytest `online` marker。
 2. 增加 `--run-online` 选项，默认跳过在线 LLM / 外部 crash session 测试。
 3. 将以下测试归为在线测试：
-   - `tests/test_expert_io_format.py`
-   - `tests/test_kernel_expert.py::test_kernel_expert_tool_calling`
-   - `tests/test_test_expert.py::test_qemu_tool_calling`
-   - `tests/test_tool_expert_mcp.py::test_tool_calling_loop`
-   - `tests/test_tool_experts.py::test_expert_direct`
-   - `tests/test_tool_experts.py::test_all_experts`
+   - `dev/tests/test_expert_io_format.py`
+   - `dev/tests/test_kernel_expert.py::test_kernel_expert_tool_calling`
+   - `dev/tests/test_test_expert.py::test_qemu_tool_calling`
+   - `dev/tests/test_tool_expert_mcp.py::test_tool_calling_loop`
+   - `dev/tests/test_tool_experts.py::test_expert_direct`
+   - `dev/tests/test_tool_experts.py::test_all_experts`
 4. 将测试生成目录加入 `.gitignore`：
    - `knowledge_base/`
    - `self_test_reports/`

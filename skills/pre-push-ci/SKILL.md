@@ -35,10 +35,10 @@ Trigger this skill when user asks to:
 
 ```bash
 # Python syntax check
-python -m compileall -q agents graph scripts tests/
+python -m compileall -q agents graph dev/scripts dev/tests/
 
 # Agent contract & capability validation
-python scripts/check_agent_contracts.py
+python dev/scripts/check_agent_contracts.py
 ```
 
 Checks:
@@ -52,19 +52,19 @@ Checks:
 
 ```bash
 # Fast contract and rule tests (no QEMU, no LLM)
-python -m pytest tests/test_agent_contracts.py -v
-python -m pytest tests/test_validator_rules.py -v
-python -m pytest tests/test_pm_rules.py -v
-python -m pytest tests/test_kernel_contract.py -v
-python -m pytest tests/test_test_runner_contract.py -v
-python -m pytest tests/test_tool_evidence.py -v
+python -m pytest dev/tests/test_agent_contracts.py -v
+python -m pytest dev/tests/test_validator_rules.py -v
+python -m pytest dev/tests/test_pm_rules.py -v
+python -m pytest dev/tests/test_kernel_contract.py -v
+python -m pytest dev/tests/test_test_runner_contract.py -v
+python -m pytest dev/tests/test_tool_evidence.py -v
 ```
 
 Or run all at once:
 
 ```bash
 # Static checks + 6 offline test modules
-python scripts/run_static_checks.py
+python dev/scripts/run_static_checks.py
 ```
 
 Checks:
@@ -79,7 +79,7 @@ Checks:
 
 ```bash
 # All offline + agent capability tests
-python -m pytest tests/ -v --ignore=tests/test_tool_expert_mcp.py --run-online -x
+python -m pytest dev/tests/ -v --ignore=dev/tests/test_tool_expert_mcp.py --run-online -x
 ```
 
 Additional tests:
@@ -97,7 +97,7 @@ Additional tests:
 
 ```bash
 # Tests that call live LLM APIs or external session
-python -m pytest tests/ -m online -v
+python -m pytest dev/tests/ -m online -v
 ```
 
 Coverage:
@@ -111,7 +111,7 @@ Verify the full LangGraph pipeline end-to-end on **4 test cases running in paral
 
 ```bash
 # E2E test script (handles all 4 cases, checks results)
-python scripts/run_e2e_checks.py
+python dev/scripts/run_e2e_checks.py
 ```
 
 Or run individually:
@@ -226,21 +226,21 @@ grep -r "blocked\|BLOCKED" outputs/latest/
 
 ## E2E Automation Script
 
-The project provides a convenience script at `scripts/run_e2e_checks.py` that runs all 4 E2E cases in parallel and reports results:
+The project provides a convenience script at `dev/scripts/run_e2e_checks.py` that runs all 4 E2E cases in parallel and reports results:
 
 ```bash
 # Run all 4 cases in parallel (default)
-python scripts/run_e2e_checks.py
+python dev/scripts/run_e2e_checks.py
 
 # Select specific cases
-python scripts/run_e2e_checks.py --cases deadlock uaf
-python scripts/run_e2e_checks.py --cases btrfs kvm-x86
+python dev/scripts/run_e2e_checks.py --cases deadlock uaf
+python dev/scripts/run_e2e_checks.py --cases btrfs kvm-x86
 
 # Control parallelism
-python scripts/run_e2e_checks.py --parallel 2     # Max 2 at a time
+python dev/scripts/run_e2e_checks.py --parallel 2     # Max 2 at a time
 
 # Output detailed results as JSON
-python scripts/run_e2e_checks.py --json
+python dev/scripts/run_e2e_checks.py --json
 ```
 
 ## Test Infrastructure Reference
@@ -258,11 +258,12 @@ lumen/
 │   ├── qemu_tools.py         # QEMU boot/log analysis tools
 │   ├── test_runner.py        # QEMU test plan executor
 │   └── test_expert.py        # Test expert node
-├── scripts/
-│   ├── run_static_checks.py  # Static check orchestrator
-│   ├── check_agent_contracts.py  # Agent capability validator
-│   └── run_e2e_checks.py     # E2E workflow verifier
-├── tests/                    # 15 pytest test modules
+├── dev/
+│   ├── scripts/
+│   │   ├── run_static_checks.py  # Static check orchestrator
+│   │   ├── check_agent_contracts.py  # Agent capability validator
+│   │   └── run_e2e_checks.py     # E2E workflow verifier
+│   └── tests/                # 15 pytest test modules
 ├── test_assets/              # E2E test case assets
 │   ├── deadlock/             # Mutex ABBA deadlock case
 │   ├── uaf/                  # Use-after-free case
@@ -290,7 +291,7 @@ lumen/
 For the fastest feedback loop (before every push):
 
 ```bash
-python scripts/run_static_checks.py
+python dev/scripts/run_static_checks.py
 ```
 
 This runs all Stage 1 + Stage 2 checks in ~30 seconds. If it passes, the code is safe to push.
@@ -298,7 +299,7 @@ This runs all Stage 1 + Stage 2 checks in ~30 seconds. If it passes, the code is
 For a full pre-merge gate:
 
 ```bash
-python scripts/run_static_checks.py && python scripts/run_e2e_checks.py
+python dev/scripts/run_static_checks.py && python dev/scripts/run_e2e_checks.py
 ```
 
 ## Error Handling

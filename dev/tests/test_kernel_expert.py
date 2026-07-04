@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 # 添加项目根目录到 Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agents.kernel_tools import create_kernel_tools, create_directory, write_file, read_file, compile_module, check_file_exists
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
@@ -172,7 +172,7 @@ def test_kernel_expert_tool_calling():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
+    config_path = Path(__file__).parent.parent.parent / "config.json"
     if not config_path.exists():
         # 如果没有配置文件，使用空配置
         config = {}
@@ -253,7 +253,7 @@ def test_kernel_expert_node():
     from agents.kernel_expert import kernel_expert_node
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
+    config_path = Path(__file__).parent.parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:

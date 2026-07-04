@@ -8,11 +8,11 @@ how many workflow stages completed successfully.
 Cases run in parallel via ThreadPoolExecutor to reduce gate time.
 
 Usage:
-    python scripts/run_e2e_checks.py                          # All 4 cases
-    python scripts/run_e2e_checks.py --cases deadlock uaf     # Specific cases
-    python scripts/run_e2e_checks.py --json                   # Machine-readable output
-    python scripts/run_e2e_checks.py --skip-qemu              # Skip test_expert stage
-    python scripts/run_e2e_checks.py --parallel 2             # Max 2 parallel (default: all)
+    python dev/scripts/run_e2e_checks.py                          # All 4 cases
+    python dev/scripts/run_e2e_checks.py --cases deadlock uaf     # Specific cases
+    python dev/scripts/run_e2e_checks.py --json                   # Machine-readable output
+    python dev/scripts/run_e2e_checks.py --skip-qemu              # Skip test_expert stage
+    python dev/scripts/run_e2e_checks.py --parallel 2             # Max 2 parallel (default: all)
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import tempfile
 import time
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 # E2E cases: (name, input_path, config_path, expected_signal)
 E2E_CASES: list[dict] = [

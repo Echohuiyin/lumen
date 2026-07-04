@@ -15,7 +15,7 @@ import tempfile
 from pathlib import Path
 
 # 添加项目根目录到 Python path
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 # 添加 aicrasher 路径

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 # 添加项目根目录到 Python path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agents.qemu_tools import create_qemu_tools, check_qemu_available, create_initramfs, boot_kernel, analyze_boot_log
 from agents.test_expert import test_expert_node as _test_expert_node, _extract_kernel_path, _check_file_exists
@@ -83,7 +83,7 @@ def test_execution_mode_logic():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
+    config_path = Path(__file__).parent.parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -140,7 +140,7 @@ def test_qemu_tool_calling(qemu_available: bool):
         return
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
+    config_path = Path(__file__).parent.parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -207,7 +207,7 @@ def test_test_expert_node_no_kernel():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
+    config_path = Path(__file__).parent.parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:
@@ -265,7 +265,7 @@ def test_test_expert_node_with_kernel():
     print("=" * 60)
 
     # 加载配置（使用默认配置文件）
-    config_path = Path(__file__).parent.parent / "config.json"
+    config_path = Path(__file__).parent.parent.parent / "config.json"
     if not config_path.exists():
         config = {}
     else:

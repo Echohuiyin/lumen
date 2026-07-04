@@ -4,7 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from agents.input_artifacts import parse_input_artifacts

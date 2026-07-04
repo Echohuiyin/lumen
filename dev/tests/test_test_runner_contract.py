@@ -9,7 +9,7 @@ import os
 import sys
 import tempfile
 
-project_root = Path(__file__).resolve().parent.parent
+project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from agents.contracts import DetectionSignals, QemuRecipe, TestPlan, model_to_dict
