@@ -116,10 +116,11 @@ def resolve_project_path(path: str) -> Path:
 
 INPUT_FILE_FIELDS = {
     "Bug Promote",
-    "vmcore 文件",
-    "vmlinux 文件",
-    "boot_kernel 文件",
-    "kernel_source 文件",
+    "vmcore",
+    "vmlinux",
+    "log",
+    "boot_kernel",
+    "kernel_source",
 }
 
 
@@ -129,10 +130,11 @@ def parse_input_file(file_path: str) -> dict[str, str]:
     Expected format (see ``input.txt.template``)::
 
         Bug Promote: <description+fault type>
-        vmcore 文件: <path>
-        vmlinux 文件: <path>
-        boot_kernel 文件: <path>
-        kernel_source 文件: <path>
+        vmcore: <path>
+        vmlinux: <path>
+        log: <path>
+        boot_kernel: <path>
+        kernel_source: <path>
 
     Lines starting with ``#`` are ignored.  Leading/trailing whitespace is
     stripped from both keys and values.

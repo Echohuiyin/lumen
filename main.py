@@ -43,10 +43,11 @@ def main():
         print(f"[Error] Input file {args.input_file} is empty or malformed.")
         print("Expected fields (one per line, key: value):")
         print("  Bug Promote: <description>")
-        print("  vmcore 文件: <path>")
-        print("  vmlinux 文件: <path>")
-        print("  boot_kernel 文件: <path>")
-        print("  kernel_source 文件: <path>")
+        print("  vmcore: <path>")
+        print("  vmlinux: <path>")
+        print("  log: <path>")
+        print("  boot_kernel: <path>")
+        print("  kernel_source: <path>")
         print("See input.txt.template for a working example.")
         return
 
