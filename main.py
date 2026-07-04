@@ -40,7 +40,7 @@ def main():
     fields = parse_input_file(args.input_file)
     user_input = format_user_input(fields)
     if not user_input:
-        print("[Error] Input file {args.input_file} is empty or malformed.")
+        print(f"[Error] Input file {args.input_file} is empty or malformed.")
         print("Expected fields (one per line, key: value):")
         print("  Bug Promote: <description>")
         print("  vmcore 文件: <path>")

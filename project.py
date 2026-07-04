@@ -22,19 +22,19 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 
 DEFAULT_AGENT_CONFIGS: dict[str, dict] = {
     "validator": {
-        "prompt_file": "prompts/maintenance/validator.md",
+        "prompt_file": "prompts/validator.md",
     },
     "pm": {
-        "prompt_file": "prompts/maintenance/pm.md",
+        "prompt_file": "prompts/pm.md",
     },
     "kernel_expert": {
-        "prompt_file": "prompts/maintenance/kernel_expert.md",
+        "prompt_file": "prompts/kernel_expert.md",
     },
     "test_expert": {
-        "prompt_file": "prompts/maintenance/test_expert.md",
+        "prompt_file": "prompts/test_expert.md",
     },
     "knowledge_base": {
-        "prompt_file": "prompts/maintenance/knowledge_base.md",
+        "prompt_file": "prompts/knowledge_base.md",
     },
 }
 
@@ -43,25 +43,25 @@ DEFAULT_TOOL_EXPERTS: list[dict] = [
         "type": "knowledge_search",
         "name": "历史知识库搜索专家",
         "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
-        "prompt_file": "prompts/maintenance/knowledge_search.md",
+        "prompt_file": "prompts/knowledge_search.md",
     },
     {
         "type": "lock_analysis",
         "name": "锁分析专家",
         "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
-        "prompt_file": "prompts/maintenance/lock_analysis.md",
+        "prompt_file": "prompts/lock_analysis.md",
     },
     {
         "type": "crash_analysis",
         "name": "Crash分析专家",
         "description": "分析 Crash 日志，定位崩溃原因和调用栈",
-        "prompt_file": "prompts/maintenance/crash_analysis.md",
+        "prompt_file": "prompts/crash_analysis.md",
     },
     {
         "type": "kernel_log_analysis",
         "name": "内核日志分析专家",
         "description": "分析内核日志（dmesg/logcat等），提取关键错误信息和异常模式",
-        "prompt_file": "prompts/maintenance/kernel_log_analysis.md",
+        "prompt_file": "prompts/kernel_log_analysis.md",
     },
 ]
 
