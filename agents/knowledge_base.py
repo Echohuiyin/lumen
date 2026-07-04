@@ -1,5 +1,6 @@
 import os
 import subprocess
+from pathlib import Path
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -97,16 +98,20 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
 
 
 def _save_knowledge_file(state: MaintenanceWorkflowState, content: str, config: dict) -> str:
-    """将知识库内容保存为文件。"""
-    kb_config = config.get("knowledge_base", {})
-    output_dir = kb_config.get("output_dir", "knowledge_base")
+    """将知识库内容保存为文件（优先 session 目录）。"""
+    session_dir = state.get("session_dir")
+    if session_dir:
+        output_path = Path(session_dir)
+    else:
+        kb_config = config.get("knowledge_base", {})
+        output_dir = kb_config.get("output_dir", "knowledge_base")
+        output_path = PROJECT_ROOT / output_dir
 
-    output_path = PROJECT_ROOT / output_dir
     output_path.mkdir(parents=True, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     issue_id = state.get("issue_id", "unknown")
-    filename = f"{issue_id}_{timestamp}.md"
+    filename = f"knowledge_{issue_id}_{timestamp}.md"
 
     file_path = output_path / filename
     file_path.write_text(content, encoding="utf-8")

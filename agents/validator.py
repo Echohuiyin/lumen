@@ -4,7 +4,7 @@ import re
 
 from agents.contracts import ValidationResultContract, model_to_dict
 from agents.input_artifacts import parse_input_artifacts
-from agents.llm_display import call_llm_with_persistence, set_session_dir, _print_agent_header, _print_agent_footer, GREEN, YELLOW, _c
+from agents.llm_display import call_llm_with_persistence, set_session_dir, GREEN, YELLOW, DIM, _c
 from llm_config import get_llm_with_config, load_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
@@ -19,17 +19,11 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
     input_artifacts = parse_input_artifacts(state.get("user_input", ""))
     rule_result = _validate_input_by_rules(state.get("user_input", ""))
     if rule_result.status in {"ok", "blocked"}:
-        # Display rule-based validation result
-        _print_agent_header("validator", "Rule-based validation")
-        print(f"Status: {_c(GREEN if rule_result.validation_passed else YELLOW, rule_result.status)}")
-        print(f"Reason: {rule_result.reason}")
-        if rule_result.detected_signals:
-            print(f"Detected signals: {_c(GREEN, str(rule_result.detected_signals))}")
-        if rule_result.missing_fields:
-            print(f"Missing fields: {rule_result.missing_fields}")
-        if rule_result.feedback:
-            print(f"Feedback: {rule_result.feedback}")
-        _print_agent_footer("validator")
+        # Compact rule-based validation result
+        status_icon = _c(GREEN, "✓") if rule_result.validation_passed else _c(YELLOW, "⚠")
+        signals = f" ({', '.join(rule_result.detected_signals)})" if rule_result.detected_signals else ""
+        feedback = f" — {rule_result.feedback}" if rule_result.feedback else ""
+        print(f"  {status_icon}  {_c(DIM, '[validator] 规则校验')}{signals}{feedback}", flush=True)
 
         return {
             "validation_passed": rule_result.validation_passed,
