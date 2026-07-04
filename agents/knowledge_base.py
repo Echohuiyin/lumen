@@ -5,7 +5,7 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_display
-from config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
+from llm_config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
 from graph.rn_state import MaintenanceWorkflowState
 from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
 

@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.tool_expert import tool_expert_node, _extract_vmcore_paths, _resolve_file_path
 from agents.llm_display import get_expert_output_file, ensure_output_dir
-from config import load_config, get_llm_with_config, load_prompt_from_file
+from llm_config import load_config, get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
 
 # 默认测试文件路径

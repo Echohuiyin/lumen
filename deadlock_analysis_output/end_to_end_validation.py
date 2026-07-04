@@ -26,7 +26,7 @@ script_dir = Path(__file__).resolve().parent
 project_root = script_dir.parent
 sys.path.insert(0, str(project_root))
 
-from config import load_config
+from llm_config import load_config
 from graph.rn_state import make_initial_state
 from graph.rn_workflow import build_maintenance_workflow
 

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from agents.kernel_tools import create_kernel_tools, create_directory, write_file, read_file, compile_module, check_file_exists
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
-from config import get_llm_with_config, load_config
+from llm_config import get_llm_with_config, load_config
 
 
 def test_kernel_tools_basic():

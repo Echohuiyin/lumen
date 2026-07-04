@@ -5,7 +5,7 @@ import re
 from agents.contracts import ValidationResultContract, model_to_dict
 from agents.input_artifacts import parse_input_artifacts
 from agents.llm_display import call_llm_with_persistence, _print_agent_header, _print_agent_footer, GREEN, YELLOW, _c
-from config import get_llm_with_config, load_config, load_prompt_from_file
+from llm_config import get_llm_with_config, load_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
 

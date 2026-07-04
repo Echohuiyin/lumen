@@ -4,7 +4,7 @@ from pathlib import Path
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_persistence
-from config import get_llm_with_config, load_prompt_from_file
+from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
 

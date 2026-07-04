@@ -16,7 +16,7 @@ from agents.llm_display import call_llm_with_persistence, call_llm_with_display,
 from agents.qemu_tools import create_qemu_tools
 from agents.test_runner import run_qemu_test_plan
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
-from config import get_llm_with_config, load_prompt_from_file
+from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
 

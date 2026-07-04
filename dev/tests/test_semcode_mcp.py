@@ -21,7 +21,7 @@ sys.path.insert(0, str(project_root))
 
 from agents.backends import ClaudeCodeBackend
 from agents.input_artifacts import parse_input_artifacts
-from config import load_config
+from llm_config import load_config
 
 
 def _get_semcode_config() -> dict | None:

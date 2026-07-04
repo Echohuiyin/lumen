@@ -6,7 +6,7 @@ from datetime import datetime
 from langgraph.checkpoint.memory import MemorySaver
 
 from agents.session import create_session_dir
-from config import load_config
+from llm_config import load_config
 from project import format_user_input, parse_input_file
 from graph.rn_state import make_initial_state
 from graph.rn_workflow import build_maintenance_workflow

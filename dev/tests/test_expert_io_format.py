@@ -30,7 +30,7 @@ def test_validator_io_format():
     test_header("Validator: I/O Format")
 
     from agents.validator import validator_node
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -65,7 +65,7 @@ def test_pm_io_format():
     test_header("PM: I/O Format")
 
     from agents.pm import pm_node
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -101,7 +101,7 @@ def test_kernel_expert_io_format():
 
     from agents.kernel_expert import kernel_expert_node
     from agents.kernel_tools import create_kernel_tools
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -147,7 +147,7 @@ def test_tool_expert_crash_analysis():
     test_header("Tool Expert: crash_analysis")
 
     from agents.tool_expert import tool_expert_node, _extract_vmcore_paths
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -183,7 +183,7 @@ def test_tool_expert_lock_analysis():
     test_header("Tool Expert: lock_analysis")
 
     from agents.tool_expert import tool_expert_node
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -213,7 +213,7 @@ def test_tool_expert_kernel_log_analysis():
     test_header("Tool Expert: kernel_log_analysis")
 
     from agents.tool_expert import tool_expert_node
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -243,7 +243,7 @@ def test_tool_expert_knowledge_search():
     test_header("Tool Expert: knowledge_search")
 
     from agents.tool_expert import tool_expert_node
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 
@@ -325,7 +325,7 @@ def test_knowledge_base_io_format():
     test_header("Knowledge Base: I/O Format")
 
     from agents.knowledge_base import knowledge_base_node
-    from config import load_config
+    from llm_config import load_config
 
     config = load_config("maintenance_config.json")
 

@@ -23,7 +23,7 @@ aicrasher_path = project_root / "Analysis-SKILL" / "src"
 if str(aicrasher_path) not in sys.path:
     sys.path.insert(0, str(aicrasher_path))
 
-from config import load_config, get_llm_with_config
+from llm_config import load_config, get_llm_with_config
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 
 

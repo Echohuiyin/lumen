@@ -14,7 +14,7 @@ sys.path.insert(0, str(project_root))
 
 from agents.contracts import DetectionSignals, QemuRecipe, TestPlan, model_to_dict
 from agents.test_runner import _match_serial_signals, _warning_precedes_panic, run_qemu_test_plan
-from config import load_config
+from llm_config import load_config
 
 
 def test_missing_arch_blocks_without_guessing():

@@ -18,7 +18,7 @@ from agents.llm_display import (
     wait_for_hint,
 )
 from agents.test_runner import detect_kernel_type, normalize_target_arch
-from config import get_llm_with_config, load_prompt_from_file
+from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 from paths import PROJECT_ROOT, OUTPUT_DIR
 

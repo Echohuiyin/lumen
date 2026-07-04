@@ -37,7 +37,7 @@ from agents.pm import pm_node
 from agents.test_expert import test_expert_node as run_test_expert_node
 from agents.tool_expert import tool_expert_node
 from agents.validator import validator_node
-from config import load_config
+from llm_config import load_config
 from graph.rn_state import make_initial_state
 
 

@@ -218,7 +218,7 @@ def test_tool_calling_loop():
         from aicrasher.crash_session import CrashSessionManager
         from agents.crash_tools import create_crash_tools
         from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
-        from config import get_llm_with_config
+        from llm_config import get_llm_with_config
 
         # Get LLM config from environment or maintenance_config.json
         config_path = project_root / "maintenance_config.json"
