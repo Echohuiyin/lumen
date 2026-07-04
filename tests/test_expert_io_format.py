@@ -318,86 +318,6 @@ def test_expert_kernel_path_logic():
 
 
 # ============================================================
-# Evaluation Expert
-# ============================================================
-def test_evaluation_io_format():
-    """Test evaluation expert I/O format."""
-    test_header("Evaluation: I/O Format")
-
-    from agents.self_test.evaluation import evaluation_agent_node
-    from config import load_config
-
-    config = load_config("maintenance_config.json")
-
-    state = {
-        "fault_type": "nullptr",
-        "expected_fault": {
-            "description": "NULL pointer dereference",
-            "expected_panic": "kernel BUG at",
-            "expected_root_cause": "NULL pointer dereference",
-            "difficulty": "easy",
-        },
-        "kernel_analysis": "分析结果：crash_nullptr 模块的 crash_init 函数中存在 NULL 指针解引用",
-        "expert_results": [],
-        "config": config,
-        "config_path": "maintenance_config.json",
-    }
-
-    print("Input state keys:", list(state.keys()))
-
-    result = evaluation_agent_node(state)
-
-    print("\nOutput keys:", list(result.keys()))
-    score = result.get("evaluation_score", 0)
-    gaps = result.get("gaps_found", [])
-    print(f"Evaluation score: {score}")
-    print(f"Gaps found: {gaps}")
-
-    assert "evaluation_score" in result, "Missing evaluation_score"
-    assert isinstance(result["evaluation_score"], int), "evaluation_score not int"
-    assert "gaps_found" in result, "Missing gaps_found"
-    print("✓ Evaluation I/O format OK")
-
-
-# ============================================================
-# Improvement Expert
-# ============================================================
-def test_improvement_io_format():
-    """Test improvement expert I/O format."""
-    test_header("Improvement: I/O Format")
-
-    from agents.self_test.improvement import improvement_agent_node
-    from config import load_config
-
-    config = load_config("maintenance_config.json")
-
-    state = {
-        "fault_type": "nullptr",
-        "evaluation_score": 85,
-        "target_score": 90,
-        "gaps_found": ["分析路径依赖单一数据源", "历史知识库利用不足"],
-        "kernel_analysis": "分析结果...",
-        "config": config,
-        "config_path": "maintenance_config.json",
-    }
-
-    print("Input state keys:", list(state.keys()))
-
-    result = improvement_agent_node(state)
-
-    print("\nOutput keys:", list(result.keys()))
-    report = result.get("improvement_report", "")
-    should_continue = result.get("should_continue", False)
-    print(f"Should continue: {should_continue}")
-    print(f"Report ({len(report)} chars): {report[:200]}...")
-
-    assert "improvement_report" in result, "Missing improvement_report"
-    assert "should_continue" in result, f"Missing should_continue, got keys: {list(result.keys())}"
-    assert isinstance(result["should_continue"], bool), "should_continue not bool"
-    print("✓ Improvement I/O format OK")
-
-
-# ============================================================
 # Knowledge Base Expert
 # ============================================================
 def test_knowledge_base_io_format():
@@ -443,8 +363,6 @@ def main():
         ("knowledge_search", test_tool_expert_knowledge_search),
         ("qemu_tools", test_expert_qemu_tools),
         ("kernel_path", test_expert_kernel_path_logic),
-        ("evaluation", test_evaluation_io_format),
-        ("improvement", test_improvement_io_format),
         ("knowledge_base", test_knowledge_base_io_format),
     ]
 
