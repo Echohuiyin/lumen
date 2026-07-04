@@ -1,0 +1,6 @@
+问题描述: 内核发生 Mutex ABBA 死锁导致 hung_task panic。两个线程以相反顺序获取两个 mutex，形成死锁。
+故障类型: deadlock
+vmcore 文件: ./test_case/vmcore.elf
+vmlinux 文件: ./test_case/vmlinux
+boot_kernel 文件: ./test_case/bzImage
+kernel_source 文件: ~/linux_mainline/linux
