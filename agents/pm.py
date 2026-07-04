@@ -3,7 +3,7 @@ from pathlib import Path
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.llm_display import call_llm_with_persistence
+from agents.llm_display import call_llm_with_persistence, set_session_dir
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 
@@ -14,6 +14,7 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
     1. 分析用户问题，判断需要哪些工具专家参与
     2. 创建 issue（打桩）
     """
+    set_session_dir(state.get("session_dir"))
     config = state.get("config", {})
     experts_config = config.get("tool_experts", [])
 

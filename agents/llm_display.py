@@ -122,26 +122,56 @@ def _format_agent_footer_text(agent: str) -> str:
     return "\n▲ 输出结束\n"
 
 
-# 输出目录：用于存储工具专家的独立输出文件
-OUTPUT_DIR = Path("/tmp/lumen_outputs")
+# ── Session-aware output directories ────────────────────────────────────
+# When _session_dir is set (by a node function), all outputs go into
+# session_dir/outputs/ instead of the default locations.
+_session_dir: Path | None = None
+
+
+def set_session_dir(path: str | Path | None) -> None:
+    """Override output directories to a per-session path."""
+    global _session_dir
+    _session_dir = Path(path) if path else None
+
+
+def _get_output_dir() -> Path:
+    """Return the active expert output directory (session-aware)."""
+    if _session_dir:
+        d = _session_dir / "outputs"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return Path("/tmp/lumen_outputs")
+
+
+def _get_persist_base_dir() -> Path:
+    """Return the active persistence base directory (session-aware)."""
+    if _session_dir:
+        d = _session_dir / "persist"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return Path("outputs")
+
 
 
 def ensure_output_dir() -> Path:
     """确保输出目录存在。"""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    return OUTPUT_DIR
+    d = _get_output_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def get_expert_output_file(expert_type: str) -> Path:
-    """获取专家输出文件路径。"""
-    return OUTPUT_DIR / f"{expert_type}.txt"
+    """获取专家输出文件路径（session-aware）。"""
+    return _get_output_dir() / f"{expert_type}.txt"
 
 
 def clear_output_dir() -> None:
     """清空输出目录（每次 workflow 开始时调用）。"""
-    if OUTPUT_DIR.exists():
-        for f in OUTPUT_DIR.glob("*.txt"):
+    d = _get_output_dir()
+    if d.exists():
+        for f in d.glob("*.txt"):
             f.unlink()
+
 
 
 def call_llm_with_display(
@@ -179,7 +209,7 @@ def call_llm_with_display(
         if output_file is None:
             # 使用默认文件名
             safe_name = agent.replace(" ", "_").replace("/", "_")
-            output_file = OUTPUT_DIR / f"{safe_name}.txt"
+            output_file = _get_output_dir() / f"{safe_name}.txt"
 
         # 写入 header
         header = _format_agent_header_text(agent, phase)
@@ -306,9 +336,15 @@ def display_expert_outputs(expert_results: list) -> None:
 
 # ===== Human hint injection support =====
 
-HINT_FILE = OUTPUT_DIR / "kernel_expert.hint"
-HINT_REVIEW_FILE = OUTPUT_DIR / "hint_review.md"
-HINT_CONTINUE_FILE = OUTPUT_DIR / "kernel_expert.continue"
+def _hint_file() -> Path:
+    return _get_output_dir() / "kernel_expert.hint"
+
+def _hint_review_file() -> Path:
+    return _get_output_dir() / "hint_review.md"
+
+def _hint_continue_file() -> Path:
+    return _get_output_dir() / "kernel_expert.continue"
+
 DEFAULT_HINT_WAIT_SECONDS = 120
 
 
@@ -328,9 +364,9 @@ def wait_for_hint(timeout_seconds: int = DEFAULT_HINT_WAIT_SECONDS) -> str:
     interval = 2
     elapsed = 0
     while elapsed < timeout_seconds:
-        if HINT_CONTINUE_FILE.exists():
+        if _hint_continue_file().exists():
             try:
-                HINT_CONTINUE_FILE.unlink()
+                _hint_continue_file().unlink()
             except Exception:
                 pass
             return ""
@@ -358,7 +394,7 @@ def write_hint_review_pack(
     parts: list[str] = []
     parts.append("# 内核专家人审阅包\n")
     parts.append("如需注入关键思路，写入以下文件后 workflow 会自动拾取并重跑内核专家：\n")
-    parts.append(f"```\necho \"你的思路\" > {HINT_FILE}\n```\n")
+    parts.append(f"```\necho \"你的思路\" > {_hint_file()}\n```\n")
     parts.append("注入后本轮只重跑一次。不写则正常流转到测试专家。\n")
     parts.append("\n---\n")
 
@@ -412,8 +448,8 @@ def write_hint_review_pack(
     parts.append("\n## 内核专家第 1 轮输出（完整原文）\n\n")
     parts.append(kernel_expert_output + "\n")
 
-    HINT_REVIEW_FILE.write_text("\n".join(parts), encoding="utf-8")
-    return HINT_REVIEW_FILE
+    _hint_review_file().write_text("\n".join(parts), encoding="utf-8")
+    return _hint_review_file()
 
 
 def read_and_consume_hint() -> str:
@@ -423,20 +459,20 @@ def read_and_consume_hint() -> str:
     the next retry cycle doesn't re-inject the same hint. Returns "" when no
     hint is pending.
     """
-    if not HINT_FILE.exists():
+    if not _hint_file().exists():
         return ""
     try:
-        content = HINT_FILE.read_text(encoding="utf-8").strip()
+        content = _hint_file().read_text(encoding="utf-8").strip()
     except Exception:
         return ""
     if not content:
         try:
-            HINT_FILE.unlink()
+            _hint_file().unlink()
         except Exception:
             pass
         return ""
     try:
-        HINT_FILE.unlink()
+        _hint_file().unlink()
     except Exception:
         pass
     return content
@@ -454,9 +490,9 @@ AGENT_DIR_MAP = {
 
 
 def get_persist_dir(base_dir: Path | None = None) -> Path:
-    """获取持久化输出目录。"""
+    """获取持久化输出目录（session-aware）。"""
     if base_dir is None:
-        base_dir = Path("outputs")
+        base_dir = _get_persist_base_dir()
     base_dir.mkdir(parents=True, exist_ok=True)
     return base_dir
 
@@ -543,7 +579,12 @@ def call_llm_with_persistence(
 
     # 自动持久化输出
     if persist_dir is None:
-        persist_dir = Path("outputs")
+        persist_dir = _get_persist_base_dir()
+    else:
+        # When a session dir is active, override explicit persist_dir too
+        session_base = _get_persist_base_dir()
+        if session_base != Path("outputs"):
+            persist_dir = session_base
 
     try:
         saved_file = _persist_agent_output(

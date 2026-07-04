@@ -3,7 +3,7 @@
 所有路径基于 PROJECT_ROOT 动态解析，避免硬编码。
 
 可通过环境变量覆盖默认路径：
-    LUMEN_OUTPUT_DIR    复现器输出目录（默认 outputs/）
+    LUMEN_OUTPUT_DIR    复现器输出目录（默认 outputs/，session 模式下为 session_dir/reproducers/）
 """
 
 from pathlib import Path
@@ -12,10 +12,35 @@ import os
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent
 
-# 复现器输出目录（可通过环境变量覆盖）
-_OUTPUT_DIR_OVERRIDE = os.environ.get("LUMEN_OUTPUT_DIR")
-OUTPUT_DIR = Path(_OUTPUT_DIR_OVERRIDE) if _OUTPUT_DIR_OVERRIDE else (PROJECT_ROOT / "outputs")
-OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# ── Session-aware output directory ──────────────────────────────────────
+_session_dir: Path | None = None
+
+
+def set_session_dir(path: str | Path | None) -> None:
+    """Override output directories to a per-session path."""
+    global _session_dir
+    _session_dir = Path(path) if path else None
+
+
+def get_output_dir() -> Path:
+    """Return the active output directory for reproducer files (session-aware)."""
+    if _session_dir:
+        d = _session_dir / "reproducers"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+    return _get_static_output_dir()
+
+
+def _get_static_output_dir() -> Path:
+    """Return the static (non-session) output directory."""
+    override = os.environ.get("LUMEN_OUTPUT_DIR")
+    d = Path(override) if override else (PROJECT_ROOT / "outputs")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# Legacy constant — prefer get_output_dir() for session-aware code.
+OUTPUT_DIR = _get_static_output_dir()
 
 # Analysis-SKILL 子模块路径（git submodule）
 ANALYSIS_SKILL_PATH = PROJECT_ROOT / "Analysis-SKILL"

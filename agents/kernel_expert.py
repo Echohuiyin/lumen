@@ -10,6 +10,7 @@ from agents.contracts import KernelExpertOutput, model_to_dict
 from agents.llm_display import (
     call_llm_with_persistence,
     display_expert_outputs,
+    set_session_dir,
     get_expert_output_file,
     ensure_output_dir,
     _format_agent_header_text,
@@ -20,7 +21,8 @@ from agents.llm_display import (
 from agents.test_runner import detect_kernel_type, normalize_target_arch
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
-from paths import PROJECT_ROOT, OUTPUT_DIR
+from paths import PROJECT_ROOT, get_output_dir as paths_get_output_dir
+import paths as _paths  # for set_session_dir
 
 
 def _write_tool_call_output(output_file: str, content: str, expert_name: str):
@@ -215,7 +217,7 @@ def _run_kernel_expert_with_claude_code(
         context_info = f"""Kernel expert runtime environment:
 
 - Home directory: {home_dir} (use this in paths, NOT /root)
-- Output directory (your current workdir): {OUTPUT_DIR} — ALL reproducer files MUST be created under this directory
+- Output directory (your current workdir): {paths_get_output_dir()} — ALL reproducer files MUST be created under this directory
 - Host kernel: {os.uname().release} / arch {os.uname().machine} (host kernel is for compile toolchain only, NOT for module compilation target)
 - Host kernel headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
 - Target kernel source for module compilation: {target_kernel_dir or '(not detected — ask user or use boot_kernel_path-derived dir)'}
@@ -239,7 +241,7 @@ def _run_kernel_expert_with_claude_code(
         add_dirs = [target_kernel_dir] if target_kernel_dir else None
         response = llm.invoke(
             messages,
-            workdir=str(OUTPUT_DIR),
+            workdir=str(paths_get_output_dir()),
             add_dirs=add_dirs,
         )
 
@@ -272,6 +274,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     通过工具调用机制实际创建文件和编译验证模块。
     """
+    session_dir = state.get("session_dir")
+    set_session_dir(session_dir)
+    _paths.set_session_dir(session_dir)
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("kernel_expert", {})
     default_config = config.get("default", {})
@@ -392,7 +397,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # Snapshot the mtime of the newest reproducer dir BEFORE the CLI runs,
     # so the max_turns recovery path can distinguish files the agent wrote
     # during this invocation from stale dirs left over by a previous case.
-    cli_start_mtime = _newest_reproducer_mtime(OUTPUT_DIR)
+    cli_start_mtime = _newest_reproducer_mtime(paths_get_output_dir())
     try:
         response = _run_kernel_expert_with_claude_code(
             llm=llm,
@@ -558,7 +563,7 @@ def _parse_kernel_expert_response(
     if not text:
         text = _generate_fallback_analysis(expert_results, input_artifacts, state)
         # Search for actual reproducer files
-        outputs_dir = OUTPUT_DIR
+        outputs_dir = paths_get_output_dir()
         reproducer_dir, test_script_path, reproducer_module_path, _ = _find_actual_reproducer_path(outputs_dir)
         fallback_arch = normalize_target_arch(os.uname().machine)
         fallback_boot = (
@@ -817,7 +822,7 @@ def _recover_reproducer_from_outputs(
     timestamp (i.e. during the current CLI invocation) to avoid picking up
     a stale dir from a previous case.
     """
-    outputs_dir = OUTPUT_DIR
+    outputs_dir = paths_get_output_dir()
     reproducer_dir, test_script_path, reproducer_module_path, expected_signal = (
         _find_actual_reproducer_path(outputs_dir, min_mtime=min_mtime)
     )
@@ -893,7 +898,7 @@ def _generate_auto_contract_fields(
             fields["boot_kernel_path"] = boot
 
     # Search for actual reproducer files
-    outputs_dir = OUTPUT_DIR
+    outputs_dir = paths_get_output_dir()
     reproducer_dir, test_script_path, reproducer_module_path, test_signal = _find_actual_reproducer_path(outputs_dir)
 
     if reproducer_dir and not contract.reproducer_dir:

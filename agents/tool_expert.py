@@ -10,7 +10,7 @@ import re
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from agents.contracts import ToolExpertOutput, model_to_dict
-from agents.llm_display import call_llm_with_display, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
+from agents.llm_display import call_llm_with_display, set_session_dir, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.rag_integration import get_rag_context_for_query
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
@@ -543,6 +543,7 @@ def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     使用静默模式执行，输出写入独立文件，避免并行输出交错。
     """
+    set_session_dir(state.get("session_dir"))
     expert_type = state["expert_type"]
     config = state.get("config", {})
     user_input = state.get("user_input", "")

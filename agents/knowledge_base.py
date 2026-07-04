@@ -4,7 +4,7 @@ from datetime import datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from agents.llm_display import call_llm_with_display
+from agents.llm_display import call_llm_with_display, set_session_dir
 from llm_config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
 from graph.rn_state import MaintenanceWorkflowState
 from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
@@ -12,6 +12,7 @@ from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
 
 def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     """知识库生成 agent：将问题总结并形成知识库文件进行归档，并自动导入 Chroma 向量数据库。"""
+    set_session_dir(state.get("session_dir"))
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("knowledge_base", {})
     default_config = config.get("default", {})

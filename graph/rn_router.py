@@ -29,6 +29,7 @@ def route_after_pm(state: MaintenanceWorkflowState):
             "input_artifacts_contract": state.get("input_artifacts_contract", {}),
             "config": state.get("config", {}),
             "config_path": state.get("config_path", ""),
+            "session_dir": state.get("session_dir", ""),
         })
         for expert_type in required_experts
     ]

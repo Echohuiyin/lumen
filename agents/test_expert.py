@@ -12,7 +12,7 @@ import os
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from agents.contracts import DetectionSignals, QemuRecipe, TestPlan, model_to_dict
-from agents.llm_display import call_llm_with_persistence, call_llm_with_display, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
+from agents.llm_display import call_llm_with_persistence, call_llm_with_display, set_session_dir, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.qemu_tools import create_qemu_tools
 from agents.test_runner import run_qemu_test_plan
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
@@ -374,6 +374,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     通过工具调用机制实际执行 QEMU 测试验证。
     """
+    set_session_dir(state.get("session_dir"))
     config = state.get("config", {})
     current_attempts = state.get("test_attempts", 0) + 1
     max_attempts = config.get("workflow", {}).get("max_test_attempts", 3)
