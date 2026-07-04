@@ -137,7 +137,7 @@ def set_session_dir(path: str | Path | None) -> None:
 def _get_output_dir() -> Path:
     """Return the active expert output directory (session-aware)."""
     if _session_dir:
-        d = _session_dir / "outputs"
+        d = _session_dir
         d.mkdir(parents=True, exist_ok=True)
         return d
     return Path("/tmp/lumen_outputs")
@@ -146,9 +146,7 @@ def _get_output_dir() -> Path:
 def _get_persist_base_dir() -> Path:
     """Return the active persistence base directory (session-aware)."""
     if _session_dir:
-        d = _session_dir / "persist"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return _session_dir
     return Path("outputs")
 
 

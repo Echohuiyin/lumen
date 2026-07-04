@@ -52,10 +52,10 @@ Create `input.txt` (see `input.txt.template`):
 
 ```text
 Bug Promote: 内核发生 Mutex ABBA 死锁导致 hung_task panic。两个线程以相反顺序获取两个 mutex，形成死锁。
-vmcore 文件: ./outputs/deadlock/vmcore.elf
-vmlinux 文件: ./outputs/deadlock/vmlinux
-boot_kernel 文件: ./outputs/deadlock/bzImage
-kernel_source 文件: /home/zouyipeng/workspace/linux_mainline/linux
+vmcore: ./outputs/deadlock/vmcore.elf
+vmlinux: ./outputs/deadlock/vmlinux
+boot_kernel: ./outputs/deadlock/bzImage
+kernel_source: /home/zouyipeng/workspace/linux_mainline/linux
 ```
 
 Only `Bug Promote` is required — paths are optional but improve analysis quality.

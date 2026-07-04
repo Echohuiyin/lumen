@@ -25,9 +25,7 @@ def set_session_dir(path: str | Path | None) -> None:
 def get_output_dir() -> Path:
     """Return the active output directory for reproducer files (session-aware)."""
     if _session_dir:
-        d = _session_dir / "reproducers"
-        d.mkdir(parents=True, exist_ok=True)
-        return d
+        return _session_dir
     return _get_static_output_dir()
 
 
