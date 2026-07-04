@@ -23,6 +23,9 @@ class MaintenanceWorkflowState(TypedDict):
     # 配置
     config_path: str
     config: dict
+    # 会话
+    session_id: str
+    session_dir: str
     # 用户输入
     user_input: str
     execution_mode: str               # 固定为 "real"，实际执行测试
@@ -62,17 +65,26 @@ class MaintenanceWorkflowState(TypedDict):
     final_response: str
 
 
-def make_initial_state(user_input: str = "", config_path: str = "config.json") -> dict:
+def make_initial_state(
+    user_input: str = "",
+    config_path: str = "config.json",
+    session_id: str = "",
+    session_dir: str = "",
+) -> dict:
     """Create a MaintenanceWorkflowState dict with sensible defaults.
 
     Args:
         user_input: 用户输入的问题描述
         config_path: 配置文件路径
+        session_id: 会话 ID
+        session_dir: 会话目录路径
     """
     return {
         "messages": [],
         "config_path": config_path,
         "config": {},
+        "session_id": session_id,
+        "session_dir": session_dir,
         "user_input": user_input,
         "execution_mode": "real",  # 固定为实际执行模式
         "validation_passed": False,

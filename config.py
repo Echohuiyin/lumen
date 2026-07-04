@@ -31,6 +31,63 @@ CLAUDE_CODE_ALLOWED = {"kernel_expert"}
 DEFAULT_CONFIG_PATH = "config.json"
 LEGACY_CONFIG_PATH = "maintenance_config.json"
 
+# ---------------------------------------------------------------------------
+# Code-side defaults — these are baked into the binary so config.json only
+# needs the bare essentials (api_key, base_url, model_name).
+# ---------------------------------------------------------------------------
+
+AGENT_DEFAULTS: dict[str, dict] = {
+    "validator": {
+        "prompt_file": "prompts/validator.md",
+    },
+    "pm": {
+        "prompt_file": "prompts/pm.md",
+    },
+    "kernel_expert": {
+        "backend": "claude_code",
+        "cli_command": "claude",
+        "model": "sonnet",
+        "cli_timeout": 600,
+        "permission_mode": "bypassPermissions",
+        "max_turns": 100,
+        "settings_file": "~/.claude/settings.json",
+        "prompt_file": "prompts/kernel_expert.md",
+    },
+    "test_expert": {
+        "prompt_file": "prompts/test_expert.md",
+    },
+    "knowledge_base": {
+        "prompt_file": "prompts/knowledge_base.md",
+    },
+}
+
+TOOL_EXPERT_DEFAULTS: list[dict] = [
+    {
+        "type": "knowledge_search",
+        "name": "历史知识库搜索专家",
+        "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
+        "prompt_file": "prompts/knowledge_search.md",
+    },
+    {
+        "type": "lock_analysis",
+        "name": "锁分析专家",
+        "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
+        "prompt_file": "prompts/lock_analysis.md",
+    },
+    {
+        "type": "crash_analysis",
+        "name": "Crash分析专家",
+        "description": "分析 vmcore/crash 日志，定位崩溃原因和调用栈",
+        "prompt_file": "prompts/crash_analysis.md",
+    },
+    {
+        "type": "kernel_log_analysis",
+        "name": "内核日志分析专家",
+        "description": "分析内核日志，提取关键错误信息和异常模式",
+        "prompt_file": "prompts/kernel_log_analysis.md",
+    },
+]
+
 
 def load_claude_settings(settings_file: str | None = None) -> dict:
     """Load Claude Code settings from ~/.claude/settings.json.
@@ -227,6 +284,21 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
         return {}
 
     config = _normalize_tool_experts_config(json.loads(p.read_text(encoding="utf-8")))
+
+    # ── Merge code-side defaults for agents & tool_experts ──────────────
+    # config.json only needs default + workflow; per-agent configs and tool
+    # expert definitions are baked into code.
+    config.setdefault("agents", {})
+    for name, agent_cfg in AGENT_DEFAULTS.items():
+        if name not in config["agents"] or not isinstance(config["agents"][name], dict):
+            config["agents"][name] = dict(agent_cfg)  # shallow copy
+        else:
+            # Fill in any missing keys from default (user-provided keys take priority)
+            for k, v in agent_cfg.items():
+                config["agents"][name].setdefault(k, v)
+
+    if not config.get("tool_experts"):
+        config["tool_experts"] = [{**d, "agent": {"prompt_file": d["prompt_file"]}} for d in TOOL_EXPERT_DEFAULTS]
 
     # Fill empty LLM config from Claude settings
     if fallback_to_claude_settings:

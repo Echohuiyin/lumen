@@ -17,7 +17,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     default_config = config.get("default", {})
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="knowledge_base")
     system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/maintenance/knowledge_base.md")
+        agent_config.get("prompt_file", "prompts/knowledge_base.md")
     )
 
     # 汇总所有分析结果

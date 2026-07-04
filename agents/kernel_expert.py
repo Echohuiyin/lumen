@@ -294,7 +294,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="kernel_expert")
     system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/maintenance/kernel_expert.md")
+        agent_config.get("prompt_file", "prompts/kernel_expert.md")
     )
 
     # 汇总所有工具专家的分析结果

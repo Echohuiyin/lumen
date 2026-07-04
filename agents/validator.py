@@ -42,7 +42,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
     default_config = config.get("default", {})
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="validator")
     system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/maintenance/validator.md")
+        agent_config.get("prompt_file", "prompts/validator.md")
     )
 
     user_content = f"用户输入:\n{state['user_input']}"

@@ -34,7 +34,7 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
     default_config = config.get("default", {})
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="pm")
     system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/maintenance/pm.md")
+        agent_config.get("prompt_file", "prompts/pm.md")
     )
 
     # 构建可用专家列表信息
