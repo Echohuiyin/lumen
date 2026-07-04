@@ -28,6 +28,9 @@ build/
 # LangGraph
 .langgraph_api/
 
+# Session output directories (workflow agent output files)
+sessions/
+
 # test / runtime artifacts
 _test_tmp.txt
 outputs/

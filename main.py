@@ -1,9 +1,11 @@
 import argparse
 import logging
 import uuid
+from datetime import datetime
 
 from langgraph.checkpoint.memory import MemorySaver
 
+from agents.session import create_session_dir
 from project import format_user_input, load_config, parse_input_file
 from graph.rn_state import make_initial_state
 from graph.rn_workflow import build_maintenance_workflow
@@ -26,6 +28,11 @@ def main():
         default="config.json",
         help="工作流配置文件路径（默认 config.json）",
     )
+    parser.add_argument(
+        "--session-id",
+        default=None,
+        help="Session ID（默认自动生成）",
+    )
     args = parser.parse_args()
 
     # 解析 input.txt 获取结构化字段
@@ -45,6 +52,12 @@ def main():
     # 加载配置
     config = load_config(args.config)
 
+    # ── 初始化 Session ───────────────────────────────────────────────────
+    session_id = args.session_id or (
+        datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    )
+    session_dir = create_session_dir(session_id)
+
     graph = build_maintenance_workflow(checkpointer=MemorySaver())
     thread_id = str(uuid.uuid4())
     run_config = {"configurable": {"thread_id": thread_id}}
@@ -52,16 +65,16 @@ def main():
     initial_state = make_initial_state(
         user_input=user_input,
         config_path=args.config,
+        session_id=session_id,
+        session_dir=str(session_dir),
     )
 
     print(f"\n{'=' * 60}")
-    print(f"维护接口人工作流")
-    print(f"输入文件: {args.input_file}")
-    print(f"配置: {args.config}")
-    print(f"{'=' * 60}")
-    print(f"\n--- 用户输入 ---")
-    print(user_input)
-    print(f"---\n")
+    print(f"  维护接口人工作流")
+    print(f"  输入文件: {args.input_file}")
+    print(f"  配置: {args.config}")
+    print(f"  Session: {session_id}")
+    print(f"{'=' * 60}\n")
 
     result = graph.invoke(initial_state, run_config)
 
@@ -76,6 +89,8 @@ def main():
         print(result["final_response"])
     else:
         print("工作流已完成，但未生成最终回复。")
+
+    print(f"\nSession 文件: {session_dir}/")
 
 
 if __name__ == "__main__":
