@@ -1,6 +1,7 @@
 # local env files
 .env*
 config.yaml
+config.json
 maintenance_config.json
 AGENTS.md
 

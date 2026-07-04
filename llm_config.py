@@ -151,7 +151,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
     depending on the 'backend' field in config.
     """
     defaults = default_config or {}
-    backend = agent_config.get("backend") or defaults.get("backend", "openai")
+    backend = agent_config.get("backend") or defaults.get("backend", "anthropic")
 
     # Validate backend type for automation agents
     if agent_name:
@@ -299,6 +299,17 @@ def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> d
 
     if not config.get("tool_experts"):
         config["tool_experts"] = [{**d, "agent": {"prompt_file": d["prompt_file"]}} for d in TOOL_EXPERT_DEFAULTS]
+
+    # ── Normalise flat config (no "default" wrapper) ────────────────────
+    # config.json.template from Maintenance uses a flat layout:
+    #   { "api_key": "…", "base_url": "…", "model_name": "…",
+    #     "temperature": 0, "workflow": {…} }
+    # Promote those top-level keys into a "default" sub-dict.
+    if "default" not in config:
+        flat_keys = {"api_key", "base_url", "model_name", "temperature", "backend", "settings_file"}
+        promoted = {k: config.pop(k) for k in list(config.keys()) if k in flat_keys}
+        if promoted:
+            config["default"] = promoted
 
     # Fill empty LLM config from Claude settings
     if fallback_to_claude_settings:
