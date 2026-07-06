@@ -176,14 +176,7 @@ def test_config_parses_after_env_resolution():
 
     config = load_config(str(config_path))
 
-    # Verify kernel paths are absolute and valid
-    kernel = config.get("kernel", {})
-    source_dir = kernel.get("source_dir", "")
-    assert source_dir, "kernel.source_dir should be set"
-    assert source_dir.startswith("/"), f"kernel.source_dir should be absolute, got: {source_dir}"
-    assert "${" not in source_dir, f"kernel.source_dir still has unresolved vars: {source_dir}"
-
-    # Verify semcode paths
+    # Verify semcode paths with nested env vars are resolved
     ke = config.get("agents", {}).get("kernel_expert", {})
     semcode = ke.get("semcode_mcp", {})
     if semcode:
@@ -260,8 +253,8 @@ def test_resolve_env_vars_unresolved_strict():
         pass
 
 
-def test_config_resolves_kernel_paths():
-    """config.json must resolve kernel paths to absolute strings."""
+def test_config_resolves_semcode_paths():
+    """config.json must resolve semcode_mcp paths to absolute strings."""
     from llm_config import load_config
 
     config_path = PROJECT_ROOT / "config.json"
@@ -269,13 +262,8 @@ def test_config_resolves_kernel_paths():
         pytest.skip("No config.json found")
 
     config = load_config(str(config_path))
-    kernel = config.get("kernel", {})
-    assert kernel.get("source_dir", "").startswith("/"), \
-        f"kernel.source_dir must be absolute after resolution: {kernel.get('source_dir')}"
-    assert "${" not in kernel.get("source_dir", ""), \
-        f"kernel.source_dir has unresolved vars: {kernel.get('source_dir')}"
 
-    # semcode_mcp paths also resolved
+    # semcode_mcp paths with nested env vars must be resolved
     semcode = config.get("agents", {}).get("kernel_expert", {}).get("semcode_mcp", {})
     if semcode:
         cmd = semcode.get("command", "")

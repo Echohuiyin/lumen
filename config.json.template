@@ -10,57 +10,6 @@
     "temperature": 0,
     "http_timeout": 120
   },
-  "skills": {
-    "rag_case_retrieval": {
-      "path": "./skills/rag-case-retrieval",
-      "scripts": {
-        "retrieve": "scripts/retrieve_cases.py",
-        "import": "scripts/import_from_zip.py",
-        "check": "scripts/check_environment.py"
-      }
-    },
-    "vmcore_analyzer": {
-      "path": "./skills/vmcore-analyzer",
-      "scripts": {
-        "report_generator": "scripts/crash_report_generator.py"
-      }
-    },
-    "lock_analyzer": {
-      "path": "./skills/lock-analyzer"
-    },
-    "kernel_build": {
-      "path": "./skills/kernel-build"
-    },
-    "qemu_test": {
-      "path": "./skills/qemu-test",
-      "scripts": {
-        "create_initramfs": "scripts/create_initramfs.sh"
-      }
-    },
-    "kernel_testcase_generator": {
-      "path": "./skills/kernel-testcase-generator"
-    },
-    "kernel_test_validator": {
-      "path": "./skills/kernel-test-validator"
-    },
-    "jffs2_analyzer": {
-      "path": "./skills/jffs2-analyzer",
-      "scripts": {
-        "parser": "scripts/jffs2_parser.py"
-      }
-    },
-    "jffs2_fault_inject": {
-      "path": "./skills/jffs2-fault-inject",
-      "scripts": {
-        "injector": "scripts/jffs2_fault_injector.py"
-      }
-    }
-  },
-  "kernel": {
-    "source_dir": "${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}",
-    "vmlinux_path": "${KERNEL_VMLINUX:-${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}/vmlinux}",
-    "default_arch": "x86_64"
-  },
   "agents": {
     "validator": {
       "prompt_file": "prompts/validator.md"
@@ -127,6 +76,7 @@
     "output_dir": "knowledge_base"
   },
   "workflow": {
-    "max_test_attempts": 3
+    "max_test_attempts": 3,
+    "hint_wait_seconds": 120
   }
 }
