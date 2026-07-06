@@ -1237,27 +1237,49 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
             )
 
             # 2) Inject cyclical memory pressure before repro_c runs.
-            #    Matches the syzbot repro_c pattern: fork child (200MB rlimit)
-            #    → btrfs operations (5s) → kill → clean up → repeat.
-            #    Each wave: allocate 200M → create page cache → drop caches
-            #    to force reclaim → repeat. This creates continuous page
-            #    reclaim events that race with btrfs ordered extent I/O,
-            #    unlike a one-shot dd which grabs memory once and stays idle.
-            pressure_block = """echo "=== Starting cyclical memory pressure ==="
+            #    Two-phase approach matching syzbot repro_c's fork/kill
+            #    rhythm (RLIMIT_AS=200MB, 5s per child):
+            #
+            #    Phase A — pre-charge: run 3 pressure waves BEFORE starting
+            #    repro_c. This puts the system into page reclaim state so
+            #    that when btrfs operations begin, the race window between
+            #    I/O completion and ordered extent teardown is open from
+            #    the first operation, not after waiting for pressure to
+            #    build up.
+            #
+            #    Phase B — fork/kill cycle: instead of drop_caches (which
+            #    also flushes btrfs cache, potentially narrowing the race),
+            #    use async subprocess fork → kill → wait. Process exit
+            #    triggers kernel-side bulk page reclaim of that child's
+            #    file pages, matching how repro_c's child-exit reclaims
+            #    the 200MB RSS.
+            pressure_block = """echo "=== Memory pressure pre-charge ==="
 (
-  CYCLE_COUNT=0
+  dd if=/dev/zero of=/tmp/charge bs=1M count=200 2>/dev/null
+  dd if=/tmp/charge of=/dev/null bs=1M count=200 2>/dev/null
+  sleep 2
+  dd if=/dev/zero of=/tmp/charge2 bs=1M count=200 2>/dev/null
+  dd if=/tmp/charge2 of=/dev/null bs=1M count=200 2>/dev/null
+  sleep 2
+  rm -f /tmp/charge /tmp/charge2
+) &
+sleep 6
+
+echo "=== Starting fork-kill pressure cycle ==="
+(
   while true; do
-    CYCLE_COUNT=$((CYCLE_COUNT + 1))
-    # Phase 1: Allocate 200M file-backed pages (page cache)
-    dd if=/dev/zero of=/tmp/pressure_cycle bs=1M count=200 2>/dev/null
-    # Phase 2: Read back to populate clean page cache
-    dd if=/tmp/pressure_cycle of=/dev/null bs=1M count=200 2>/dev/null
-    # Phase 3: Drop caches to force page reclaim (simulates child exit)
-    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
-    sleep 2
+    (
+      dd if=/dev/zero of=/tmp/pressure_$$ bs=1M count=200 2>/dev/null
+      dd if=/tmp/pressure_$$ of=/dev/null bs=1M count=200 2>/dev/null
+      sleep 3
+    ) &
+    C=$!
+    sleep 5
+    kill $C 2>/dev/null
+    wait $C 2>/dev/null
   done
 ) &
-echo "Cyclical pressure started (200MB wave every ~4s)"
+echo "Fork-kill pressure running (200MB per cycle, 5s rhythm)"
 """
             # Insert pressure before a known reproducer-start marker
             marker_patterns = [
