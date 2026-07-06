@@ -1265,8 +1265,11 @@ echo "Cyclical pressure started (200MB wave every ~4s)"
                 r'^(cd /\n)',
                 r'^(# Run repro_c)',
                 r'^(# Run the syzbot reproducer)',
+                r'^(# Execute the trigger binary)',
                 r'^(\/bin\/repro_c)',
                 r'^(\/bin\/repro )',
+                r'^\s*(/bin/repro_c\b)',
+                r'^\s*(/bin/repro\b)',
             ]
             for pat in marker_patterns:
                 new_text, n = re.subn(pat, pressure_block + r'\1', script_text, count=1, flags=re.MULTILINE)
@@ -1325,6 +1328,33 @@ echo "Cyclical pressure started (200MB wave every ~4s)"
                 )
         except (OSError, ValueError) as exc:
             warnings.append(f"memory pressure injection skipped: {exc}")
+
+    # 4) Auto-detect binaries_dir from reproducer_dir if the contract
+    #    didn't set it (LLM often omits this marker/field). The
+    #    reproducer_dir typically contains compiled trigger programs
+    #    (repro_c.bin, uaf_trigger, etc.) that must be injected into
+    #    /bin inside the initramfs via create_initramfs --binaries.
+    #    Without this, test.sh reports "trigger binary not found".
+    binaries_dir = data.get("binaries_dir", "") or ""
+    reproducer_dir = data.get("reproducer_dir", "") or ""
+    if not binaries_dir and reproducer_dir:
+        try:
+            rd_path = Path(reproducer_dir)
+            if rd_path.is_dir():
+                has_executable = any(
+                    p.is_file() and os.access(p, os.X_OK)
+                    for p in rd_path.iterdir()
+                    if p.name not in {"Makefile", "test.sh"}
+                )
+                if has_executable:
+                    data["binaries_dir"] = reproducer_dir
+                    warnings.append(
+                        f"auto-filled binaries_dir='{reproducer_dir}' "
+                        f"(reproducer_dir has executables, LLM omitted marker)"
+                    )
+                    print(f"  [contract诊断] auto-filled binaries_dir from reproducer_dir", flush=True)
+        except Exception as exc:
+            warnings.append(f"binaries_dir auto-detect skipped: {exc}")
 
     data["warnings"] = warnings
     data["evidence"] = evidence
