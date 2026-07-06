@@ -3,7 +3,7 @@
 
 测试 validator, pm, kernel_expert, test_expert 的工具和脚本调用能力。
 
-使用 maintenance_config.json (openai backend) 确保工具调用支持。
+使用 config.json (openai backend) 确保工具调用支持。
 
 使用方法:
     python tests/test_agent_tool_calling.py
@@ -27,7 +27,7 @@ from llm_config import load_config, get_llm_with_config
 from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
 
 
-CONFIG_PATH = "maintenance_config.json"
+CONFIG_PATH = "config.json"
 
 
 def print_header(title: str):

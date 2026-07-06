@@ -1,4 +1,6 @@
 import json
+import os
+import re
 import sys
 from pathlib import Path
 
@@ -29,97 +31,11 @@ AUTOMATION_AGENTS = [
 CLAUDE_CODE_ALLOWED = {"kernel_expert"}
 
 DEFAULT_CONFIG_PATH = "config.json"
-LEGACY_CONFIG_PATH = "maintenance_config.json"
 
 # ---------------------------------------------------------------------------
 # Code-side defaults — these are baked into the binary so config.json only
 # needs the bare essentials (api_key, base_url, model_name).
 # ---------------------------------------------------------------------------
-
-AGENT_DEFAULTS: dict[str, dict] = {
-    "validator": {
-        "prompt_file": "prompts/validator.md",
-    },
-    "pm": {
-        "prompt_file": "prompts/pm.md",
-    },
-    "kernel_expert": {
-        "backend": "claude_code",
-        "cli_command": "claude",
-        "model": "sonnet",
-        "cli_timeout": 600,
-        "permission_mode": "bypassPermissions",
-        "max_turns": 100,
-        "settings_file": "~/.claude/settings.json",
-        "prompt_file": "prompts/kernel_expert.md",
-    },
-    "test_expert": {
-        "prompt_file": "prompts/test_expert.md",
-    },
-    "knowledge_base": {
-        "prompt_file": "prompts/knowledge_base.md",
-    },
-}
-
-TOOL_EXPERT_DEFAULTS: list[dict] = [
-    {
-        "type": "knowledge_search",
-        "name": "历史知识库搜索专家",
-        "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
-        "prompt_file": "prompts/knowledge_search.md",
-    },
-    {
-        "type": "lock_analysis",
-        "name": "锁分析专家",
-        "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
-        "prompt_file": "prompts/lock_analysis.md",
-    },
-    {
-        "type": "crash_analysis",
-        "name": "Crash分析专家",
-        "description": "分析 vmcore/crash 日志，定位崩溃原因和调用栈",
-        "prompt_file": "prompts/crash_analysis.md",
-    },
-    {
-        "type": "kernel_log_analysis",
-        "name": "内核日志分析专家",
-        "description": "分析内核日志，提取关键错误信息和异常模式",
-        "prompt_file": "prompts/kernel_log_analysis.md",
-    },
-]
-
-
-def load_claude_settings(settings_file: str | None = None) -> dict:
-    """Load Claude Code settings from ~/.claude/settings.json.
-
-    Returns env vars that can be used as LLM configuration fallback.
-    """
-    if settings_file:
-        settings_path = Path(settings_file).expanduser()
-    else:
-        settings_path = Path.home() / ".claude" / "settings.json"
-    if not settings_path.exists():
-        return {}
-
-    try:
-        settings = json.loads(settings_path.read_text(encoding="utf-8"))
-        env = settings.get("env", {})
-
-        # Map Claude settings env vars to LLM config format
-        model_name = (
-            env.get("ANTHROPIC_MODEL", "")
-            or settings.get("model", "")
-            or env.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "")
-            or env.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "")
-            or env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "")
-        )
-        return {
-            "api_key": env.get("ANTHROPIC_AUTH_TOKEN", ""),
-            "base_url": env.get("ANTHROPIC_BASE_URL", ""),
-            "model_name": model_name,
-        }
-    except Exception:
-        return {}
 
 
 def validate_agent_backend(agent_name: str, backend: str) -> None:
@@ -213,158 +129,90 @@ def load_prompt_from_file(path: str) -> str:
     return p.read_text(encoding="utf-8")
 
 
-def _normalize_tool_experts_config(config: dict) -> dict:
-    """Support legacy configs that store tool experts under agents.tool_expert."""
-    if config.get("tool_experts"):
-        return config
+def _resolve_env_vars(text: str) -> str:
+    """Resolve ${VAR:-default} and ${VAR} style environment variable references.
 
-    legacy_tool_experts = config.get("agents", {}).get("tool_expert", {})
-    if not isinstance(legacy_tool_experts, dict) or not legacy_tool_experts:
-        return config
+    Supports:
+      ${VAR}            — must be set, raises KeyError if unset
+      ${VAR:-default}   — uses VAR if set, else 'default'
+      ${VAR-default}    — uses VAR if set and non-empty, else 'default'
+      $HOME / $USER     — classic shell-style (simple form, no braced, only known
+                           vars to avoid false positives)
 
-    names = {
-        "knowledge_search": "历史知识库搜索专家",
-        "lock_analysis": "锁分析专家",
-        "crash_analysis": "Crash分析专家",
-        "kernel_log_analysis": "内核日志分析专家",
-    }
-    descriptions = {
-        "knowledge_search": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
-        "lock_analysis": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
-        "crash_analysis": "分析 Crash 日志，定位崩溃原因和调用栈",
-        "kernel_log_analysis": "分析内核日志，提取关键错误信息和异常模式",
-    }
+    Uses iterative substitution so nested ${A:-${B:-x}} resolves correctly.
+    The inner-most brace is resolved first on each pass.
+    """
+    # Known vars we allow for simple $VAR style (no braces)
+    _SIMPLE_VARS = {"HOME", "USER", "LUMEN_OUTPUT_DIR", "KERNEL_SOURCE_DIR",
+                    "SEMCODE_MCP_BIN", "CLAUDE_SETTINGS", "SEMCODE_DB_DIR"}
 
-    config["tool_experts"] = [
-        {
-            "type": expert_type,
-            "name": names.get(expert_type, expert_type),
-            "description": descriptions.get(expert_type, ""),
-            "agent": agent_config,
-        }
-        for expert_type, agent_config in legacy_tool_experts.items()
-        if isinstance(agent_config, dict)
-    ]
-    return config
+    def _resolve_simple(m: re.Match) -> str:
+        return os.environ.get(m.group(1), "")
+
+    def _replace_one_braced(m: re.Match) -> str:
+        """Replace the innermost ${...} that contains no nested braces."""
+        inner = m.group(1)
+        if ":-" in inner:
+            var, default = inner.split(":-", 1)
+            return os.environ.get(var.strip(), default.strip())
+        elif "-" in inner and not inner.startswith("-"):
+            var, default = inner.split("-", 1)
+            val = os.environ.get(var.strip())
+            return val if val else default.strip()
+        else:
+            var = inner.strip()
+            return os.environ[var]
+
+    result = text
+    # Iterate: on each pass, resolve only innermost (no nested braces) ${...}
+    prev = None
+    while result != prev:
+        prev = result
+        result = re.sub(
+            r"\$\{([^${}]+)\}",  # no braces inside
+            _replace_one_braced,
+            result,
+        )
+
+    # Simple $VAR style for known vars
+    result = re.sub(
+        r"(?<!\$)\$(?!\$|\{)(" + "|".join(_SIMPLE_VARS) + r")",
+        lambda m: os.environ.get(m.group(1), ""),
+        result,
+    )
+    return result
 
 
-def load_config(config_path: str, fallback_to_claude_settings: bool = True) -> dict:
-    """Load maintenance configuration JSON file.
+def load_config(config_path: str = DEFAULT_CONFIG_PATH) -> dict:
+    """Load configuration JSON file with environment variable resolution.
 
-    If config file has empty api_key/base_url/model_name, fallback to ~/.claude/settings.json.
+    Performs ${VAR} / ${VAR:-default} substitution from environment, then
+    parses JSON. No fallbacks — the config file must be complete and valid.
 
     Args:
-        config_path: Path to config JSON file
-        fallback_to_claude_settings: Whether to use Claude settings as fallback (default True)
+        config_path: Path to config JSON file (default "config.json")
 
     Returns:
-        Config dict with LLM settings resolved
+        Parsed config dict
+
+    Raises:
+        FileNotFoundError: if config file doesn't exist
+        ValueError: if config file has invalid JSON
     """
     p = Path(config_path) if Path(config_path).is_absolute() else PROJECT_ROOT / config_path
-    if (
-        not p.exists()
-        and not Path(config_path).is_absolute()
-        and config_path == LEGACY_CONFIG_PATH
-        and (PROJECT_ROOT / DEFAULT_CONFIG_PATH).exists()
-    ):
-        p = PROJECT_ROOT / DEFAULT_CONFIG_PATH
-
     if not p.exists():
-        # Config file doesn't exist, try to use Claude settings directly
-        if fallback_to_claude_settings:
-            claude_settings = load_claude_settings()
-            if claude_settings.get("api_key"):
-                return {
-                    "default": {
-                        "backend": "openai",
-                        **claude_settings,
-                        "temperature": 0,
-                    }
-                }
-        return {}
+        raise FileNotFoundError(
+            f"Config file not found: {p}. "
+            f"Copy config.json.template to config.json and fill in your API key."
+        )
 
-    config = _normalize_tool_experts_config(json.loads(p.read_text(encoding="utf-8")))
+    config_raw = p.read_text(encoding="utf-8")
+    config_raw = _resolve_env_vars(config_raw)
 
-    # ── Merge code-side defaults for agents & tool_experts ──────────────
-    # config.json only needs default + workflow; per-agent configs and tool
-    # expert definitions are baked into code.
-    config.setdefault("agents", {})
-    for name, agent_cfg in AGENT_DEFAULTS.items():
-        if name not in config["agents"] or not isinstance(config["agents"][name], dict):
-            config["agents"][name] = dict(agent_cfg)  # shallow copy
-        else:
-            # Fill in any missing keys from default (user-provided keys take priority)
-            for k, v in agent_cfg.items():
-                config["agents"][name].setdefault(k, v)
-
-    if not config.get("tool_experts"):
-        config["tool_experts"] = [{**d, "agent": {"prompt_file": d["prompt_file"]}} for d in TOOL_EXPERT_DEFAULTS]
-
-    # ── Normalise flat config (no "default" wrapper) ────────────────────
-    # config.json.template from Maintenance uses a flat layout:
-    #   { "api_key": "…", "base_url": "…", "model_name": "…",
-    #     "temperature": 0, "workflow": {…} }
-    # Promote those top-level keys into a "default" sub-dict.
-    if "default" not in config:
-        flat_keys = {"api_key", "base_url", "model_name", "temperature", "backend", "settings_file"}
-        promoted = {k: config.pop(k) for k in list(config.keys()) if k in flat_keys}
-        if promoted:
-            config["default"] = promoted
-
-    # Fill empty LLM config from Claude settings
-    if fallback_to_claude_settings:
-        default = config.get("default", {})
-        default_settings_file = default.get("settings_file")
-        claude_settings = load_claude_settings(default_settings_file)
-
-        if not default.get("api_key") and claude_settings.get("api_key"):
-            default["api_key"] = claude_settings["api_key"]
-        if not default.get("base_url") and claude_settings.get("base_url"):
-            default["base_url"] = claude_settings["base_url"]
-            # When base_url is fallback-ed (switching API provider), also fallback model_name
-            # for both default and all agent-level configs
-            if claude_settings.get("model_name"):
-                default["model_name"] = claude_settings["model_name"]
-                # Also update agent-level model_name in agents section
-                for key, agent_cfg in config.get("agents", {}).items():
-                    if isinstance(agent_cfg, dict) and agent_cfg.get("model_name") == "GLM-5":
-                        agent_cfg["model_name"] = claude_settings["model_name"]
-                # tool_experts is a list, each has an "agent" sub-dict
-                for tool_cfg in config.get("tool_experts", []):
-                    agent_cfg = tool_cfg.get("agent", {})
-                    if isinstance(agent_cfg, dict) and agent_cfg.get("model_name") == "GLM-5":
-                        agent_cfg["model_name"] = claude_settings["model_name"]
-        if not default.get("model_name") and claude_settings.get("model_name"):
-            default["model_name"] = claude_settings["model_name"]
-
-        config["default"] = default
-
-        # Per-agent Claude settings override: each agent may carry its own
-        # settings_file pointing to a different ~/.claude/settings.json variant.
-        # Load that file and fill any empty backend/api_key/base_url/model_name
-        # on the agent before get_llm_with_config falls back to default.
-        def _apply_agent_settings(agent_cfg: dict) -> None:
-            agent_settings_file = agent_cfg.get("settings_file")
-            if not agent_settings_file:
-                return
-            agent_settings = load_claude_settings(agent_settings_file)
-            if not agent_settings:
-                return
-            if not agent_cfg.get("api_key") and agent_settings.get("api_key"):
-                agent_cfg["api_key"] = agent_settings["api_key"]
-            if not agent_cfg.get("base_url") and agent_settings.get("base_url"):
-                agent_cfg["base_url"] = agent_settings["base_url"]
-            if not agent_cfg.get("model_name") and agent_settings.get("model_name"):
-                agent_cfg["model_name"] = agent_settings["model_name"]
-
-        for agent_cfg in config.get("agents", {}).values():
-            if isinstance(agent_cfg, dict):
-                _apply_agent_settings(agent_cfg)
-
-        for expert in config.get("tool_experts", []) or []:
-            agent_cfg = expert.get("agent") if isinstance(expert, dict) else None
-            if isinstance(agent_cfg, dict):
-                _apply_agent_settings(agent_cfg)
+    try:
+        config = json.loads(config_raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Failed to parse config file {p}: {e}")
 
     return config
 

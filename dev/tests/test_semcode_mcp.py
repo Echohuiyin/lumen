@@ -1,7 +1,7 @@
 """Semcode MCP tool availability and config tests.
 
 Verifies that:
-1. maintenance_config.json has valid semcode_mcp config
+1. config.json has valid semcode_mcp config
 2. The semcode-mcp binary exists at the configured path
 3. .semcode.db indexes exist for all kernel source trees referenced by test cases
 4. _write_semcode_mcp_config() produces valid CLI-format MCP config
@@ -25,15 +25,15 @@ from llm_config import load_config
 
 
 def _get_semcode_config() -> dict | None:
-    """Load semcode_mcp from maintenance_config.json."""
-    cfg = load_config("maintenance_config.json", fallback_to_claude_settings=False)
+    """Load semcode_mcp from config.json."""
+    cfg = load_config("config.json")
     return cfg.get("agents", {}).get("kernel_expert", {}).get("semcode_mcp")
 
 
 def test_semcode_mcp_config_present():
-    """semcode_mcp section must exist in maintenance_config.json."""
+    """semcode_mcp section must exist in config.json."""
     sm = _get_semcode_config()
-    assert sm is not None, "semcode_mcp not found in maintenance_config.json"
+    assert sm is not None, "semcode_mcp not found in config.json"
 
 
 def test_semcode_mcp_has_command():
@@ -83,11 +83,11 @@ def test_input_artifacts_parses_kernel_source():
     text = (
         "vmcore 文件: /tmp/test/vmcore.elf\n"
         "vmlinux 文件: /tmp/test/vmlinux\n"
-        "kernel_source 文件: /home/liumingrui/linux-next\n"
+        "kernel_source 文件: /tmp/test/linux-next\n"
     )
     artifacts = parse_input_artifacts(text, validate_paths=False)
-    assert artifacts.kernel_source_path == "/home/liumingrui/linux-next", (
-        f"Expected kernel_source_path='~/linux-next', got '{artifacts.kernel_source_path}'"
+    assert artifacts.kernel_source_path == "/tmp/test/linux-next", (
+        f"Expected kernel_source_path='/tmp/test/linux-next', got '{artifacts.kernel_source_path}'"
     )
 
 
@@ -99,13 +99,19 @@ def test_input_artifacts_kernel_source_absent_by_default():
     )
 
 
-def test_write_semcode_mcp_config_format():
+def test_write_semcode_mcp_config_format(tmp_path):
     """_write_semcode_mcp_config must produce valid CLI-format MCP config."""
+    fake_bin = tmp_path / "semcode-mcp"
+    fake_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fake_bin.chmod(0o755)
+    fake_db = tmp_path / ".semcode.db"
+    fake_db.touch()
+
     backend = ClaudeCodeBackend(
         cli_command="claude",
         semcode_mcp={
-            "command": "/home/liumingrui/semcode/target/release/semcode-mcp",
-            "args": ["-d", "/home/liumingrui/code/OLK-6.6/.semcode.db"],
+            "command": str(fake_bin),
+            "args": ["-d", str(fake_db)],
         },
     )
     mcp_path = backend._write_semcode_mcp_config()
@@ -119,7 +125,7 @@ def test_write_semcode_mcp_config_format():
         assert "command" in sc, "Missing command in semcode MCP server config"
         assert "args" in sc, "Missing args in semcode MCP server config"
         assert "-d" in sc["args"], "Missing -d in semcode MCP server args"
-        assert sc["command"] == "/home/liumingrui/semcode/target/release/semcode-mcp"
+        assert sc["command"] == str(fake_bin)
     finally:
         Path(mcp_path).unlink(missing_ok=True)
 
@@ -139,41 +145,68 @@ def test_write_semcode_mcp_config_empty_when_binary_missing():
 
 
 def test_kernel_source_override_changes_db_path():
-    """Simulate the kernel_expert_node override logic for linux-next."""
-    agent_config = {
-        "semcode_mcp": {
-            "command": "/home/liumingrui/semcode/target/release/semcode-mcp",
-            "args": ["-d", "/home/liumingrui/code/OLK-6.6/.semcode.db"],
-        }
-    }
-    kernel_source_path = "/home/liumingrui/linux-next"
-    candidate_db = os.path.join(kernel_source_path, ".semcode.db")
-    assert os.path.exists(candidate_db), (
-        f"linux-next semcode db not found at {candidate_db}"
-    )
+    """Simulate the kernel_expert_node override logic for linux-next.
 
-    # Apply the same logic as kernel_expert_node
-    if kernel_source_path and "semcode_mcp" in agent_config:
-        if os.path.exists(candidate_db):
-            agent_config = {**agent_config}
-            agent_config["semcode_mcp"] = {
-                **agent_config["semcode_mcp"],
-                "args": ["-d", candidate_db],
+    Uses a temp dir to fake a kernel_source_path with a .semcode.db inside,
+    so the test runs on any machine without relying on real user paths.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp_kernel_source:
+        candidate_db = os.path.join(tmp_kernel_source, ".semcode.db")
+        Path(candidate_db).touch()
+
+        agent_config = {
+            "semcode_mcp": {
+                "command": "/tmp/test/semcode-mcp",
+                "args": ["-d", "/tmp/test/.semcode.db"],
             }
+        }
+        assert os.path.exists(candidate_db), (
+            f"semcode db not found at {candidate_db}"
+        )
 
-    args = agent_config["semcode_mcp"]["args"]
-    assert "-d" in args
-    assert args[args.index("-d") + 1] == candidate_db, (
-        f"Expected db path '{candidate_db}', got '{args[args.index('-d') + 1]}'"
-    )
+        # Apply the same logic as kernel_expert_node
+        if tmp_kernel_source and "semcode_mcp" in agent_config:
+            if os.path.exists(candidate_db):
+                agent_config = {**agent_config}
+                agent_config["semcode_mcp"] = {
+                    **agent_config["semcode_mcp"],
+                    "args": ["-d", candidate_db],
+                }
+
+        args = agent_config["semcode_mcp"]["args"]
+        assert "-d" in args
+        assert args[args.index("-d") + 1] == candidate_db, (
+            f"Expected db path '{candidate_db}', got '{args[args.index('-d') + 1]}'"
+        )
 
 
-def test_input_artifacts_validates_kernel_source():
-    """parse_input_artifacts with validate_paths=True must detect linux-next source tree."""
+def test_input_artifacts_validates_kernel_source(tmp_path):
+    """parse_input_artifacts with validate_paths=True must detect a Linux source tree.
+
+    Creates a fake linux source tree by touching Makefile and include/linux/
+    so the test runs anywhere without depending on a real user path.
+    """
+    fake_source = tmp_path / "fake-linux"
+    fake_source.mkdir()
+    (fake_source / "Makefile").write_text("# fake", encoding="utf-8")
+    (fake_source / "Kconfig").write_text("# fake", encoding="utf-8")
+    inc = fake_source / "include" / "linux"
+    inc.mkdir(parents=True)
+    (inc / "kernel.h").write_text("// fake", encoding="utf-8")
+    init = fake_source / "init"
+    init.mkdir()
+    (init / "main.c").write_text("// fake", encoding="utf-8")
+
+    fake_vmcore = tmp_path / "vmcore.elf"
+    fake_vmcore.write_bytes(b"\x7fELF fake")
+    fake_vmlinux = tmp_path / "vmlinux"
+    fake_vmlinux.write_bytes(b"\x7fELF fake")
+
     text = (
-        "vmcore 文件: /home/liumingrui/lumen/test_assets/deadlock/vmcore.elf\n"
-        "vmlinux 文件: /home/liumingrui/lumen/test_assets/deadlock/vmlinux\n"
-        "kernel_source 文件: /home/liumingrui/linux-next\n"
+        f"vmcore 文件: {fake_vmcore}\n"
+        f"vmlinux 文件: {fake_vmlinux}\n"
+        f"kernel_source 文件: {fake_source}\n"
     )
     artifacts = parse_input_artifacts(text, validate_paths=True)
     # linux-next is a valid Linux source tree, no errors expected

@@ -99,8 +99,8 @@ create_config_files() {
 
     # 主工作流配置
     if [ ! -f "config.json" ]; then
-        if [ -f "maintenance_config.example.json" ]; then
-            cp maintenance_config.example.json config.json
+        if [ -f "config.json.template" ]; then
+            cp config.json.template config.json
             print_success "创建 config.json（请编辑API key）"
         else
             print_warning "未找到配置模板，请手动创建 config.json"

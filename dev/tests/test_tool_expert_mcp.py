@@ -220,8 +220,8 @@ def test_tool_calling_loop():
         from agents.tool_calling_loop import execute_tool_calling_loop, create_tool_call_messages
         from llm_config import get_llm_with_config
 
-        # Get LLM config from environment or maintenance_config.json
-        config_path = project_root / "maintenance_config.json"
+        # Get LLM config from environment or config.json
+        config_path = project_root / "config.json"
         if config_path.exists():
             import json
             config = json.loads(config_path.read_text())
@@ -236,7 +236,7 @@ def test_tool_calling_loop():
             }
 
         if not default_config.get("api_key"):
-            print(f"  SKIP: No API key configured (set LLM_API_KEY env var or maintenance_config.json)")
+            print(f"  SKIP: No API key configured (set LLM_API_KEY env var or config.json)")
             return None
 
         print(f"  Creating LLM with model: {default_config.get('model_name', 'default')}")

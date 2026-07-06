@@ -118,10 +118,10 @@ Or run individually:
 
 ```bash
 # Mutex ABBA deadlock E2E
-python main.py --input test_assets/deadlock/input.txt --config maintenance_config.json
+python main.py --input test_assets/deadlock/input.txt --config config.json
 
 # Use-after-free (kref refcount leak) E2E
-python main.py --input test_assets/uaf/input.txt --config maintenance_config.json
+python main.py --input test_assets/uaf/input.txt --config config.json
 ```
 
 #### E2E Test Cases
@@ -134,7 +134,7 @@ python main.py --input test_assets/uaf/input.txt --config maintenance_config.jso
 | **Fault type** | deadlock (mutex ABBA) |
 | **Kernel module** | `mutex_abba_deadlock.ko` |
 | **Expected signal** | `blocked for more than` → `Kernel panic` |
-| **Config** | `maintenance_config.json` |
+| **Config** | `config.json` |
 
 The deadlock case tests the workflow's ability to:
 1. Parse a vmcore with two threads blocked on mutex ABBA deadlock
@@ -151,7 +151,7 @@ The deadlock case tests the workflow's ability to:
 | **Kernel module** | `crash_uaf.ko` |
 | **User trigger** | `uaf_trigger` (static binary) |
 | **Expected signal** | `BUG: KASAN: slab-use-after-free` |
-| **Config** | `maintenance_config.json` |
+| **Config** | `config.json` |
 
 The UAF case tests the workflow's ability to:
 1. Parse a vmcore with KASAN use-after-free report
@@ -167,7 +167,7 @@ The UAF case tests the workflow's ability to:
 | **Fault type** | warning |
 | **Kernel module** | C reproducer (syzbot PoC) |
 | **Expected signal** | `WARNING in can_finish_ordered_extent` |
-| **Config** | `maintenance_config.json` |
+| **Config** | `config.json` |
 
 The btrfs case tests the workflow's ability to:
 1. Parse a WARNING vmcore without CONFIG_IKCONFIG
@@ -183,7 +183,7 @@ The btrfs case tests the workflow's ability to:
 | **Fault type** | warning |
 | **Kernel module** | C reproducer (syzbot PoC, multi-threaded) |
 | **Expected signal** | `WARNING in hv_tlb_flush_enqueue` |
-| **Config** | `maintenance_config.json` |
+| **Config** | `config.json` |
 
 The kvm-x86 case tests the workflow's ability to:
 1. Parse a pvqspinlock corruption WARNING from nested KVM+HyperV
@@ -270,7 +270,7 @@ lumen/
 │   ├── syzbot_btrfs_085adc3f/   # BTRFS case (WIP)
 │   └── syzbot_kvm_x86_5d2b94b7  # KVM-x86 case
 ├── config.json               # Workflow configuration
-├── maintenance_config.json   # E2E workflow configuration
+├── config.json   # E2E workflow configuration
 ├── agent_capabilities.json   # Agent capability matrix
 └── main.py                   # E2E workflow entry point
 ```
@@ -325,7 +325,7 @@ None currently. Online tests (`-m online`) and E2E tests may fail without API ke
 
 Before running `--e2e`, verify:
 
-- [ ] `maintenance_config.json` exists and has correct paths
+- [ ] `config.json` exists and has correct paths
 - [ ] `test_assets/deadlock/bzImage` and `test_assets/deadlock/vmlinux` exist
 - [ ] `test_assets/uaf/bzImage` and `test_assets/uaf/vmlinux` exist
 - [ ] QEMU is installed (`which qemu-system-x86_64`)

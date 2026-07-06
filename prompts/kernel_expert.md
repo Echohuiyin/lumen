@@ -40,8 +40,8 @@ semcode 已通过 MCP 挂入，工具列表里有 `find_function`/`find_callers`
 6. **只有** semcode 返回空或明显不相关时，才退回 Grep+Read，且 Read 只读 semcode 返回的具体行号范围
 
 **反模式（禁止）**：
-- ❌ `Bash(grep -r "mutex_lock" /home/liumingrui/code/OLK-6.6)` — 全树扫描，慢且结果泛滥
-- ❌ `Read(/home/liumingrui/code/OLK-6.6/kernel/locking/mutex.c)` — 读整个文件，token 浪费
+- ❌ `Bash(grep -r "mutex_lock" /path/to/kernel/source)` — 全树扫描，慢且结果泛滥
+- ❌ `Read(/path/to/kernel/source/kernel/locking/mutex.c)` — 读整个文件，token 浪费
 - ✅ `find_function(name="mutex_lock")` → 拿到文件:行号 → `Read` 只读那 20 行
 
 复现器代码本身（`reproducer.c`/`Makefile`/`test.sh`）不需要 semcode，用 Write 直接写。

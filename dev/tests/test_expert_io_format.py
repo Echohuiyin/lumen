@@ -32,12 +32,12 @@ def test_validator_io_format():
     from agents.validator import validator_node
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "user_input": "内核崩溃，NULL pointer dereference，发生在 crash_nullptr 模块",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     print("Input state keys:", list(state.keys()))
@@ -67,7 +67,7 @@ def test_pm_io_format():
     from agents.pm import pm_node
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "user_input": "内核 deadlock，两个线程互相阻塞",
@@ -103,7 +103,7 @@ def test_kernel_expert_io_format():
     from agents.kernel_tools import create_kernel_tools
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     # Check tools
     tools = create_kernel_tools()
@@ -122,7 +122,7 @@ def test_kernel_expert_io_format():
         "user_input": "内核 NULL pointer dereference，需要分析 crash_nullptr 模块代码",
         "kernel_diagnosis": "使用 crash 分析 vmcore 后定位到 crash_init 函数",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     print("\nInput state keys:", list(state.keys()))
@@ -149,13 +149,13 @@ def test_tool_expert_crash_analysis():
     from agents.tool_expert import tool_expert_node, _extract_vmcore_paths
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "expert_type": "crash_analysis",
         "user_input": "vmcore 文件：/tmp/test_vmcore\nvmlinux 文件：/tmp/test_vmlinux\n内核 panic",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     # Test path extraction first
@@ -185,13 +185,13 @@ def test_tool_expert_lock_analysis():
     from agents.tool_expert import tool_expert_node
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "expert_type": "lock_analysis",
         "user_input": "系统 deadlock，两个线程互相阻塞\nvmcore 文件：/tmp/test_vmcore\nvmlinux 文件：/tmp/test_vmlinux",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     result = tool_expert_node(state)
@@ -215,13 +215,13 @@ def test_tool_expert_kernel_log_analysis():
     from agents.tool_expert import tool_expert_node
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "expert_type": "kernel_log_analysis",
         "user_input": "系统 hung task, dmesg 显示 blocked for more than 120 seconds",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     result = tool_expert_node(state)
@@ -245,13 +245,13 @@ def test_tool_expert_knowledge_search():
     from agents.tool_expert import tool_expert_node
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "expert_type": "knowledge_search",
         "user_input": "hung task deadlock 问题，需要查找历史案例",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     result = tool_expert_node(state)
@@ -327,13 +327,13 @@ def test_knowledge_base_io_format():
     from agents.knowledge_base import knowledge_base_node
     from llm_config import load_config
 
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     state = {
         "user_input": "NULL pointer dereference in crash_nullptr module",
         "kernel_analysis": "crash_nullptr 模块 crash_init 函数空指针解引用",
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     print("Input state keys:", list(state.keys()))

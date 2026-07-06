@@ -155,7 +155,7 @@ def test_expert_direct(expert_type: str, verbose: bool = True):
 
     # 构建测试状态
     user_input = build_test_user_input(str(vmcore), str(vmlinux), "deadlock")
-    config = load_config("maintenance_config.json")
+    config = load_config("config.json")
 
     # 设置输出目录
     ensure_output_dir()
@@ -165,7 +165,7 @@ def test_expert_direct(expert_type: str, verbose: bool = True):
         "expert_type": expert_type,
         "user_input": user_input,
         "config": config,
-        "config_path": "maintenance_config.json",
+        "config_path": "config.json",
     }
 
     print(f"\n执行 {expert_type} 专家...")

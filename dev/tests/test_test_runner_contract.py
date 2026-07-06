@@ -53,7 +53,7 @@ def test_elf_vmlinux_rejected_before_qemu():
 
 
 def test_legacy_config_name_falls_back_to_config_json():
-    config = load_config("maintenance_config.json", fallback_to_claude_settings=False)
+    config = load_config("config.json")
     assert "default" in config
     assert "backend" in config["default"]
 
@@ -207,7 +207,7 @@ def test_kernel_expert_preflight_extracts_relevant_config():
     """_extract_pertinent_kernel_config returns KVM/PARAVIRT/MODVERSIONS flags
     that influence reproducer strategy."""
     from agents.kernel_expert import _extract_pertinent_kernel_config
-    bzimage = "/home/liumingrui/lumen/test_assets/syzbot_kvm_x86_5d2b94b7/bzImage"
+    bzimage = str(project_root / "test_assets" / "syzbot_kvm_x86_5d2b94b7" / "bzImage")
     if not os.path.isfile(bzimage):
         return  # Skip when test asset not available
     config = _extract_pertinent_kernel_config(bzimage)
@@ -219,7 +219,7 @@ def test_kernel_expert_preflight_extracts_relevant_config():
 def test_kernel_expert_preflight_scans_test_assets():
     """_scan_test_assets_for_reproducers finds existing repro_c / .ko files."""
     from agents.kernel_expert import _scan_test_assets_for_reproducers
-    test_dir = "/home/liumingrui/lumen/test_assets/syzbot_kvm_x86_5d2b94b7"
+    test_dir = str(project_root / "test_assets" / "syzbot_kvm_x86_5d2b94b7")
     if not os.path.isdir(test_dir):
         return  # Skip when test asset not available
     findings = _scan_test_assets_for_reproducers(test_dir)

@@ -150,6 +150,9 @@ def _import_to_chroma(knowledge_file: str) -> tuple[bool, str]:
     except Exception as e:
         return False, f"读取知识库文件失败: {str(e)}"
 
+    # Resolve to absolute path — subprocess runs with a different cwd
+    knowledge_file = str(Path(knowledge_file).resolve())
+
     # 创建临时 JSON 文件用于导入
     temp_json = Path(knowledge_file).with_suffix(".json")
     case_data = {
@@ -190,7 +193,7 @@ def _import_to_chroma(knowledge_file: str) -> tuple[bool, str]:
         if result.returncode == 0:
             return True, f"✓ 成功导入 ({kb_filename})"
         else:
-            error_msg = result.stderr[:200] if result.stderr else result.stdout[:200]
+            error_msg = (result.stderr or result.stdout or "")[:500]
             return False, f"✗ 导入失败: {error_msg}"
 
     except subprocess.TimeoutExpired:

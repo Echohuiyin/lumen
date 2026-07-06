@@ -622,7 +622,7 @@ class ClaudeCodeBackend:
         # {"command": "/path/to/semcode-mcp", "args": ["-d", "/path/to/.semcode.db"]}
         # When set, the backend writes a temp mcp config file in CLI format
         # and passes it via --mcp-config. The db path is machine-specific and
-        # belongs in maintenance_config.json (gitignored). The -d arg is what
+        # belongs in config.json (gitignored). The -d arg is what
         # makes the semcode tools actually register — without it semcode-mcp
         # searches the cwd, finds no index, and the agent reports
         # "find_function not in my tool list".
@@ -918,7 +918,7 @@ class ClaudeCodeBackend:
     def _write_semcode_mcp_config(self) -> str:
         """Write a temp mcp config in CLI format from the inline semcode_mcp dict.
 
-        The dict comes from maintenance_config.json (agent-level semcode_mcp
+        The dict comes from config.json (agent-level semcode_mcp
         field), e.g. {"command": "/path/to/semcode-mcp", "args": ["-d", "/path/to/.semcode.db"]}.
         Renders to {"mcpServers": {"semcode": {...}}} and writes a temp file
         that --mcp-config can consume. Returns the temp path, or "" if the

@@ -30,7 +30,7 @@
 
 ### 4. 修正维护配置与文档
 
-- 修正 `README.md` 中对 `maintenance_config` 的说明
+- 修正 `README.md` 中对 `config.json` 的说明
 - 明确 `config.json` 的作用与主配置入口
 - 修正 Crash / Lock prompt 描述与真实执行能力不一致的问题
 - 修正 Kernel Expert 的虚假 bash 工具声明，补齐真实需要的工具能力

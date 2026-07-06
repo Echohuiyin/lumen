@@ -1,8 +1,131 @@
 {
-  "base_url": "https://api.deepseek.com/v1",
-  "api_key": "sk-your-api-key-here",
-  "model_name": "deepseek-chat",
-  "temperature": 0,
+  "version": "1.3",
+  "comment": "Configuration template for Lumen kernel debug workflow.",
+  "note": "Variables like ${HOME} are substituted from environment. Copy to config.json and set your env vars.",
+  "default": {
+    "backend": "anthropic",
+    "api_key": "${ANTHROPIC_API_KEY:-}",
+    "base_url": "${ANTHROPIC_BASE_URL:-https://api.deepseek.com/anthropic}",
+    "model_name": "${ANTHROPIC_MODEL:-deepseek-v4-flash}",
+    "temperature": 0,
+    "http_timeout": 120
+  },
+  "skills": {
+    "rag_case_retrieval": {
+      "path": "./skills/rag-case-retrieval",
+      "scripts": {
+        "retrieve": "scripts/retrieve_cases.py",
+        "import": "scripts/import_from_zip.py",
+        "check": "scripts/check_environment.py"
+      }
+    },
+    "vmcore_analyzer": {
+      "path": "./skills/vmcore-analyzer",
+      "scripts": {
+        "report_generator": "scripts/crash_report_generator.py"
+      }
+    },
+    "lock_analyzer": {
+      "path": "./skills/lock-analyzer"
+    },
+    "kernel_build": {
+      "path": "./skills/kernel-build"
+    },
+    "qemu_test": {
+      "path": "./skills/qemu-test",
+      "scripts": {
+        "create_initramfs": "scripts/create_initramfs.sh"
+      }
+    },
+    "kernel_testcase_generator": {
+      "path": "./skills/kernel-testcase-generator"
+    },
+    "kernel_test_validator": {
+      "path": "./skills/kernel-test-validator"
+    },
+    "jffs2_analyzer": {
+      "path": "./skills/jffs2-analyzer",
+      "scripts": {
+        "parser": "scripts/jffs2_parser.py"
+      }
+    },
+    "jffs2_fault_inject": {
+      "path": "./skills/jffs2-fault-inject",
+      "scripts": {
+        "injector": "scripts/jffs2_fault_injector.py"
+      }
+    }
+  },
+  "kernel": {
+    "source_dir": "${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}",
+    "vmlinux_path": "${KERNEL_VMLINUX:-${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}/vmlinux}",
+    "default_arch": "x86_64"
+  },
+  "agents": {
+    "validator": {
+      "prompt_file": "prompts/validator.md"
+    },
+    "pm": {
+      "prompt_file": "prompts/pm.md"
+    },
+    "kernel_expert": {
+      "prompt_file": "prompts/kernel_expert.md",
+      "backend": "claude_code",
+      "cli_command": "claude",
+      "model": "sonnet",
+      "cli_timeout": 600,
+      "permission_mode": "bypassPermissions",
+      "max_turns": 100,
+      "disable_skills": true,
+      "semcode_mcp": {
+        "command": "${SEMCODE_MCP_BIN:-${HOME}/semcode/target/release/semcode-mcp}",
+        "args": ["-d", "${SEMCODE_DB_DIR:-${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}/.semcode.db}"]
+      }
+    },
+    "test_expert": {
+      "prompt_file": "prompts/test_expert.md"
+    },
+    "knowledge_base": {
+      "prompt_file": "prompts/knowledge_base.md"
+    }
+  },
+  "tool_experts": [
+    {
+      "type": "knowledge_search",
+      "name": "历史知识库搜索专家",
+      "description": "搜索历史知识库，查找与当前问题相似的历史案例和解决方案",
+      "agent": {
+        "prompt_file": "prompts/knowledge_search.md"
+      }
+    },
+    {
+      "type": "lock_analysis",
+      "name": "锁分析专家",
+      "description": "分析内核锁相关问题，包括死锁、锁竞争、锁顺序等",
+      "agent": {
+        "prompt_file": "prompts/lock_analysis.md"
+      }
+    },
+    {
+      "type": "crash_analysis",
+      "name": "Crash分析专家",
+      "description": "分析 Crash 日志，定位崩溃原因和调用栈",
+      "agent": {
+        "prompt_file": "prompts/crash_analysis.md"
+      }
+    },
+    {
+      "type": "kernel_log_analysis",
+      "name": "内核日志分析专家",
+      "description": "分析内核日志（dmesg/logcat等），提取关键错误信息和异常模式",
+      "agent": {
+        "prompt_file": "prompts/kernel_log_analysis.md"
+      }
+    }
+  ],
+  "knowledge_base": {
+    "output_dir": "knowledge_base"
+  },
   "workflow": {
     "max_test_attempts": 3
   }

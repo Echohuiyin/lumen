@@ -12,7 +12,7 @@
     pytest tests/test_agent_capabilities.py::test_validator_capability[deadlock] --run-online -v
 
 前置条件：
-    - maintenance_config.json 配好可用的 GLM-5.2/DeepSeek API key
+    - config.json 配好可用的 GLM-5.2/DeepSeek API key
     - test_assets/<fault_type>/input.txt 存在（deadlock/uaf）
     - vmcore/vmlinux/boot_kernel 路径在 input.txt 中正确指向
     - QEMU 已安装（test_expert 测试需要）
@@ -81,7 +81,7 @@ FAULT_EXPECTATIONS = {
 # Fixtures
 # ---------------------------------------------------------------------------
 
-DEFAULT_CONFIG_PATH = "maintenance_config.json"
+DEFAULT_CONFIG_PATH = "config.json"
 
 
 def _resolve_fault_input(fault_type: str) -> str:

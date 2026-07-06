@@ -35,7 +35,7 @@ E2E_CASES: list[dict] = [
         "name": "deadlock",
         "title": "Mutex ABBA Deadlock",
         "input": str(PROJECT_ROOT / "test_assets" / "deadlock" / "input.txt"),
-        "config": str(PROJECT_ROOT / "maintenance_config.json"),
+        "config": str(PROJECT_ROOT / "config.json"),
         "expected_signal": "blocked for more than",
         "required_assets": [
             "vmlinux",
@@ -48,7 +48,7 @@ E2E_CASES: list[dict] = [
         "name": "uaf",
         "title": "Use-After-Free (kref refcount leak)",
         "input": str(PROJECT_ROOT / "test_assets" / "uaf" / "input.txt"),
-        "config": str(PROJECT_ROOT / "maintenance_config.json"),
+        "config": str(PROJECT_ROOT / "config.json"),
         "expected_signal": "BUG: KASAN: slab-use-after-free",
         "required_assets": [
             "vmlinux",
@@ -61,7 +61,7 @@ E2E_CASES: list[dict] = [
         "name": "btrfs",
         "title": "Syzbot btrfs WARNING (ordered extent)",
         "input": str(PROJECT_ROOT / "test_assets" / "syzbot_btrfs_085adc3f" / "input.txt"),
-        "config": str(PROJECT_ROOT / "maintenance_config.json"),
+        "config": str(PROJECT_ROOT / "config.json"),
         "expected_signal": "WARNING in can_finish_ordered_extent",
         "required_assets": [
             "vmlinux",
@@ -74,7 +74,7 @@ E2E_CASES: list[dict] = [
         "name": "kvm-x86",
         "title": "Syzbot kvm-x86 WARNING (pvqspinlock)",
         "input": str(PROJECT_ROOT / "test_assets" / "syzbot_kvm_x86_5d2b94b7" / "input.txt"),
-        "config": str(PROJECT_ROOT / "maintenance_config.json"),
+        "config": str(PROJECT_ROOT / "config.json"),
         "expected_signal": "WARNING in hv_tlb_flush_enqueue",
         "required_assets": [
             "vmlinux",
@@ -132,7 +132,7 @@ def _run_workflow(case: dict, timeout: int = 3600) -> subprocess.CompletedProces
     cmd = [
         sys.executable,
         str(PROJECT_ROOT / "main.py"),
-        "--input", case["input"],
+        case["input"],
         "--config", case["config"],
     ]
     print(f"\n  $ {' '.join(cmd)}")
@@ -359,7 +359,7 @@ def main() -> int:
     print("=" * 60)
     print("E2E Workflow Verification")
     print(f"Cases: {', '.join(c['name'] for c in selected)}")
-    print(f"Config: maintenance_config.json")
+    print(f"Config: config.json")
     print(f"Workflow: {' → '.join(WORKFLOW_STAGES)}")
     print(f"Parallel: {args.parallel or 'all'}")
     print("=" * 60)
