@@ -1236,15 +1236,28 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
                 flags=re.MULTILINE,
             )
 
-            # 2) Inject memory pressure before repro_c runs:
-            #    allocate 75% of available memory via dd, then force
-            #    page reclaim pressure for race-condition amplification.
-            pressure_block = """echo "=== Injecting memory pressure ==="
-# Allocate memory to trigger page reclaim pressure
-dd if=/dev/zero of=/tmp/mem_pressure bs=1M count=800 2>/dev/null &
-sleep 2
-# Leave the allocator running in background during repro
-echo "Memory pressure applied (800MB allocated)"
+            # 2) Inject cyclical memory pressure before repro_c runs.
+            #    Matches the syzbot repro_c pattern: fork child (200MB rlimit)
+            #    → btrfs operations (5s) → kill → clean up → repeat.
+            #    Each wave: allocate 200M → create page cache → drop caches
+            #    to force reclaim → repeat. This creates continuous page
+            #    reclaim events that race with btrfs ordered extent I/O,
+            #    unlike a one-shot dd which grabs memory once and stays idle.
+            pressure_block = """echo "=== Starting cyclical memory pressure ==="
+(
+  CYCLE_COUNT=0
+  while true; do
+    CYCLE_COUNT=$((CYCLE_COUNT + 1))
+    # Phase 1: Allocate 200M file-backed pages (page cache)
+    dd if=/dev/zero of=/tmp/pressure_cycle bs=1M count=200 2>/dev/null
+    # Phase 2: Read back to populate clean page cache
+    dd if=/tmp/pressure_cycle of=/dev/null bs=1M count=200 2>/dev/null
+    # Phase 3: Drop caches to force page reclaim (simulates child exit)
+    echo 3 > /proc/sys/vm/drop_caches 2>/dev/null
+    sleep 2
+  done
+) &
+echo "Cyclical pressure started (200MB wave every ~4s)"
 """
             # Insert pressure before a known reproducer-start marker
             marker_patterns = [
@@ -1293,15 +1306,22 @@ echo "Memory pressure applied (800MB allocated)"
             #    so use dict access, not attribute access.
             recipe = data.get("qemu_recipe")
             if recipe and isinstance(recipe, dict) and not recipe.get("extra_cmdline", ""):
-                # numa=off prevents early GP fault in numa_emulation when
-                # QEMU's SRAT has nodes beyond the 1G window (q35 exposes
-                # 2 NUMA nodes by default, second node starts at 1G).
-                # mem=2G gives enough headroom for KASAN + repro_c while
-                # still constraining memory below auto-selected 4G so
-                # the dd-backed memory-pressure injection is effective.
-                recipe["extra_cmdline"] = "numa=off mem=2G"
+                # Align with syzbot community configuration for reliable
+                # reproduction of memory-pressure-sensitive bugs:
+                #   - numa=fake=2: splits 2GB into 2 × ~1GB fake NUMA nodes,
+                #     creating memory fragmentation pressure that accelerates
+                #     page reclaim races (syzbot standard approach).
+                #   - mem=2G: constrains total memory to match syzbot's
+                #     typical VM size; leaves enough headroom for KASAN +
+                #     repro_c while keeping pressure effective.
+                #   - panic_on_warn=1: converts WARNING to panic (syzbot
+                #     standard), ensuring reliable signal detection.
+                # Note: must use smp=1 (QEMU default) to avoid
+                # set_cpu_sibling_map WARNING at smpboot.c:718 that fires
+                # when numa=fake=2 + smp>=2 on q35 (single physical node).
+                recipe["extra_cmdline"] = "numa=fake=2 mem=2G panic_on_warn=1"
                 warnings.append(
-                    f"injected extra_cmdline='numa=off mem=2G' for memory-sensitive signal"
+                    f"injected extra_cmdline='numa=fake=2 mem=2G panic_on_warn=1' (syzbot config)"
                 )
         except (OSError, ValueError) as exc:
             warnings.append(f"memory pressure injection skipped: {exc}")
