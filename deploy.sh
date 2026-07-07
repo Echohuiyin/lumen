@@ -1,256 +1,247 @@
 #!/bin/bash
 # Lumen 一键部署脚本
 # 自动化部署内核维护工作流系统
-
 set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+info()  { echo -e "${BLUE}[INFO]${NC} $1"; }
+ok()    { echo -e "${GREEN}[OK]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
+fail()  { echo -e "${RED}[FAIL]${NC} $1"; }
 
-# 配置
+# ── Config ───────────────────────────────────────────────────────────────────
 VENV_DIR="venv"
 USE_VENV=true
 
-# 打印函数
-print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+# ── Pre-flight: check required external binaries ──────────────────────────────
+check_cmd() {
+    local bin="$1" pkg="$2"
+    if command -v "$bin" &>/dev/null; then
+        ok "$bin — found at $(command -v "$bin")"
+        return 0
+    else
+        warn "$bin — NOT FOUND (install: $pkg)"
+        return 1
+    fi
 }
 
-print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+preflight_check() {
+    echo ""
+    info "=== 外部依赖检查 ==="
+
+    local fail_count=0
+
+    check_cmd python3 "python3 (>= 3.10)" || ((fail_count++))
+    check_cmd qemu-system-x86_64 "apt install qemu-system-x86" || ((fail_count++))
+    check_cmd cpio "apt install cpio" || ((fail_count++))
+    check_cmd gzip "apt install gzip (usually pre-installed)" || ((fail_count++))
+    check_cmd crash "apt install crash" || ((fail_count++))
+    check_cmd claude "npm install -g @anthropic-ai/claude-code" || ((fail_count++))
+    check_cmd git "apt install git" || ((fail_count++))
+
+    # busybox: check both system and project prebuilt
+    if command -v busybox &>/dev/null; then
+        ok "busybox — found at $(command -v busybox)"
+    elif [ -f tools/busybox/prebuilt/busybox_x86_64 ]; then
+        ok "busybox — project prebuilt found at tools/busybox/prebuilt/busybox_x86_64"
+    else
+        warn "busybox — NOT FOUND (install: apt install busybox-static 或 ./tools/build_busybox.sh)"
+        ((fail_count++))
+    fi
+
+    # semcode MCP (optional)
+    if command -v semcode-mcp &>/dev/null; then
+        ok "semcode-mcp — found at $(command -v semcode-mcp)"
+    elif [ -x "${HOME}/semcode/target/release/semcode-mcp" ]; then
+        ok "semcode-mcp — found at ${HOME}/semcode/target/release/semcode-mcp"
+    else
+        warn "semcode-mcp — NOT FOUND (optional, kernel_expert will skip MCP tools)"
+    fi
+
+    # git submodule
+    if [ -f Analysis-SKILL/CLAUDE.md ]; then
+        ok "Analysis-SKILL submodule — present"
+    else
+        warn "Analysis-SKILL submodule — missing (run: git submodule update --init)"
+        ((fail_count++))
+    fi
+
+    # busybox build script (if no busybox at all)
+    if [ -f tools/build_busybox.sh ]; then
+        ok "busybox build script — tools/build_busybox.sh"
+    fi
+
+    if [ "$fail_count" -gt 0 ]; then
+        echo ""
+        warn "=== $fail_count 个依赖缺失，请安装后重试 ==="
+        echo ""
+    else
+        echo ""
+        ok "=== 所有外部依赖已就绪 ==="
+    fi
 }
 
-print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+# ── Python version check ─────────────────────────────────────────────────────
+check_python() {
+    if ! command -v python3 &>/dev/null; then
+        fail "未找到 python3，请安装 Python 3.10+"
+        exit 1
+    fi
+    local ver_ok
+    ver_ok=$(python3 -c 'import sys; print(sys.version_info >= (3,10))')
+    if [ "$ver_ok" != "True" ]; then
+        fail "Python 版本过低: $(python3 --version)，需要 3.10+"
+        exit 1
+    fi
+    ok "Python 版本: $(python3 --version)"
 }
 
-print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+# ── Virtual env ──────────────────────────────────────────────────────────────
+create_virtualenv() {
+    if [ -d "$VENV_DIR" ]; then
+        info "虚拟环境已存在: $VENV_DIR"
+    else
+        python3 -m venv "$VENV_DIR"
+        ok "虚拟环境已创建: $VENV_DIR"
+    fi
+    source "$VENV_DIR/bin/activate"
+    ok "虚拟环境已激活"
 }
 
-print_header() {
+# ── Install Python deps ──────────────────────────────────────────────────────
+install_deps() {
+    if [ -f "requirements.txt" ]; then
+        pip install -r requirements.txt -q
+        ok "Python 依赖安装完成"
+    else
+        fail "未找到 requirements.txt"
+        exit 1
+    fi
+}
+
+# ── Env / config ─────────────────────────────────────────────────────────────
+setup_env() {
+    echo ""
+    info "=== 环境变量配置 ==="
+
+    # .env template if not exists
+    if [ ! -f .env ]; then
+        cat > .env << 'ENVEOF'
+# ── LLM API ──────────────────────────────────────────────────────────────────
+# 后端服务：https://api.deepseek.com/anthropic（DeepSeek Anthropic 兼容）
+# 或 https://api.openai.com/v1（原生 OpenAI）
+export ANTHROPIC_API_KEY="sk-your-key-here"
+export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
+export ANTHROPIC_MODEL="deepseek-v4-flash"
+
+# ── Kernel source (必须) ─────────────────────────────────────────────────────
+# 内核源码目录，Crash 分析和语义搜索需要
+export KERNEL_SOURCE_DIR="${HOME}/code/OLK-6.6"
+
+# ── semcode MCP (可选) ───────────────────────────────────────────────────────
+# 语义代码搜索 MCP 服务器，用于 kernel_expert 自动代码分析
+export SEMCODE_MCP_BIN="${HOME}/semcode/target/release/semcode-mcp"
+export SEMCODE_DB_DIR="${KERNEL_SOURCE_DIR}/.semcode.db"
+ENVEOF
+        warn "已创建 .env 模板 — 请编辑 .env 填写 API key 和 KERNEL_SOURCE_DIR"
+    else
+        ok ".env 已存在"
+    fi
+
+    # Source .env if present
+    if [ -f .env ]; then
+        set -a; source .env; set +a
+        ok "已加载 .env"
+    fi
+
+    # config.json
+    if [ ! -f config.json ]; then
+        if [ -f config.json.template ]; then
+            # Substitute env vars into template
+            envsubst < config.json.template > config.json 2>/dev/null || \
+                cp config.json.template config.json
+            ok "已从模板创建 config.json"
+            warn "请检查 config.json 中的 API key 配置"
+        else
+            warn "未找到 config.json.template，请手动创建 config.json"
+        fi
+    else
+        ok "config.json 已存在"
+    fi
+}
+
+# ── Directory init ────────────────────────────────────────────────────────────
+init_dirs() {
+    mkdir -p knowledge_base outputs
+    ok "目录结构已创建 (knowledge_base/ outputs/)"
+}
+
+# ── Verify ────────────────────────────────────────────────────────────────────
+verify() {
+    info "=== 验证安装 ==="
+    local venv_python="$VENV_DIR/bin/python"
+
+    for f in main.py requirements.txt; do
+        if [ ! -f "$f" ]; then
+            fail "缺失关键文件: $f"
+            exit 1
+        fi
+    done
+
+    if [ "$USE_VENV" = true ]; then
+        "$venv_python" -c "
+try:
+    import langgraph; import langchain; import langchain_openai
+    print('  核心模块: langgraph/langchain/langchain-openai — OK')
+except ImportError as e:
+    print(f'  导入失败: {e}')
+    exit(1)
+" || { fail "核心模块验证失败，请检查 requirements.txt"; exit 1; }
+    fi
+
+    ok "安装验证通过"
+}
+
+# ── Usage ─────────────────────────────────────────────────────────────────────
+usage() {
+    echo ""
+    info "=== 使用方式 ==="
+    echo ""
+    echo "  1. 激活环境:  source venv/bin/activate"
+    echo "  2. 分析问题:  python main.py your_input.txt --config config.json"
+    echo ""
+    echo "  输入文件格式 (见 input.txt.template):"
+    echo '    Bug Promote: 问题描述'
+    echo '    vmcore: ./test_case/vmcore.elf'
+    echo '    vmlinux: ./test_case/vmlinux'
+    echo '    boot_kernel: ./test_case/bzImage'
+    echo '    kernel_source: $KERNEL_SOURCE_DIR'
+    echo ""
+    echo "  也可以用 test_assets/ 内置用例快速测试:"
+    echo "    python main.py test_assets/deadlock/input.txt --config config.json"
+    echo ""
+}
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+main() {
     echo -e "${GREEN}"
     echo "======================================"
     echo "  Lumen 内核维护工作流系统 - 部署"
     echo "======================================"
     echo -e "${NC}"
-}
-
-# 检查Python版本
-check_python() {
-    print_info "检查Python环境..."
-
-    if ! command -v python3 &> /dev/null; then
-        print_error "未找到 python3，请安装 Python 3.8+"
-        exit 1
-    fi
-
-    PYTHON_VERSION=$(python3 -c 'import sys; print(sys.version_info.major * 10 + sys.version_info.minor)')
-    if [ "$PYTHON_VERSION" -lt 38 ]; then
-        print_error "Python版本过低，需要 3.8+，当前: $(python3 --version)"
-        exit 1
-    fi
-
-    print_success "Python版本: $(python3 --version)"
-}
-
-# 创建虚拟环境
-create_virtualenv() {
-    print_info "创建Python虚拟环境..."
-
-    # 检查是否存在虚拟环境
-    if [ -d "$VENV_DIR" ]; then
-        print_info "虚拟环境已存在，使用现有环境"
-    else
-        python3 -m venv "$VENV_DIR"
-        print_success "虚拟环境创建完成: $VENV_DIR"
-    fi
-
-    # 激活虚拟环境
-    source "$VENV_DIR/bin/activate"
-    print_success "虚拟环境已激活"
-}
-
-# 安装依赖
-install_dependencies() {
-    print_info "安装项目依赖..."
-
-    if [ -f "requirements.txt" ]; then
-        # 使用虚拟环境的pip
-        if [ "$USE_VENV" = true ]; then
-            pip install -r requirements.txt -q
-        else
-            pip3 install -r requirements.txt -q --break-system-packages || pip3 install -r requirements.txt -q
-        fi
-        print_success "依赖安装完成"
-    else
-        print_error "未找到 requirements.txt"
-        exit 1
-    fi
-}
-
-# 创建配置文件
-create_config_files() {
-    print_info "创建配置文件..."
-
-    # 主工作流配置
-    if [ ! -f "config.json" ]; then
-        if [ -f "config.json.template" ]; then
-            cp config.json.template config.json
-            print_success "创建 config.json（请编辑API key）"
-        else
-            print_warning "未找到配置模板，请手动创建 config.json"
-        fi
-    else
-        print_info "config.json 已存在"
-    fi
-
-    # 自测试配置
-    if [ ! -f "self_test_config.json" ]; then
-        print_warning "self_test_config.json 不存在，自测试功能需手动配置"
-    else
-        print_info "self_test_config.json 已存在"
-    fi
-}
-
-# 初始化目录
-init_directories() {
-    print_info "初始化目录结构..."
-
-    mkdir -p knowledge_base
-    mkdir -p outputs
-    mkdir -p self_test_reports
-
-    print_success "目录创建完成"
-}
-
-# 安装Git hook
-install_git_hooks() {
-    print_info "配置Git hooks..."
-
-    if [ -d ".githooks" ] && [ -f ".githooks/commit-msg" ]; then
-        cp .githooks/commit-msg .git/hooks/commit-msg 2>/dev/null || true
-        chmod +x .git/hooks/commit-msg 2>/dev/null || true
-        print_success "Git commit-msg hook 已安装"
-    else
-        print_info "未配置Git hooks"
-    fi
-}
-
-# 验证安装
-verify_installation() {
-    print_info "验证安装..."
-
-    # 检查关键文件
-    REQUIRED_FILES=(
-        "main.py"
-        "config.py"
-        "requirements.txt"
-    )
-
-    for file in "${REQUIRED_FILES[@]}"; do
-        if [ ! -f "$file" ]; then
-            print_error "缺失关键文件: $file"
-            exit 1
-        fi
-    done
-
-    # 检查关键模块（使用虚拟环境的python）
-    if [ "$USE_VENV" = true ]; then
-        "$VENV_DIR/bin/python" -c "
-import sys
-try:
-    import langgraph
-    import langchain
-    import langchain_openai
-    print('核心模块导入成功')
-except ImportError as e:
-    print(f'导入失败: {e}')
-    sys.exit(1)
-" || {
-            print_error "核心模块验证失败"
-            exit 1
-        }
-    else
-        python3 -c "
-import sys
-try:
-    import langgraph
-    import langchain
-    import langchain_openai
-    print('核心模块导入成功')
-except ImportError as e:
-    print(f'导入失败: {e}')
-    sys.exit(1)
-" || {
-            print_error "核心模块验证失败"
-            exit 1
-        }
-    fi
-
-    print_success "安装验证通过"
-}
-
-# 显示使用示例
-show_usage_examples() {
-    echo ""
-    echo -e "${YELLOW}使用示例：${NC}"
-    echo ""
-
-    if [ "$USE_VENV" = true ]; then
-        echo -e "${BLUE}1. 激活虚拟环境（首次使用）：${NC}"
-        echo "   source venv/bin/activate"
-        echo ""
-        echo -e "${BLUE}2. 运行内核故障分析工作流：${NC}"
-        echo "   python main.py --input \"问题描述\" --config config.json"
-        echo ""
-        echo -e "${BLUE}3. 运行自迭代验证（模拟模式）：${NC}"
-        echo "   python self_test_main.py --fault_type deadlock --max_iterations 5"
-        echo ""
-        echo -e "${BLUE}4. LangGraph Studio调试：${NC}"
-        echo "   langgraph dev"
-        echo ""
-        echo -e "${YELLOW}下一步：${NC}"
-        echo -e "1. 编辑 ${GREEN}config.json${NC} 配置API key"
-        echo -e "2. 运行示例测试验证系统功能"
-        echo ""
-    else
-        echo -e "${BLUE}1. 运行内核故障分析工作流：${NC}"
-        echo "   python main.py --input \"问题描述\" --config config.json"
-        echo ""
-        echo -e "${BLUE}2. 运行自迭代验证（模拟模式）：${NC}"
-        echo "   python self_test_main.py --fault_type deadlock --max_iterations 5"
-        echo ""
-        echo -e "${BLUE}3. LangGraph Studio调试：${NC}"
-        echo "   langgraph dev"
-        echo ""
-        echo -e "${YELLOW}下一步：${NC}"
-        echo -e "1. 编辑 ${GREEN}config.json${NC} 配置API key"
-        echo -e "2. 运行示例测试验证系统功能"
-        echo ""
-    fi
-}
-
-# 主流程
-main() {
-    print_header
 
     check_python
+    preflight_check
     create_virtualenv
-    install_dependencies
-    create_config_files
-    init_directories
-    install_git_hooks
-    verify_installation
+    install_deps
+    setup_env
+    init_dirs
+    git submodule update --init 2>/dev/null || true
+    verify
+    usage
 
-    print_success "✓ 部署完成！"
-
-    show_usage_examples
+    echo ""
+    ok "部署完成！"
 }
 
-# 执行主流程
 main

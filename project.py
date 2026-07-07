@@ -5,9 +5,43 @@ defaults).  This module provides lower-level project I/O helpers.
 """
 
 import json
+import os
+import re
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_env_vars(text: str) -> str:
+    """Resolve ${VAR:-default} and ${VAR} in text (same as llm_config.py).
+
+    Supports ${VAR}, ${VAR:-default}, and simple $HOME/$USER/$KERNEL_SOURCE_DIR.
+    """
+    _SIMPLE_VARS = {"HOME", "USER", "KERNEL_SOURCE_DIR"}
+
+    def _replace_one_braced(m: re.Match) -> str:
+        inner = m.group(1)
+        if ":-" in inner:
+            var, default = inner.split(":-", 1)
+            return os.environ.get(var.strip(), default.strip())
+        elif "-" in inner and not inner.startswith("-"):
+            var, default = inner.split("-", 1)
+            val = os.environ.get(var.strip())
+            return val if val else default.strip()
+        else:
+            return os.environ[inner.strip()]
+
+    result = text
+    prev = None
+    while result != prev:
+        prev = result
+        result = re.sub(r"\$\{([^${}]+)\}", _replace_one_braced, result)
+    result = re.sub(
+        r"(?<!\$)\$(?!\$|\{)(" + "|".join(_SIMPLE_VARS) + r")",
+        lambda m: os.environ.get(m.group(1), ""),
+        result,
+    )
+    return result
 
 # ---------------------------------------------------------------------------
 # Prompt / path helpers
@@ -69,7 +103,7 @@ def parse_input_file(file_path: str) -> dict[str, str]:
             continue
         if ":" in line:
             key, _, value = line.partition(":")
-            fields[key.strip()] = value.strip()
+            fields[key.strip()] = _resolve_env_vars(value.strip())
 
     # Return only recognised fields so unknown keys don't leak through.
     return {k: v for k, v in fields.items() if k in INPUT_FILE_FIELDS}
