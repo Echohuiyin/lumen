@@ -18,7 +18,8 @@ on a fresh Ubuntu/Debian machine.
 9. [Deploy Script](#9-deploy-script)
 10. [First Run & Validation](#10-first-run--validation)
 11. [Proxy & Air-Gapped Environments](#11-proxy--air-gapped-environments)
-12. [Troubleshooting](#12-troubleshooting)
+12. [Cross-Architecture (arm64) Analysis](#12-cross-architecture-arm64-analysis)
+13. [Troubleshooting](#13-troubleshooting)
 
 ---
 
@@ -450,10 +451,10 @@ The workflow takes 5-20 minutes depending on LLM speed and hardware:
   Kernel Debuger Workflow
   ────────────────────────────────────────────────────────
   Bug Promote: 内核发生 Mutex ABBA 死锁导致 hung_task panic。...
-  vmcore: /home/.../test_assets/deadlock/vmcore.elf
-  vmlinux: /home/.../test_assets/deadlock/vmlinux
-  boot_kernel: /home/.../test_assets/deadlock/bzImage
-  kernel_source: /home/.../code/OLK-6.6
+  vmcore: ${PROJECT_ROOT}/test_assets/deadlock/vmcore.elf
+  vmlinux: ${PROJECT_ROOT}/test_assets/deadlock/vmlinux
+  boot_kernel: ${PROJECT_ROOT}/test_assets/deadlock/bzImage
+  kernel_source: ${KERNEL_SOURCE_DIR}
   ────────────────────────────────────────────────────────
   Model: deepseek-v4-flash
   Input: test_assets/deadlock/input.txt
@@ -552,7 +553,108 @@ For a machine with no internet access, pre-download:
 
 ---
 
-## 12. Troubleshooting
+## 12. Cross-Architecture (arm64) Analysis
+
+Lumen supports analyzing arm64 vmcores and reproducing arm64 kernel bugs from
+an x86_64 deployment. Crash analysis is cross-arch natively (a single x86
+crash binary can analyze arm64 vmcores when given an arm64 vmlinux); the
+QEMU reproduction path uses `qemu-system-aarch64` with TCG emulation.
+
+### 12.1 Install arm64 cross-arch dependencies
+
+```bash
+# QEMU arm64 emulator (also pulls qemu-system-arm for arm32)
+sudo apt install -y qemu-system-arm
+
+# Cross-compiler for arm64 kernel modules and userspace reproducers
+sudo apt install -y gcc-aarch64-linux-gnu
+
+# Optional: arm32 cross-compiler
+sudo apt install -y gcc-arm-linux-gnueabi
+```
+
+Verify:
+
+```bash
+command -v qemu-system-aarch64 && qemu-system-aarch64 --version | head -1
+command -v aarch64-linux-gnu-gcc && aarch64-linux-gnu-gcc --version | head -1
+file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
+# Expected: "ELF 64-bit LSB executable, ARM aarch64, ... statically linked"
+```
+
+### 12.2 Prepare arm64 kernel source and assets
+
+```bash
+# Clone an arm64-capable kernel source tree
+git clone git://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git \
+  ~/linux-next-arm64
+
+# Build arm64 kernel + modules (cross-compile from x86 host)
+cd ~/linux-next-arm64
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image modules
+# Outputs:
+#   arch/arm64/boot/Image       (QEMU-bootable)
+#   vmlinux                      (with debug symbols, for crash)
+```
+
+For arm64 vmcores, collect them on a real arm64 machine or via QEMU with
+`qemu-system-aarch64 -machine virt,gic-version=3 -cpu cortex-a57 ...`.
+
+### 12.3 Run arm64 analysis from x86 deployment
+
+Create an `input.txt` for the arm64 case:
+
+```text
+Bug Promote: arm64 内核 [...bug description...]
+vmcore: /path/to/arm64/vmcore.elf
+vmlinux: /path/to/arm64/vmlinux
+boot_kernel: /path/to/arm64/Image
+kernel_source: $ARM64_KERNEL_DIR
+```
+
+Set env vars and run:
+
+```bash
+export ARM64_KERNEL_DIR="${HOME}/linux-next-arm64"
+source venv/bin/activate
+python3 main.py arm64_input.txt --config config.json
+```
+
+### 12.4 How cross-arch dispatch works
+
+The workflow auto-detects target arch by sniffing the ELF `e_machine` field
+from `vmlinux`. If the LLM omits `target_arch`, the ELF sniff result is used
+instead of falling back to host uname (which would be wrong on an x86 host
+analyzing arm64 inputs).
+
+QEMU command construction in `boot_kernel()` picks the correct binary and
+machine config per arch:
+
+- `qemu-system-aarch64 -machine virt -cpu cortex-a57 -serial file:...`
+- `console=ttyAMA0` (PL011 UART, not ttyS0)
+- TCG acceleration (KVM unavailable when host arch != target arch)
+- Cross-compiled arm64 modules (via `compile_module(arch="arm64")`)
+- Arch-filtered binaries_dir (x86 ELF binaries skipped for arm64 target)
+
+### 12.5 Performance notes
+
+- arm64 QEMU with TCG is 5-10x slower than x86 KVM
+- Set `qemu_recipe.timeout_sec` to 900+ for arm64 reproductions
+- Boot alone takes 30-90s (vs 5-10s for x86 KVM)
+- Memory pressure tests that need 1G+ allocations may OOM with default 2G
+
+### 12.6 Limitations
+
+- **No bundled arm64 test case** in `test_assets/`. Bring your own arm64
+  Image + vmlinux + vmcore for end-to-end validation.
+- **No KVM acceleration** for arm64 on x86 host (TCG only). If you have an
+  arm64 host available, deploy Lumen there for faster arm64 testing.
+- **Image.gz (compressed arm64)** not auto-decompressed — boot with raw
+  `Image` only. Decompress with `gunzip Image.gz` if needed.
+
+
+## 13. Troubleshooting
 
 ### QEMU: "Could not access /dev/kvm"
 

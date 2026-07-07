@@ -122,6 +122,87 @@ def _normalize_arch(arch: str | None) -> str:
     return aliases.get(value, value)
 
 
+# `file` output patterns for ELF machine types. Used by _filter_binaries_by_arch
+# to skip binaries that don't match the target arch (e.g. x86 repro_c in arm64
+# initramfs would fail with ENOEXEC inside the guest).
+_ARCH_FILE_PATTERNS = {
+    "x86_64": ["x86-64", "x86_64"],
+    "arm64": ["ARM aarch64", "aarch64"],
+    "arm32": ["ARM,", "ARM 32-bit"],
+}
+
+
+def _filter_binaries_by_arch(binaries_dir: Path, target_arch: str) -> Optional[Path]:
+    """Return a temp dir containing only binaries matching target_arch, or None
+    to pass through the original dir unchanged (e.g. no ELF binaries found).
+
+    Non-ELF files (scripts, Makefiles, configs) are always copied through.
+    Mismatched ELF binaries are skipped with a warning.
+    """
+    patterns = _ARCH_FILE_PATTERNS.get(target_arch)
+    if not patterns:
+        return None
+
+    import shutil
+    import tempfile
+
+    has_any_elf = False
+    matched_files: list[Path] = []
+    non_elf_files: list[Path] = []
+
+    for entry in sorted(binaries_dir.iterdir()):
+        if entry.is_dir():
+            continue
+        if entry.name in ("Makefile", "test.sh", "README", "LICENSE"):
+            non_elf_files.append(entry)
+            continue
+        try:
+            file_out = subprocess.run(
+                ["file", str(entry)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout
+        except Exception:
+            non_elf_files.append(entry)
+            continue
+
+        is_elf = "ELF" in file_out
+        if not is_elf:
+            non_elf_files.append(entry)
+            continue
+
+        has_any_elf = True
+        if any(p in file_out for p in patterns):
+            matched_files.append(entry)
+        # else: ELF but wrong arch — skip silently; warn below
+
+    if not has_any_elf:
+        # No ELF binaries to validate — pass through original dir
+        return None
+
+    # Build a filtered temp dir
+    filtered = Path(tempfile.mkdtemp(prefix="lumen_binaries_"))
+    for f in matched_files + non_elf_files:
+        try:
+            shutil.copy2(f, filtered / f.name)
+            os.chmod(filtered / f.name, 0o755)
+        except OSError:
+            pass
+
+    skipped = []
+    for entry in sorted(binaries_dir.iterdir()):
+        if entry in matched_files or entry in non_elf_files:
+            continue
+        if entry.is_file() and entry.name not in ("Makefile", "test.sh", "README", "LICENSE"):
+            skipped.append(entry.name)
+
+    if skipped:
+        print(f"  [binaries_dir] Skipped {len(skipped)} arch-mismatched binary/bies for {target_arch}: {', '.join(skipped[:3])}{'...' if len(skipped) > 3 else ''}")
+
+    return filtered
+
+
 def find_qemu_script(script_name: str) -> Optional[Path]:
     """Find QEMU test script in skill directories.
 
@@ -261,7 +342,15 @@ def create_initramfs(
         binaries_path = _resolve_runtime_path(binaries_dir)
         if not binaries_path.exists() or not binaries_path.is_dir():
             return f"Error: binaries dir not found: {binaries_dir}"
-        cmd.extend(["--binaries", str(binaries_path)])
+        # Validate each binary's ELF machine type matches target arch.
+        # Mismatched binaries (e.g. x86-64 repro_c in arm64 initramfs) would
+        # fail with ENOEXEC inside the guest; filter them out and warn.
+        filtered_dir = _filter_binaries_by_arch(binaries_path, arch)
+        if filtered_dir is None:
+            # No ELF binaries found (or arch check unavailable) — pass through
+            cmd.extend(["--binaries", str(binaries_path)])
+        else:
+            cmd.extend(["--binaries", str(filtered_dir)])
 
     try:
         result = subprocess.run(
@@ -418,11 +507,24 @@ def boot_kernel(
 
     kernel_type = _detect_kernel_type(str(kernel))
     if kernel_type == "elf":
+        image_name = {"x86_64": "bzImage", "arm64": "Image", "arm32": "zImage"}.get(arch, "bootable image")
         return (
             f"✗ Kernel is ELF vmlinux (debug symbols only, not bootable)\n"
             f"  Kernel: {kernel}\n"
-            f"  QEMU requires a bzImage for {arch}."
+            f"  QEMU requires a {image_name} for {arch}."
         )
+
+    # Per-arch QEMU defaults. x86_64 uses i440FX + KVM-accel + ttyS0; arm64/arm32
+    # use the virt machine with cortex CPUs and the PL011 UART (ttyAMA0).
+    # When the host arch != target arch, KVM is unavailable and we fall back to
+    # TCG (software emulation) — set in the KVM handling block below.
+    _ARCH_DEFAULTS = {
+        "x86_64": {"machine": "accel=kvm:tcg", "cpu": "host",      "console": "ttyS0",   "qemu": "qemu-system-x86_64"},
+        "arm64":  {"machine": "virt",          "cpu": "cortex-a57","console": "ttyAMA0",  "qemu": "qemu-system-aarch64"},
+        "arm32":  {"machine": "virt",          "cpu": "cortex-a15","console": "ttyAMA0",  "qemu": "qemu-system-arm"},
+    }
+    defaults = _ARCH_DEFAULTS.get(arch, _ARCH_DEFAULTS["x86_64"])
+    qemu_bin = defaults["qemu"]
 
     try:
         # Build QEMU command directly — no intermediate shell script,
@@ -435,20 +537,31 @@ def boot_kernel(
         #   D-state tasks blocked >= 60s — required for deadlock reproducers.
         # These flags are inert for kernels/bug types that don't trigger them.
         cmdline = (
-            "console=ttyS0 root=/dev/ram rw panic=1 "
+            f"console={defaults['console']} root=/dev/ram rw panic=1 "
             "oops=panic kasan.fault=panic "
             "hung_task_panic=1 hung_task_timeout_secs=60"
         )
 
         # Apply QemuRecipe overrides from kernel_expert contract.
-        # Empty fields fall back to legacy defaults so an empty recipe() is
+        # Empty fields fall back to arch-aware defaults so an empty recipe() is
         # equivalent to calling boot_kernel without a recipe.
         recipe = qemu_recipe
-        machine_spec = (recipe.machine if recipe and recipe.machine else "accel=kvm:tcg")
-        cpu_spec = (recipe.cpu if recipe and recipe.cpu else "host")
+        machine_spec = (recipe.machine if recipe and recipe.machine else defaults["machine"])
+        cpu_spec = (recipe.cpu if recipe and recipe.cpu else defaults["cpu"])
         smp_spec = (recipe.smp if recipe and recipe.smp else "2")
         if recipe and recipe.extra_cmdline:
             cmdline = cmdline + " " + recipe.extra_cmdline
+
+        # KVM acceleration is only available when host arch == target arch.
+        # Cross-arch emulation (e.g. arm64 target on x86_64 host) must use TCG.
+        host_machine = os.uname().machine  # "x86_64", "aarch64", "armv7l"
+        host_arch = {"aarch64": "arm64", "armv7l": "arm32"}.get(host_machine, host_machine)
+        if arch != host_arch and "kvm" in machine_spec:
+            # Strip kvm from machine spec — falls back to TCG (qemu default)
+            machine_spec = "tcg" if ":" not in machine_spec else machine_spec.split(":", 1)[1]
+            # arm virt machine needs explicit type
+            if arch in ("arm64", "arm32"):
+                machine_spec = "virt"
 
         # Auto-detect numa_fake=N from syzbot kernel config and generate
         # matching QEMU NUMA topology.  Syzbot kernels commonly embed
@@ -456,12 +569,13 @@ def boot_kernel(
         # NUMA topology, set_cpu_sibling_map WARNINGs on the fake split,
         # which panic_on_warn=1 escalates to a boot-time panic.
         # Using real NUMA nodes avoids the WARNING while preserving NUMA
-        # coverage for downstream test cases.
+        # coverage for downstream test cases. arm64 virt machine also
+        # supports -numa node, so the args work cross-arch.
         numa_fake_n = _detect_numa_fake(str(kernel))
         numa_args = _build_numa_qemu_args(numa_fake_n, smp_spec, memory)
 
         qemu_cmd = [
-            "qemu-system-x86_64",
+            qemu_bin,
             "-machine", machine_spec,
             "-cpu", cpu_spec,
             "-smp", smp_spec,

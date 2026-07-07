@@ -25,6 +25,51 @@ from paths import PROJECT_ROOT, get_output_dir as paths_get_output_dir
 import paths as _paths  # for set_session_dir
 
 
+# ELF e_machine values (bytes 18-19, little-endian uint16) used to sniff arch
+# from a vmlinux/vmcore file when the LLM omits target_arch.
+_ELF_MACHINE_TO_ARCH = {
+    62:  "x86_64",  # EM_X86_64
+    3:   "x86_64",  # EM_386 (treat as x86_64)
+    183: "arm64",   # EM_AARCH64
+    40:  "arm32",   # EM_ARM
+}
+
+
+def _sniff_arch_from_elf(path: str) -> str:
+    """Read e_machine from ELF header to detect target arch.
+
+    Returns normalized arch ('x86_64'/'arm64'/'arm32') or '' if not detectable.
+    Used as a fallback when the LLM omits target_arch and the host machine's
+    uname would give the wrong answer (e.g. analyzing an arm64 vmcore from
+    an x86_64 host).
+    """
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(6)
+            if magic[:4] != b"\x7fELF":
+                return ""
+            ei_class = magic[4]  # 1=32-bit, 2=64-bit
+            ei_data = magic[5]   # 1=LSB (LE), 2=MSB (BE)
+            f.seek(18)
+            e_machine_bytes = f.read(2)
+            if len(e_machine_bytes) != 2:
+                return ""
+            byteorder = "little" if ei_data == 1 else "big"
+            e_machine = int.from_bytes(e_machine_bytes, byteorder)
+        return _ELF_MACHINE_TO_ARCH.get(e_machine, "")
+    except (OSError, IOError):
+        return ""
+
+
+def _resolve_target_arch_fallback(vmlinux_path: str) -> str:
+    """Determine target_arch via ELF sniff, falling back to host uname."""
+    if vmlinux_path:
+        sniffed = _sniff_arch_from_elf(vmlinux_path)
+        if sniffed:
+            return sniffed
+    return normalize_target_arch(os.uname().machine)
+
+
 def _write_tool_call_output(output_file: str, content: str, expert_name: str):
     """Write final tool-calling output to file, preserving tool call logs."""
     footer = _format_agent_footer_text(expert_name)
@@ -565,7 +610,7 @@ def _parse_kernel_expert_response(
         # Search for actual reproducer files
         outputs_dir = paths_get_output_dir()
         reproducer_dir, test_script_path, reproducer_module_path, _ = _find_actual_reproducer_path(outputs_dir)
-        fallback_arch = normalize_target_arch(os.uname().machine)
+        fallback_arch = _resolve_target_arch_fallback(input_artifacts.get("vmlinux_path", ""))
         fallback_boot = (
             input_artifacts.get("boot_kernel_path")
             or input_artifacts.get("vmlinux_path", "")
@@ -829,7 +874,7 @@ def _recover_reproducer_from_outputs(
     if not reproducer_dir or not test_script_path:
         return None
 
-    fallback_arch = normalize_target_arch(os.uname().machine)
+    fallback_arch = _resolve_target_arch_fallback(input_artifacts.get("vmlinux_path", ""))
     fallback_boot = (
         input_artifacts.get("boot_kernel_path")
         or input_artifacts.get("vmlinux_path", "")
@@ -884,9 +929,11 @@ def _generate_auto_contract_fields(
     """Auto-fill missing contract fields from state and file system."""
     fields = {}
 
-    # target_arch from uname
+    # target_arch: prefer ELF sniff on vmlinux (cross-arch analysis),
+    # fall back to host uname only if vmlinux is unavailable.
     if not contract.target_arch:
-        fields["target_arch"] = normalize_target_arch(os.uname().machine)
+        vmlinux_for_sniff = input_artifacts.get("vmlinux_path", "")
+        fields["target_arch"] = _resolve_target_arch_fallback(vmlinux_for_sniff)
 
     # boot_kernel_path from input_artifacts
     if not contract.boot_kernel_path:

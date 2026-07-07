@@ -367,6 +367,22 @@ REPRODUCE_CASE:
 KERNEL_DIAGNOSIS:
 <内核维测方案：按需选择调试日志/ftrace/kprobe/eBPF 等，给出针对当前问题的具体方案>
 
+## 架构特定 QEMU 配置
+
+Lumen 在 x86 主机上支持 arm64/arm32 跨架构分析。target_arch 来自 vmcore/vmlinux 的 ELF machine type 自动嗅探；如果 LLM 漏填 target_arch，会用 ELF 嗅探 + 主机 uname 兜底。
+
+| arch | QEMU binary | machine | cpu | console | kernel image |
+|------|-------------|---------|-----|---------|--------------|
+| x86_64 | qemu-system-x86_64 | accel=kvm:tcg (i440FX) | host | ttyS0 | bzImage |
+| arm64  | qemu-system-aarch64 | virt | cortex-a57 | ttyAMA0 | Image |
+| arm32  | qemu-system-arm | virt | cortex-a15 | ttyAMA0 | zImage |
+
+跨架构时（host arch != target arch）必须用 TCG 模拟，不能用 KVM。arm64/arm32 启动比 x86 KVM 慢 5-10 倍，timeout 建议 900s+。
+
+**模块交叉编译**：arm64 模块用 `make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules`；arm32 用 `ARCH=arm CROSS_COMPILE=arm-linux-gnueabi-`。`compile_module` 工具已支持 `arch` 参数自动传 ARCH/CROSS_COMPILE。
+
+**用户态复现器架构匹配**：binaries_dir 中的 ELF 二进制必须与 target_arch 匹配（test_expert 会按 `file` 检测自动过滤不匹配的）。arm64 复现器需用 `aarch64-linux-gnu-gcc -static` 编译。
+
 TARGET_ARCH: <x86_64 | arm64 | arm32>
 BOOT_KERNEL_PATH: <可由 QEMU 启动的 bzImage/Image 路径；不要填 ELF vmlinux>
 REPRODUCER_DIR: <实际创建的复现目录>

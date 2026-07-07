@@ -39,14 +39,29 @@ preflight_check() {
     check_cmd claude "npm install -g @anthropic-ai/claude-code" || ((fail_count++))
     check_cmd git "apt install git" || ((fail_count++))
 
+    # Optional: arm64 cross-arch analysis & reproduction
+    # Not required for x86_64-only deployments
+    echo ""
+    info "=== arm64 跨架构分析 (可选) ==="
+    check_cmd qemu-system-aarch64 "apt install qemu-system-arm (for arm64 QEMU boot)" || true
+    check_cmd aarch64-linux-gnu-gcc "apt install gcc-aarch64-linux-gnu (for arm64 cross-compile)" || true
+    check_cmd arm-linux-gnueabi-gcc "apt install gcc-arm-linux-gnueabi (for arm32 cross-compile)" || true
+
     # busybox: check both system and project prebuilt
     if command -v busybox &>/dev/null; then
         ok "busybox — found at $(command -v busybox)"
-    elif [ -f tools/busybox/prebuilt/busybox_x86_64 ]; then
-        ok "busybox — project prebuilt found at tools/busybox/prebuilt/busybox_x86_64"
+    elif [ -f Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64 ]; then
+        ok "busybox x86_64 — Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64"
     else
-        warn "busybox — NOT FOUND (install: apt install busybox-static 或 ./tools/build_busybox.sh)"
+        warn "busybox x86_64 — NOT FOUND (install: apt install busybox-static)"
         ((fail_count++))
+    fi
+
+    # arm64 busybox prebuilt (committed to repo)
+    if [ -f Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64 ]; then
+        ok "busybox arm64 — Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64"
+    else
+        warn "busybox arm64 — NOT FOUND (arm64 QEMU boot will fail; run: bash Analysis-SKILL/tools/build_busybox.sh --arch arm64)"
     fi
 
     # semcode MCP (optional)

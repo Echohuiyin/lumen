@@ -137,12 +137,21 @@ def read_file(file_path: str) -> str:
         return f"✗ Error reading file {file_path}: {str(e)}"
 
 
-def compile_module(module_dir: str, kernel_dir: Optional[str] = None) -> str:
+def compile_module(
+    module_dir: str,
+    kernel_dir: Optional[str] = None,
+    arch: str = "x86_64",
+    cross_compile: Optional[str] = None,
+) -> str:
     """Compile kernel module using make.
 
     Args:
         module_dir: Directory containing module source and Makefile
         kernel_dir: Optional kernel build directory (defaults to /lib/modules/$(uname -r)/build)
+        arch: Target architecture ('x86_64', 'arm64', 'arm32'). When not x86_64,
+            ARCH= and CROSS_COMPILE= are passed to make for cross-compilation.
+        cross_compile: Optional cross-compiler prefix (e.g. 'aarch64-linux-gnu-').
+            If None, derived from arch when arch != x86_64.
 
     Returns:
         Compilation output (success or error log)
@@ -159,7 +168,25 @@ def compile_module(module_dir: str, kernel_dir: Optional[str] = None) -> str:
         else:
             kdir = f"/lib/modules/{os.uname().release}/build"
 
+        # Kernel Makefile uses 'arm' (not 'arm32') for ARCH=
+        arch_to_kernel = {"x86_64": "x86_64", "arm64": "arm64", "arm32": "arm"}
+        kernel_arch = arch_to_kernel.get(arch, arch)
+
+        # Auto-derive cross-compiler prefix for non-host arches
+        if cross_compile is None:
+            cross_prefix = {
+                "arm64": "aarch64-linux-gnu-",
+                "arm32": "arm-linux-gnueabi-",
+                "x86_64": "",
+            }.get(arch, "")
+        else:
+            cross_prefix = cross_compile
+
         cmd = ["make", "-C", kdir, f"M={expanded_dir}", "modules", "CONFIG_WERROR=n"]
+        if arch != "x86_64":
+            cmd.append(f"ARCH={kernel_arch}")
+            if cross_prefix:
+                cmd.append(f"CROSS_COMPILE={cross_prefix}")
 
         result = subprocess.run(
             cmd,
@@ -349,7 +376,12 @@ def create_kernel_tools() -> list:
         StructuredTool.from_function(
             name="compile_module",
             func=compile_module,
-            description="Compile kernel module using make",
+            description=(
+                "Compile kernel module using make. Args: module_dir, kernel_dir (optional), "
+                "arch (default 'x86_64'; use 'arm64' or 'arm32' for cross-compile), "
+                "cross_compile (optional prefix like 'aarch64-linux-gnu-'; auto-derived from arch). "
+                "For arm64/arm32, ARCH= and CROSS_COMPILE= are passed to make automatically."
+            ),
         ),
         StructuredTool.from_function(
             name="check_file_exists",
