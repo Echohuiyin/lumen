@@ -3,6 +3,9 @@
 LangGraph multi-agent workflow for Linux kernel bug analysis, reproduction, and
 knowledge base archiving.
 
+> **New to Lumen?** Start with the [Step-by-step Deployment Guide](DEPLOYMENT.md)
+> for a thorough walkthrough from bare metal to first analysis run.
+
 ## Quick Start
 
 ```bash
@@ -12,7 +15,7 @@ sudo apt install qemu-system-x86 busybox-static crash cpio git python3 python3-v
 # 2. Deploy (creates venv, installs deps, generates config)
 bash deploy.sh
 
-# 3. Activate and run
+# 3. Edit .env with your API key and kernel source path, then:
 source venv/bin/activate
 python3 main.py test_assets/deadlock/input.txt --config config.json
 ```
