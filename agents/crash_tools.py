@@ -11,6 +11,7 @@ Shared session management:
   competing for the same binary.
 """
 
+import os
 import re
 import threading
 from pathlib import Path
@@ -26,11 +27,66 @@ _session_registry: Dict[str, Any] = {}
 _session_lock = threading.Lock()
 
 
+def _sniff_arch_from_elf(path: str) -> str:
+    """Read e_machine from ELF header to detect target arch.
+
+    Mirrors kernel_expert._sniff_arch_from_elf — kept local to avoid
+    circular import. Returns 'x86_64' / 'arm64' / 'arm32' / ''.
+    """
+    _ELF_MACHINE_TO_ARCH = {
+        62:  "x86_64",  # EM_X86_64
+        3:   "x86_64",  # EM_386
+        183: "arm64",   # EM_AARCH64
+        40:  "arm32",   # EM_ARM
+    }
+    try:
+        with open(path, "rb") as f:
+            magic = f.read(6)
+            if magic[:4] != b"\x7fELF":
+                return ""
+            ei_data = magic[5]
+            f.seek(18)
+            e_machine_bytes = f.read(2)
+            if len(e_machine_bytes) != 2:
+                return ""
+            byteorder = "little" if ei_data == 1 else "big"
+            e_machine = int.from_bytes(e_machine_bytes, byteorder)
+        return _ELF_MACHINE_TO_ARCH.get(e_machine, "")
+    except (OSError, IOError):
+        return ""
+
+
+def _select_crash_binary_for_arch(arch: str) -> str | None:
+    """Pick the right crash binary for the target arch.
+
+    Looks for crash_<arch> alongside the default crash binary
+    (typically ~/crash/crash_<arch>). Returns None if no arch-specific
+    binary is found — caller falls back to AppConfig's default detection.
+    """
+    if not arch:
+        return None
+    candidates = [
+        Path.home() / "crash" / f"crash_{arch}",
+        Path("/usr/local/bin") / f"crash_{arch}",
+    ]
+    for c in candidates:
+        if c.is_file() and os.access(c, os.X_OK):
+            return str(c)
+    return None
+
+
 def get_or_create_crash_session(vmcore_path: str, vmlinux_path: str) -> Any:
     """Return an existing shared session or create a new one.
 
     Sessions are keyed by (vmcore_path, vmlinux_path) so experts that
     target the same vmcore reuse the same crash process.
+
+    Auto-selects an arch-specific crash binary (crash_arm64 / crash_x86_64)
+    by sniffing vmlinux's ELF e_machine. This is required because crash is
+    compiled with a single TARGET arch — an x86_64-targeted crash cannot
+    parse an arm64 vmcore ("machine type mismatch" → "not a supported
+    file format"). If no arch-specific binary is found, falls back to
+    AppConfig's default detection (which may fail for cross-arch vmscores).
     """
     from aicrasher.crash_session import CrashSessionManager
     from aicrasher.config import AppConfig
@@ -50,6 +106,11 @@ def get_or_create_crash_session(vmcore_path: str, vmlinux_path: str) -> Any:
             session, refcount = _session_registry[key]
             _session_registry[key] = (session, refcount + 1)
             return session
+
+        arch = _sniff_arch_from_elf(str(vmlinux))
+        arch_binary = _select_crash_binary_for_arch(arch)
+        if arch_binary:
+            os.environ["CRASH_BINARY"] = arch_binary
 
         config = AppConfig()
         session = CrashSessionManager(
