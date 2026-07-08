@@ -222,30 +222,68 @@ export KERNEL_SOURCE_DIR="${HOME}/code/OLK-6.6"
 
 ### 5.2 Crash Utility
 
-The `crash` utility is already installed via apt in Section 2. Verify:
+The `crash` utility is required for vmcore analysis (lock_analysis,
+crash_analysis, kernel_log_analysis experts). The system crash from
+apt works for x86_64 vmcores:
 
 ```bash
 crash --version
 # Expected: crash 8.0.4+
 ```
 
-If the system crash is too old for your vmlinux, build from source:
+#### 5.2.1 Arch-specific binaries (REQUIRED for cross-arch analysis)
+
+**Crash is compiled with a single TARGET arch hardcoded.** An x86_64-targeted
+crash CANNOT parse an arm64 vmcore — it errors with `machine type mismatch:
+crash=X86_64 vmcore=ARM64` then `not a supported file format`.
+
+Lumen auto-selects the right crash binary by sniffing the vmlinux's ELF
+`e_machine` field (commit `980d89b`). It looks for `crash_<arch>` at:
+- `~/crash/crash_<arch>` (source-built, recommended)
+- `/usr/local/bin/crash_<arch>`
+
+Build both binaries from crash source (one-time setup, ~10 min each):
 
 ```bash
-cd Analysis-SKILL/tools/crash-vmcore
-./scripts/build_crash.sh
-# Installs to: Analysis-SKILL/tools/crash-vmcore/bin/crash
+# Clone crash source (9.0.2+ recommended for QEMU vmscores with VMCOREINFO)
+git clone https://github.com/crash-utility/crash.git ~/crash
+cd ~/crash
+
+# Build x86_64-targeted binary
+make target=X86_64 -j$(nproc)
+cp crash crash_x86_64
+
+# Build arm64-targeted binary (must clean gdb-16.2 between target switches)
+rm -rf gdb-16.2 && make clean
+make target=ARM64 -j$(nproc)
+cp crash crash_arm64
+
+# Keep a default `crash` symlink/binary for system fallback
+cp crash_x86_64 crash   # default = x86_64
 ```
 
-Or download a newer version:
+> **Gotcha**: crash's `Makefile` rejects target switches without a clean.
+> Always run `rm -rf gdb-16.2 && make clean` before `make target=<ARCH>`,
+> or the build silently reuses the previous target's gdb config.
+
+Verify:
 
 ```bash
-wget https://github.com/crash-utility/crash/releases/download/8.0.4/crash-8.0.4.tar.gz
-tar xzf crash-8.0.4.tar.gz
-cd crash-8.0.4
-make
-sudo cp crash /usr/local/bin/
+$ ~/crash/crash_arm64 -v | head -1
+crash 9.0.2++
+
+$ strings ~/crash/crash_arm64 | grep -E '^(X86_64|ARM64)$' | head -1
+ARM64
+
+$ strings ~/crash/crash_x86_64 | grep -E '^(X86_64|ARM64)$' | head -1
+X86_64
 ```
+
+#### 5.2.2 Alternative: use system crash (x86_64 only)
+
+If you only analyze x86_64 vmcores, the system `crash` from apt is sufficient.
+Skip the source build and ignore the `crash_build_hint` warning at end of
+deploy. Arch-suffixed binaries are only needed for arm64/arm32 vmcores.
 
 ---
 
@@ -373,13 +411,18 @@ bash deploy.sh
 
 1. **Python check**: verifies Python 3.10+
 2. **External dependency check**: looks for qemu, busybox, crash, claude, cpio, gzip, git, semcode-mcp
-3. **Virtual environment**: creates `venv/` and activates it
-4. **Python deps**: `pip install -r requirements.txt`
-5. **Env setup**: creates `.env` template if it doesn't exist (edit this!)
-6. **Config**: generates `config.json` from `config.json.template` if not present
-7. **Directory init**: creates `knowledge_base/` and `outputs/`
-8. **Submodule init**: `git submodule update --init`
-9. **Verification**: imports langgraph, langchain, langchain_openai to confirm deps work
+3. **Arch-specific crash binary check**: verifies `crash_x86_64` and
+   `crash_arm64` are present at `~/crash/` or `/usr/local/bin/` (required
+   for cross-arch vmcore analysis — see Section 5.2.1)
+4. **Virtual environment**: creates `venv/` and activates it
+5. **Python deps**: `pip install -r requirements.txt`
+6. **Env setup**: creates `.env` template if it doesn't exist (edit this!)
+7. **Config**: generates `config.json` from `config.json.template` if not present
+8. **Directory init**: creates `knowledge_base/` and `outputs/`
+9. **Submodule init**: `git submodule update --init`
+10. **Verification**: imports langgraph, langchain, langchain_openai to confirm deps work
+11. **Crash build hint**: prints build commands for missing `crash_<arch>`
+    binaries (non-fatal — x86_64-only deployments can ignore)
 
 ### Post-deploy: configure .env
 
@@ -442,6 +485,14 @@ full workflow and reach knowledge base generation).
 python3 main.py test_assets/deadlock/input.txt --config config.json
 ```
 
+For the arm64 variant (requires `crash_arm64` binary from Section 5.2.1
+and `test_assets/deadlock_arm64/` artifacts built via
+`scripts/build_arm64_deadlock_testcase.sh`):
+
+```bash
+python3 main.py test_assets/deadlock_arm64/input.txt --config config.json
+```
+
 ### 10.3 Expected output
 
 The workflow takes 5-20 minutes depending on LLM speed and hardware:
@@ -469,7 +520,7 @@ Agents run in order:
 |-------|---------------|------|
 | Validator | Instant | <1s |
 | PM | Analyzes input, selects experts | 5-15s |
-| ToolExpert (crash) | Runs crash commands on vmcore | 10-60s |
+| ToolExpert (crash) | Runs crash commands on vmcore (uses `crash_x86_64` or `crash_arm64` based on vmlinux arch) | 10-60s |
 | ToolExpert (knowledge) | Searches knowledge base | 5-10s |
 | KernelExpert | Claude Code: writes reproducer | 2-10 min |
 | TestExpert | Boots kernel in QEMU, checks signal | 1-5 min |
@@ -556,9 +607,11 @@ For a machine with no internet access, pre-download:
 ## 12. Cross-Architecture (arm64) Analysis
 
 Lumen supports analyzing arm64 vmcores and reproducing arm64 kernel bugs from
-an x86_64 deployment. Crash analysis is cross-arch natively (a single x86
-crash binary can analyze arm64 vmcores when given an arm64 vmlinux); the
-QEMU reproduction path uses `qemu-system-aarch64` with TCG emulation.
+an x86_64 deployment. Both the crash analysis path and the QEMU reproduction
+path are cross-arch capable.
+
+**Key requirement**: crash utility must be built with `target=ARM64` (see
+Section 5.2.1). The default x86_64-targeted crash CANNOT parse arm64 vmscores.
 
 ### 12.1 Install arm64 cross-arch dependencies
 
@@ -580,6 +633,11 @@ command -v qemu-system-aarch64 && qemu-system-aarch64 --version | head -1
 command -v aarch64-linux-gnu-gcc && aarch64-linux-gnu-gcc --version | head -1
 file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 # Expected: "ELF 64-bit LSB executable, ARM aarch64, ... statically linked"
+
+# Crash arm64 binary (REQUIRED for arm64 vmcore analysis)
+ls -x ~/crash/crash_arm64 /usr/local/bin/crash_arm64 2>/dev/null
+strings ~/crash/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head -1
+# Expected: ARM64
 ```
 
 ### 12.2 Prepare arm64 kernel source and assets
@@ -644,14 +702,47 @@ machine config per arch:
 - Boot alone takes 30-90s (vs 5-10s for x86 KVM)
 - Memory pressure tests that need 1G+ allocations may OOM with default 2G
 
-### 12.6 Limitations
+### 12.6 Bundled arm64 test case
 
-- **No bundled arm64 test case** in `test_assets/`. Bring your own arm64
-  Image + vmlinux + vmcore for end-to-end validation.
-- **No KVM acceleration** for arm64 on x86 host (TCG only). If you have an
-  arm64 host available, deploy Lumen there for faster arm64 testing.
+`test_assets/deadlock_arm64/` is a complete arm64 reference testcase (Mutex
+ABBA deadlock → hung_task panic). The artifacts are gitignored (too large:
+vmlinux ~417M, vmcore.elf ~513M) but a builder script is committed:
+
+```bash
+# One-shot build: kernel + module + initramfs + QEMU + vmcore capture
+# Estimated: 35-65 min (kernel build dominates), ~930MB artifacts
+bash scripts/build_arm64_deadlock_testcase.sh
+
+# Output at test_assets/deadlock_arm64/:
+#   vmlinux                  — arm64 ELF, with debug_info
+#   Image                    — arm64 boot executable
+#   vmcore.elf               — arm64 ELF core, VMCOREINFO present
+#   mutex_abba_deadlock.ko   — arm64 ELF relocatable
+#   boot.log                 — QEMU console, contains hung_task panic
+#   input.txt                — Lumen workflow input (target_arch omitted,
+#                              tests _sniff_arch_from_elf)
+#   REPRODUCTION.md          — manual reproduction steps
+```
+
+Run end-to-end:
+
+```bash
+source venv/bin/activate
+python3 main.py test_assets/deadlock_arm64/input.txt
+# Expected: lock_analysis.txt contains real crash output
+#           (mutex_lock call trace, PID 183/184 in D-state,
+#            mutex owner decoding, ABBA lock order proof)
+```
+
+### 12.7 Limitations
+
+- **No KVM acceleration** for arm64 on x86 host (TCG only, 5-10x slower than
+  x86 KVM). If you have an arm64 host available, deploy Lumen there for
+  faster arm64 testing.
 - **Image.gz (compressed arm64)** not auto-decompressed — boot with raw
   `Image` only. Decompress with `gunzip Image.gz` if needed.
+- **OLK source tree** ends up arm64-configured after running the builder
+  script. Switch back with `make mrproper && make defconfig` (x86_64).
 
 
 ## 13. Troubleshooting

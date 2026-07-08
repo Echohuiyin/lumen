@@ -39,6 +39,50 @@ preflight_check() {
     check_cmd claude "npm install -g @anthropic-ai/claude-code" || ((fail_count++))
     check_cmd git "apt install git" || ((fail_count++))
 
+    # ── Crash utility: arch-specific binaries ────────────────────────────────
+    # crash is compiled with a single TARGET arch hardcoded. An x86_64-targeted
+    # crash CANNOT parse an arm64 vmcore ("machine type mismatch" → "not a
+    # supported file format"). Lumen auto-selects crash_<arch> based on
+    # vmlinux's ELF e_machine (commit 980d89b). Verify the binaries exist.
+    # Lumen looks for arch-suffixed binaries at:
+    #   ~/crash/crash_<arch>      (source-built)
+    #   /usr/local/bin/crash_<arch>
+    echo ""
+    info "=== crash 二进制 (按架构区分) ==="
+    local crash_default=""
+    if [ -x "${HOME}/crash/crash" ]; then
+        crash_default="${HOME}/crash/crash"
+        ok "crash (default) — $crash_default (source-built)"
+    elif command -v crash &>/dev/null; then
+        crash_default="$(command -v crash)"
+        ok "crash (default) — $crash_default (system)"
+    else
+        warn "crash (default) — NOT FOUND (apt install crash, or build from source)"
+    fi
+
+    # Check for arch-suffixed binaries in Lumen's lookup paths
+    local crash_x86_64_found=""
+    local crash_arm64_found=""
+    for d in "${HOME}/crash" "/usr/local/bin"; do
+        if [ -z "$crash_x86_64_found" ] && [ -x "${d}/crash_x86_64" ]; then
+            crash_x86_64_found="${d}/crash_x86_64"
+        fi
+        if [ -z "$crash_arm64_found" ] && [ -x "${d}/crash_arm64" ]; then
+            crash_arm64_found="${d}/crash_arm64"
+        fi
+    done
+
+    if [ -n "$crash_x86_64_found" ]; then
+        ok "crash_x86_64 — $crash_x86_64_found"
+    else
+        warn "crash_x86_64 — NOT FOUND (x86_64 vmcore analysis works with default crash, but arch-suffixed binary recommended for consistency)"
+    fi
+    if [ -n "$crash_arm64_found" ]; then
+        ok "crash_arm64 — $crash_arm64_found"
+    else
+        warn "crash_arm64 — NOT FOUND (arm64 vmcore analysis will FAIL; see crash_build_hint at end of deploy)"
+    fi
+
     # Optional: arm64 cross-arch analysis & reproduction
     # Not required for x86_64-only deployments
     echo ""
@@ -234,6 +278,46 @@ usage() {
     echo ""
     echo "  也可以用 test_assets/ 内置用例快速测试:"
     echo "    python main.py test_assets/deadlock/input.txt --config config.json"
+    echo "    python main.py test_assets/deadlock_arm64/input.txt --config config.json  # arm64"
+    echo ""
+}
+
+# ── Build crash binaries hint ─────────────────────────────────────────────────
+crash_build_hint() {
+    local has_x86=0 has_arm64=0
+    for d in "${HOME}/crash" "/usr/local/bin"; do
+        [ -x "${d}/crash_x86_64" ] && has_x86=1
+        [ -x "${d}/crash_arm64" ] && has_arm64=1
+    done
+
+    if [ "$has_x86" = "1" ] && [ "$has_arm64" = "1" ]; then
+        return 0
+    fi
+
+    echo ""
+    warn "=== 需要构建 arch-specific crash 二进制 (用于跨架构分析) ==="
+    echo ""
+    echo "  crash 编译时硬编码 TARGET arch — x86_64-targeted crash 不能分析 arm64 vmcore。"
+    echo "  Lumen 自动按 vmlinux 的 ELF e_machine 选择 ~/crash/crash_<arch> 或 /usr/local/bin/crash_<arch>。"
+    echo ""
+    if [ "$has_x86" = "0" ]; then
+        echo "  构建 x86_64 版本（用于分析 x86_64 vmcore）:"
+        echo "    cd ~/crash && make target=X86_64 -j\$(nproc)"
+        echo "    cp crash crash_x86_64"
+        echo ""
+    fi
+    if [ "$has_arm64" = "0" ]; then
+        echo "  构建 arm64 版本（用于分析 arm64 vmcore，约 5-10 min）:"
+        echo "    cd ~/crash && rm -rf gdb-16.2 && make clean"
+        echo "    make target=ARM64 -j\$(nproc)"
+        echo "    cp crash crash_arm64"
+        echo ""
+        echo "  注意：crash 源码树每次只能编一种 target，切换 target 必须:"
+        echo "    rm -rf gdb-16.2 && make clean && make target=<ARCH>"
+        echo ""
+    fi
+    echo "  如果 ~/crash 不存在，先 clone crash 源码:"
+    echo "    git clone https://github.com/crash-utility/crash.git ~/crash"
     echo ""
 }
 
@@ -254,6 +338,7 @@ main() {
     git submodule update --init 2>/dev/null || true
     verify
     usage
+    crash_build_hint
 
     echo ""
     ok "部署完成！"
