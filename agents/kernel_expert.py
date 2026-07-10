@@ -233,7 +233,7 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
     return "\n".join(parts)
 
 
-def _run_kernel_expert_with_claude_code(
+def _run_kernel_expert_with_agent_loop(
     llm,
     system_prompt: str,
     user_content: str,
@@ -243,16 +243,24 @@ def _run_kernel_expert_with_claude_code(
     boot_kernel_path: str = "",
     test_assets_dir: str = "",
 ) -> AIMessage:
-    """Execute kernel expert analysis via Claude Code CLI.
+    """Execute kernel expert analysis via an agent-loop CLI backend.
 
-    Delegates the tool-calling loop to `claude -p`, letting Claude Code's own
-    agent loop handle Read/Write/Edit/Bash/Grep/Glob. Returns the final text
-    result with KERNEL_CONTRACT and marker lines for downstream parsing.
+    Delegates the tool-calling loop to `claude -p` (claude_code backend) or
+    `opencode run` (opencode backend), letting the CLI's own agent loop
+    handle Read/Write/Edit/Bash/Grep/Glob. Returns the final text result
+    with KERNEL_CONTRACT and marker lines for downstream parsing.
+
+    Both backends implement the same invoke(messages, workdir, add_dirs)
+    contract, so this function is backend-agnostic — the choice is made
+    at config-time via `agents.kernel_expert.backend`.
     """
-    header = _format_agent_header_text(expert_name, "分析构造用例（Claude Code）")
+    backend_label = "Claude Code" if llm.__class__.__name__ == "ClaudeCodeBackend" else (
+        "OpenCode" if llm.__class__.__name__ == "OpenCodeBackend" else "Agent Loop"
+    )
+    header = _format_agent_header_text(expert_name, f"分析构造用例（{backend_label}）")
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(header)
-        f.write("执行模式: real (Claude Code CLI agent)\n\n")
+        f.write(f"执行模式: real ({backend_label} CLI agent)\n\n")
 
     try:
         kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
@@ -292,13 +300,13 @@ def _run_kernel_expert_with_claude_code(
 
         output_content = response.content or ""
         if not output_content.strip():
-            output_content = "（Claude Code 未生成最终文本，请检查 Claude Code CLI 输出）"
+            output_content = f"（{backend_label} 未生成最终文本，请检查 {backend_label} CLI 输出）"
         _write_tool_call_output(output_file, output_content, expert_name)
 
         return response
 
     except Exception as e:
-        error_msg = f"Claude Code 调用失败: {str(e)}"
+        error_msg = f"{backend_label} 调用失败: {str(e)}"
         _write_tool_call_output(output_file, error_msg, expert_name)
         # Re-raise CLI startup failures, max_turns exhaustion, and timeouts
         # so kernel_expert_node can route to a blocked contract instead of
@@ -438,13 +446,13 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         if _bk.parent.is_dir() and (_bk.parent / "input.txt").exists():
             test_assets_dir = str(_bk.parent)
 
-    # 执行 Claude Code agent 分析
+    # 执行 agent-loop CLI 分析（claude_code 或 opencode backend）
     # Snapshot the mtime of the newest reproducer dir BEFORE the CLI runs,
     # so the max_turns recovery path can distinguish files the agent wrote
     # during this invocation from stale dirs left over by a previous case.
     cli_start_mtime = _newest_reproducer_mtime(paths_get_output_dir())
     try:
-        response = _run_kernel_expert_with_claude_code(
+        response = _run_kernel_expert_with_agent_loop(
             llm=llm,
             system_prompt=system_prompt,
             user_content=user_content,
@@ -543,7 +551,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             + f"\n\n## 维护人员关键思路（优先参考，不强制）\n\n{hint}\n"
         )
         try:
-            response = _run_kernel_expert_with_claude_code(
+            response = _run_kernel_expert_with_agent_loop(
                 llm=llm,
                 system_prompt=system_prompt,
                 user_content=hinted_user_content,
@@ -586,6 +594,8 @@ def _parse_kernel_expert_response(
     if text and (
         "Claude Code 调用失败" in text
         or "Claude Code timed out" in text
+        or "OpenCode 调用失败" in text
+        or "OpenCode timed out" in text
         or "Reached maximum number of turns" in text
         or "[cli_max_turns]" in text
     ):

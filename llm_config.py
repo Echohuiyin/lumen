@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
-from agents.backends import AnthropicBackend, CLIBackend, ClaudeCodeBackend, HTTPBackend
+from agents.backends import AnthropicBackend, CLIBackend, ClaudeCodeBackend, HTTPBackend, OpenCodeBackend
 from paths import PROJECT_ROOT, resolve_aicrasher_path
 
 # Add aicrasher to Python path for crash session management (from submodule)
@@ -25,10 +25,14 @@ AUTOMATION_AGENTS = [
     "improvement",
 ]
 
-# Automation agents permitted to use the Claude Code CLI backend.
-# These agents delegate to `claude -p` whose own agent loop is mature enough
-# to run without interactive prompts (unlike raw CLIBackend).
-CLAUDE_CODE_ALLOWED = {"kernel_expert"}
+# Automation agents permitted to use an agent-loop CLI backend (claude_code
+# or opencode). These delegates run `claude -p` / `opencode run` whose own
+# agent loop is mature enough to run without interactive prompts (unlike raw
+# CLIBackend). kernel_expert is the canonical user — it needs Read/Write/Bash
+# to build reproducer artifacts.
+AGENT_LOOP_ALLOWED = {"kernel_expert"}
+# Back-compat alias for any code still referencing the old name.
+CLAUDE_CODE_ALLOWED = AGENT_LOOP_ALLOWED
 
 DEFAULT_CONFIG_PATH = "config.json"
 
@@ -42,21 +46,25 @@ def validate_agent_backend(agent_name: str, backend: str) -> None:
     """Validate that automation agents don't use raw CLI backend.
 
     CLI backend requires interactive user input and will block the workflow.
-    Automation agents must use OpenAI, HTTP, or Claude Code backend for
-    automatic execution. Claude Code (`claude -p`) is allowed for agents in
-    CLAUDE_CODE_ALLOWED because it runs non-interactively with its own agent
-    loop.
+    Automation agents must use OpenAI, HTTP, or an agent-loop backend
+    (claude_code / opencode) for automatic execution. Both `claude -p` and
+    `opencode run` run non-interactively with their own agent loop, and
+    are gated by AGENT_LOOP_ALLOWED.
     """
     if agent_name in AUTOMATION_AGENTS and backend == "cli":
         raise ValueError(
             f"Agent '{agent_name}' is an automation agent and cannot use CLI backend. "
             f"CLI backend requires interactive user input and will block the workflow. "
-            f"Please use 'openai', 'http', or 'claude_code' backend instead."
+            f"Please use 'openai', 'http', 'claude_code', or 'opencode' backend instead."
         )
-    if agent_name in AUTOMATION_AGENTS and backend == "claude_code" and agent_name not in CLAUDE_CODE_ALLOWED:
+    if (
+        agent_name in AUTOMATION_AGENTS
+        and backend in {"claude_code", "opencode"}
+        and agent_name not in AGENT_LOOP_ALLOWED
+    ):
         raise ValueError(
-            f"Agent '{agent_name}' is not permitted to use claude_code backend. "
-            f"Only agents in CLAUDE_CODE_ALLOWED may use it."
+            f"Agent '{agent_name}' is not permitted to use {backend} backend. "
+            f"Only agents in AGENT_LOOP_ALLOWED may use an agent-loop CLI."
         )
 
 
@@ -109,6 +117,16 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
             disable_skills=bool(agent_config.get("disable_skills", defaults.get("disable_skills", False))),
         )
+    elif backend == "opencode":
+        return OpenCodeBackend(
+            cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "opencode"),
+            cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 3600)),
+            model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", ""),
+            agent_name=agent_config.get("agent_name") or defaults.get("agent_name", "lumen_kernel_expert"),
+            permission_mode=agent_config.get("permission_mode") or defaults.get("permission_mode", "bypassPermissions"),
+            pure=bool(agent_config.get("pure", defaults.get("pure", False))),
+            semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
+        )
     elif backend == "http":
         url = agent_config.get("http_url") or defaults.get("http_url", "")
         if not url:
@@ -121,7 +139,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             response_path=agent_config.get("http_response_path") or defaults.get("http_response_path", "choices.0.message.content"),
         )
     else:
-        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', 'claude_code', or 'http'.")
+        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', 'claude_code', 'opencode', or 'http'.")
 
 
 def load_prompt_from_file(path: str) -> str:

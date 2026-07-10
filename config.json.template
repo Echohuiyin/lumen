@@ -31,6 +31,15 @@
         "args": ["-d", "${SEMCODE_DB_DIR:-${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}/.semcode.db}"]
       }
     },
+    "_kernel_expert_opencode_alt": {
+      "_comment": "Alternate kernel_expert config for environments without Claude Code. Copy these fields over kernel_expert above and remove the _alt prefix. OpenCode requires `opencode` CLI installed (curl -fsSL https://opencode.ai/install | bash) and a provider configured in ~/.config/opencode/opencode.jsonc. semcode MCP must be registered via `opencode mcp add semcode <command> -- -d <db>` (no CLI flag injection).",
+      "backend": "opencode",
+      "cli_command": "opencode",
+      "model": "csi-provider/GLM-5",
+      "agent_name": "lumen_kernel_expert",
+      "cli_timeout": 3600,
+      "pure": false
+    },
     "test_expert": {
       "prompt_file": "prompts/test_expert.md"
     },

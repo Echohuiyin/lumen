@@ -15,6 +15,8 @@ Covers:
   4. kernel_expert reads outputs/kernel_contract.json when text-extracted
      contract is incomplete (Claude Code `--output-format json` returns
      only the final assistant turn, losing markers written mid-loop).
+  5. OpenCodeBackend integration (alternative agent-loop CLI for
+     environments without Claude Code).
 """
 
 import json
@@ -312,3 +314,491 @@ KERNEL_CONTRACT:
             contract = ke._extract_kernel_contract(text)
             assert ke._kernel_contract_has_handoff(contract)
             assert contract.expected_signal == "BUG: KASAN:"
+
+
+# ---------------------------------------------------------------------------
+# Fix 5: OpenCodeBackend integration
+# ---------------------------------------------------------------------------
+
+
+def _make_opencode_subprocess_result(stdout: str, stderr: str = "", returncode: int = 0):
+    """Helper: build a CompletedProcess-like object for OpenCodeBackend."""
+    class _Result:
+        def __init__(self, stdout, stderr, returncode):
+            self.stdout = stdout
+            self.stderr = stderr
+            self.returncode = returncode
+    return _Result(stdout, stderr, returncode)
+
+
+def test_opencode_extract_session_id():
+    """_extract_session_id must pull sessionID from step_start event."""
+    from agents.backends import OpenCodeBackend
+
+    b = OpenCodeBackend(cli_command="opencode")
+
+    stdout = (
+        '{"type":"step_start","part":{"id":"p1","sessionID":"ses_abc123","type":"step-start"}}\n'
+        '{"type":"text","part":{"text":"hello"}}\n'
+    )
+    assert b._extract_session_id(stdout) == "ses_abc123"
+
+    # No step_start → None
+    assert b._extract_session_id('{"type":"text","part":{"text":"hi"}}\n') is None
+
+    # step_start without sessionID → None
+    assert b._extract_session_id('{"type":"step_start","part":{"type":"step-start"}}\n') is None
+
+    # Empty output → None
+    assert b._extract_session_id("") is None
+
+
+def test_opencode_export_session_text(monkeypatch):
+    """_export_session_text must extract assistant text from export JSON."""
+    from agents.backends import OpenCodeBackend
+
+    b = OpenCodeBackend(cli_command="opencode")
+
+    export_json = json.dumps({
+        "info": {"id": "ses_abc123"},
+        "messages": [
+            {
+                "info": {"role": "user"},
+                "parts": [{"type": "text", "text": "analyze this"}],
+            },
+            {
+                "info": {"role": "assistant"},
+                "parts": [
+                    {"type": "text", "text": "Here is the analysis.\n"},
+                    {"type": "text", "text": "Conclusion: OK."},
+                ],
+            },
+        ],
+    })
+
+    def fake_run(cmd, **kwargs):
+        return _make_opencode_subprocess_result(export_json)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    text = b._export_session_text("ses_abc123")
+    assert text == "Here is the analysis.\nConclusion: OK."
+
+
+def test_opencode_export_session_text_empty_parts(monkeypatch):
+    """_export_session_text must return None when assistant parts are empty."""
+    from agents.backends import OpenCodeBackend
+
+    b = OpenCodeBackend(cli_command="opencode")
+
+    export_json = json.dumps({
+        "info": {"id": "ses_abc123"},
+        "messages": [
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "hi"}]},
+            {"info": {"role": "assistant"}, "parts": []},
+        ],
+    })
+
+    def fake_run(cmd, **kwargs):
+        return _make_opencode_subprocess_result(export_json)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    assert b._export_session_text("ses_abc123") is None
+
+
+def test_opencode_export_session_text_export_fails(monkeypatch):
+    """_export_session_text must return None when export fails."""
+    from agents.backends import OpenCodeBackend
+
+    b = OpenCodeBackend(cli_command="opencode")
+
+    def fake_run(cmd, **kwargs):
+        return _make_opencode_subprocess_result("", returncode=1)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    assert b._export_session_text("ses_abc123") is None
+
+
+def test_opencode_backend_uses_export_when_session_id_found(tmp_path, monkeypatch):
+    """When step_start contains a sessionID, the backend must use
+    opencode export to retrieve the assistant response."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    run_jsonl = '{"type":"step_start","part":{"id":"p1","sessionID":"ses_test123","type":"step-start"}}\n'
+
+    export_json = json.dumps({
+        "info": {"id": "ses_test123"},
+        "messages": [
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "hi"}]},
+            {
+                "info": {"role": "assistant"},
+                "parts": [{"type": "text", "text": "OK from export"}],
+            },
+        ],
+    })
+
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # First call: opencode run --format json
+            return _make_opencode_subprocess_result(run_jsonl)
+        else:
+            # Second call: opencode export <sessionID>
+            return _make_opencode_subprocess_result(export_json)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    msg = b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+    assert msg.content == "OK from export", (
+        f"must use export content; got {msg.content!r}"
+    )
+    assert call_count == 2, "export must be called after run"
+
+
+def test_opencode_backend_falls_back_when_export_fails(tmp_path, monkeypatch):
+    """When export returns no assistant text, must fall back to JSONL
+    text events parsing (for newer opencode versions that may emit them)."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    run_jsonl = (
+        '{"type":"step_start","part":{"id":"p1","sessionID":"ses_test456","type":"step-start"}}\n'
+        '{"type":"text","part":{"text":"fallback text"}}\n'
+    )
+
+    # Export returns empty assistant parts (model API error, etc.)
+    export_json = json.dumps({
+        "info": {"id": "ses_test456"},
+        "messages": [
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "hi"}]},
+            {"info": {"role": "assistant"}, "parts": []},
+        ],
+    })
+
+    call_count = 0
+
+    def fake_run(cmd, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return _make_opencode_subprocess_result(run_jsonl)
+        else:
+            return _make_opencode_subprocess_result(export_json)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    msg = b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+    assert msg.content == "fallback text", (
+        f"must fall back to JSONL text; got {msg.content!r}"
+    )
+
+
+def test_opencode_backend_agent_file_generation(tmp_path, monkeypatch):
+    """OpenCodeBackend must write a markdown agent file with YAML frontmatter
+    and the system prompt as body before each invoke. The agent file is
+    OpenCode's only way to receive a system prompt (no --system-prompt flag).
+    """
+    import importlib
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    b = OpenCodeBackend(
+        cli_command="opencode",
+        model="csi-provider/GLM-5",
+        agent_name="lumen_test_agent",
+    )
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        return _make_opencode_subprocess_result(
+            '{"type":"text","part":{"text":"hello"}}\n'
+        )
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    b.invoke(
+        [SystemMessage(content="you are a kernel expert"),
+         HumanMessage(content="analyze this")],
+        workdir=str(tmp_path),
+    )
+
+    agent_file = Path.home() / ".opencode" / "agents" / "lumen_test_agent.md"
+    assert agent_file.exists(), "agent markdown file must be written"
+    content = agent_file.read_text()
+    assert content.startswith("---\n"), "agent file must have YAML frontmatter"
+    assert "mode: primary" in content, "agent file must declare primary mode"
+    assert "you are a kernel expert" in content, "system prompt must be the body"
+
+    assert "--agent" in captured["cmd"]
+    assert "lumen_test_agent" in captured["cmd"]
+    assert "--format" in captured["cmd"]
+    assert "json" in captured["cmd"]
+    assert "--dangerously-skip-permissions" in captured["cmd"]
+
+
+def test_opencode_backend_accumulates_text_events(tmp_path, monkeypatch):
+    """OpenCode --format json emits JSONL with no terminal result event.
+    All type:'text' events must be concatenated into the final AIMessage."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    jsonl = (
+        '{"type":"step_start","part":{"type":"step-start"}}\n'
+        '{"type":"tool_use","part":{"tool":"bash"}}\n'
+        '{"type":"tool_result","part":{"content":"some output"}}\n'
+        '{"type":"text","part":{"text":"partial answer "}}\n'
+        '{"type":"text","part":{"text":"continued"}}\n'
+    )
+
+    def fake_run(cmd, **kwargs):
+        return _make_opencode_subprocess_result(jsonl)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    msg = b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+    assert msg.content == "partial answer continued", (
+        f"text events must be concatenated; got {msg.content!r}"
+    )
+
+
+def test_opencode_backend_skips_non_text_events(tmp_path, monkeypatch):
+    """Non-text events (step_start, tool_use, tool_result) must NOT pollute
+    the final AIMessage content."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    jsonl = (
+        '{"type":"step_start","part":{"type":"step-start","text":"should be ignored"}}\n'
+        '{"type":"tool_use","part":{"tool":"bash","text":"should be ignored"}}\n'
+        '{"type":"text","part":{"text":"only this"}}\n'
+    )
+
+    monkeypatch.setattr(
+        "agents.backends.subprocess.run",
+        lambda cmd, **kw: _make_opencode_subprocess_result(jsonl),
+    )
+
+    msg = b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+    assert msg.content == "only this"
+
+
+def test_opencode_backend_raises_on_nonzero_exit(tmp_path, monkeypatch):
+    """Non-zero returncode must raise RuntimeError with stderr (or stdout)
+    prefix so kernel_expert routes to the blocked-contract path."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    monkeypatch.setattr(
+        "agents.backends.subprocess.run",
+        lambda cmd, **kw: _make_opencode_subprocess_result(
+            stdout="", stderr="model not found", returncode=2
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="OpenCode failed"):
+        b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+
+
+def test_opencode_backend_raises_on_no_text_events(tmp_path, monkeypatch):
+    """When the JSONL stream has zero text events, the backend must raise
+    so kernel_expert falls through to the empty-text fallback rather than
+    silently producing an empty AIMessage."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    monkeypatch.setattr(
+        "agents.backends.subprocess.run",
+        lambda cmd, **kw: _make_opencode_subprocess_result(
+            '{"type":"step_start","part":{}}\n'
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="no text events"):
+        b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+
+
+def test_opencode_backend_passes_model_and_dir(tmp_path, monkeypatch):
+    """-m provider/model and --dir workdir must reach the CLI when set."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(
+        cli_command="opencode",
+        model="csi-provider/GLM-5",
+    )
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _make_opencode_subprocess_result(
+            '{"type":"text","part":{"text":"ok"}}\n'
+        )
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+
+    cmd = captured["cmd"]
+    assert "-m" in cmd
+    m_idx = cmd.index("-m")
+    assert cmd[m_idx + 1] == "csi-provider/GLM-5"
+    assert "--dir" in cmd
+    dir_idx = cmd.index("--dir")
+    assert cmd[dir_idx + 1] == str(tmp_path)
+
+
+def test_opencode_backend_uses_add_dirs_first_when_no_workdir(tmp_path, monkeypatch):
+    """OpenCode only supports single --dir. When workdir is empty but
+    add_dirs is set, the first add_dirs entry should become --dir (kernel
+    source dir is the typical case)."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="csi-provider/GLM-5")
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        return _make_opencode_subprocess_result(
+            '{"type":"text","part":{"text":"ok"}}\n'
+        )
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    kernel_source = tmp_path / "kernel"
+    kernel_source.mkdir()
+    b.invoke(
+        [HumanMessage(content="hi")],
+        add_dirs=[str(kernel_source)],
+    )
+
+    cmd = captured["cmd"]
+    assert "--dir" in cmd
+    dir_idx = cmd.index("--dir")
+    assert cmd[dir_idx + 1] == str(kernel_source)
+    assert captured["cwd"] == str(kernel_source)
+
+
+def test_opencode_backend_timeout_raises_runtime_error(tmp_path, monkeypatch):
+    """TimeoutExpired must surface as RuntimeError with the timeout value
+    so kernel_expert can report it consistently."""
+    import subprocess as sp
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", cli_timeout=5)
+
+    def fake_run(cmd, **kwargs):
+        raise sp.TimeoutExpired(cmd=cmd, timeout=5)
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="OpenCode timed out after 5s"):
+        b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+
+
+def test_opencode_backend_file_not_found(tmp_path, monkeypatch):
+    """FileNotFoundError when CLI binary is missing must surface as
+    RuntimeError naming the CLI (not the workdir)."""
+    import subprocess as sp
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode-not-installed")
+
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError(2, "No such file", cmd[0])
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="OpenCode CLI not found"):
+        b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+
+
+def test_opencode_backend_registered_in_llm_config():
+    """get_llm_with_config must return an OpenCodeBackend when
+    backend='opencode' is set in agent config."""
+    from agents.backends import OpenCodeBackend
+    from llm_config import get_llm_with_config
+
+    llm = get_llm_with_config(
+        {
+            "backend": "opencode",
+            "cli_command": "opencode",
+            "model": "csi-provider/GLM-5",
+            "agent_name": "lumen_kernel_expert",
+            "cli_timeout": 3600,
+        },
+        agent_name="kernel_expert",
+    )
+    assert isinstance(llm, OpenCodeBackend)
+    assert llm._cli_command == "opencode"
+    assert llm._model == "csi-provider/GLM-5"
+    assert llm._agent_name == "lumen_kernel_expert"
+    assert llm._cli_timeout == 3600
+
+
+def test_opencode_backend_blocked_for_non_kernel_expert_agents():
+    """Only kernel_expert is permitted to use opencode backend (same gate
+    as claude_code). validator/pm/test_expert must be rejected."""
+    from llm_config import validate_agent_backend
+
+    validate_agent_backend("kernel_expert", "opencode")  # ok
+
+    for agent in ["validator", "pm", "test_expert", "knowledge_base"]:
+        with pytest.raises(ValueError, match="not permitted to use opencode"):
+            validate_agent_backend(agent, "opencode")
+
+
+def test_opencode_backend_pure_flag(tmp_path, monkeypatch):
+    """pure=True must add --pure to skip external plugins."""
+    from agents.backends import OpenCodeBackend
+    from langchain_core.messages import HumanMessage
+
+    b = OpenCodeBackend(cli_command="opencode", model="m", pure=True)
+
+    captured = {}
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _make_opencode_subprocess_result(
+            '{"type":"text","part":{"text":"ok"}}\n'
+        )
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+
+    b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
+    assert "--pure" in captured["cmd"]
+
+
+def test_kernel_expert_agent_loop_function_renamed():
+    """Old _run_kernel_expert_with_claude_code must be gone, replaced by
+    the backend-agnostic _run_kernel_expert_with_agent_loop."""
+    import agents.kernel_expert as ke
+
+    assert hasattr(ke, "_run_kernel_expert_with_agent_loop")
+    assert not hasattr(ke, "_run_kernel_expert_with_claude_code")
