@@ -22,7 +22,7 @@
       "backend": "claude_code",
       "cli_command": "claude",
       "model": "sonnet",
-      "cli_timeout": 1200,
+      "cli_timeout": 3600,
       "permission_mode": "bypassPermissions",
       "max_turns": 100,
       "disable_skills": true,
