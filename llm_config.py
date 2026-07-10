@@ -87,6 +87,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             model_name=agent_config.get("model_name") or defaults.get("model_name", ""),
             temperature=float(agent_config.get("temperature") if agent_config.get("temperature") is not None else defaults.get("temperature", 0)),
             timeout=int(agent_config.get("http_timeout") if agent_config.get("http_timeout") is not None else defaults.get("http_timeout", 120)),
+            max_tokens=int(agent_config.get("max_tokens") or defaults.get("max_tokens") or 8192),
         )
     elif backend == "cli":
         cli_command = agent_config.get("cli_command") or defaults.get("cli_command", "")

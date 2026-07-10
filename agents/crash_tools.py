@@ -11,6 +11,7 @@ Shared session management:
   competing for the same binary.
 """
 
+import json
 import os
 import re
 import threading
@@ -18,7 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from langchain_core.tools import StructuredTool
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 # ---------------------------------------------------------------------------
 # Shared session registry — prevents multiple concurrent crash processes
@@ -211,6 +212,26 @@ class RunCrashCommandInput(BaseModel):
 class RunCrashCommandsInput(BaseModel):
     """Input schema for run_crash_commands."""
     commands: List[str]
+
+    @field_validator("commands", mode="before")
+    @classmethod
+    def _coerce_to_list(cls, v):
+        # Some model providers (DeepSeek/GLM/MiniMax) occasionally serialize
+        # list-typed args as a JSON string. Coerce gracefully so the tool
+        # call succeeds instead of failing Pydantic validation.
+        if isinstance(v, str):
+            s = v.strip()
+            if s.startswith("["):
+                try:
+                    parsed = json.loads(s)
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed]
+                except json.JSONDecodeError:
+                    pass
+            return [s] if s else []
+        if v is None:
+            return []
+        return v
 
 
 class CollectBaselineInput(BaseModel):

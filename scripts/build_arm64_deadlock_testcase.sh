@@ -76,17 +76,17 @@ ok "kernel ready: vmlinux + arch/arm64/boot/Image"
 log "Phase 2: module cross-compile"
 cp "$MODULE_SRC" "$TARGET_DIR/"
 
-cat > "$TARGET_DIR/Makefile" <<'MAKEFILE'
+cat > "$TARGET_DIR/Makefile" <<MAKEFILE
 obj-m += mutex_abba_deadlock.o
 
-KDIR ?= /home/liumingrui/code/OLK-6.6
-PWD := $(shell pwd)
+KDIR ?= ${OLK_DIR}
+PWD := \$(shell pwd)
 
 all:
-	$(MAKE) -C $(KDIR) M=$(PWD) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules
+	\$(MAKE) -C \$(KDIR) M=\$(PWD) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- modules
 
 clean:
-	$(MAKE) -C $(KDIR) M=$(PWD) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean
+	\$(MAKE) -C \$(KDIR) M=\$(PWD) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- clean
 MAKEFILE
 
 make -C "$TARGET_DIR" KDIR="$OLK_DIR" clean 2>/dev/null || true
@@ -217,7 +217,7 @@ cat > "$TARGET_DIR/REPRODUCTION.md" <<'REPRO'
 
 ## 内核
 
-- 源码：`/home/liumingrui/code/OLK-6.6`（commit `6cf1cf61b43c945adc7c3ca10bfce0d92122b01d`）
+- 源码：`${OLK_DIR}`（commit `6cf1cf61b43c945adc7c3ca10bfce0d92122b01d`）
 - 编译配置：基于 `openeuler_defconfig`，加 `CONFIG_FW_CFG_SYSFS_CMDLINE=y` `CONFIG_BOOTPARAM_HUNG_TASK_PANIC=y` `CONFIG_PANIC_ON_OOPS=y` `CONFIG_DETECT_HUNG_TASK=y` `CONFIG_DEFAULT_HUNG_TASK_TIMEOUT=120` `CONFIG_FW_CFG_SYSFS=y` `CONFIG_DEBUG_INFO_DWARF4=y`
 - 交叉编译：`make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) vmlinux Image modules`
 - 产物：`vmlinux`、`arch/arm64/boot/Image`
@@ -225,7 +225,7 @@ cat > "$TARGET_DIR/REPRODUCTION.md" <<'REPRO'
 ## 复现模块
 
 - 源码：`deadlock_analysis_output/mutex_abba_deadlock.c`（lumen 自带，架构无关）
-- 编译：在 `test_assets/deadlock_arm64/` 下 `make KDIR=/home/liumingrui/code/OLK-6.6`
+- 编译：在 `test_assets/deadlock_arm64/` 下 `make KDIR=${OLK_DIR}`
 - 模块名：`mutex_abba_deadlock.ko`（arm64 ELF relocatable）
 
 ## 触发流程

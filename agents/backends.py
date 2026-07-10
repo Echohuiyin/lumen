@@ -397,7 +397,7 @@ class AnthropicBackend:
         api_key: str,
         model_name: str,
         timeout: int = 120,
-        max_tokens: int = 2048,
+        max_tokens: int = 8192,
         temperature: float = 0,
         max_retries: int = 5,
     ):

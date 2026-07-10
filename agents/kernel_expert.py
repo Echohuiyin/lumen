@@ -622,7 +622,7 @@ def _parse_kernel_expert_response(
             reproducer_dir=reproducer_dir or str(outputs_dir),
             reproducer_module_path=reproducer_module_path,
             test_script_path=test_script_path,
-            expected_signal="blocked for more than",
+            expected_signal="",
             build_status="skipped",
             warnings=["LLM did not produce structured output; contract auto-generated from state"],
         )
@@ -653,6 +653,22 @@ def _parse_kernel_expert_response(
     expected_signal = _extract_scalar_marker(text, "EXPECTED_SIGNAL")
     binaries_dir = _extract_scalar_marker(text, "BINARIES_DIR")
     kernel_contract = _extract_kernel_contract(text)
+    # Workaround for `claude_code` backend: --output-format json only
+    # returns the final assistant turn, so KERNEL_CONTRACT written in
+    # an earlier turn may be missing from `text`. The prompt asks the
+    # agent to also write the contract JSON to outputs/kernel_contract.json;
+    # prefer that file when the text-extracted contract is incomplete.
+    if not _kernel_contract_has_handoff(kernel_contract):
+        contract_file = paths_get_output_dir() / "kernel_contract.json"
+        if contract_file.exists():
+            try:
+                data = json.loads(contract_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    file_contract = _model_validate(KernelExpertOutput, data)
+                    if _kernel_contract_has_handoff(file_contract):
+                        kernel_contract = file_contract
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
     if not _kernel_contract_has_handoff(kernel_contract):
         fallback_contract = _kernel_contract_from_markers(
             target_arch=target_arch,
@@ -901,7 +917,7 @@ def _recover_reproducer_from_outputs(
         reproducer_dir=reproducer_dir,
         reproducer_module_path=reproducer_module_path,
         test_script_path=test_script_path,
-        expected_signal=expected_signal or "Kernel panic",
+        expected_signal=expected_signal,
         binaries_dir=binaries_dir,
         build_status="passed" if reproducer_module_path else "skipped",
         warnings=[
@@ -955,9 +971,12 @@ def _generate_auto_contract_fields(
     if reproducer_module_path and not contract.reproducer_module_path:
         fields["reproducer_module_path"] = reproducer_module_path
 
-    # expected_signal: prefer signal from test.sh, fallback to "blocked for more than"
+    # expected_signal: prefer signal from test.sh; do NOT fall back to a
+    # hung_task-specific signal (it would mismatch KASAN/UAF and other bugs).
+    # Empty string lets test_expert's detection fall through to a broad set
+    # of kernel-error patterns instead of failing on an unrelated signal.
     if not contract.expected_signal:
-        fields["expected_signal"] = test_signal or "blocked for more than"
+        fields["expected_signal"] = test_signal or ""
 
     return fields
 

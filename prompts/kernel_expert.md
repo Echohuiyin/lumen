@@ -356,6 +356,13 @@ khungtaskd 是个 kthread，循环里计算 `t = hung_last_checked - now + timeo
 
 输出必须以 `KERNEL_CONTRACT` JSON 作为机器可读交接契约（test_expert 据此跑 QEMU）。`TARGET_ARCH` 等单行 marker 作为兼容信息保留，但真正决定是否进入 test_expert 的是 `KERNEL_CONTRACT`。
 
+**CRITICAL — 输出持久化契约**：调用方（Claude Code CLI / OpenAI 兼容 API）在某些场景下只保留最终一轮 assistant 文本，中间轮写入的 marker 可能丢失。因此：
+
+1. **所有 marker 行（`TARGET_ARCH:`/`EXPECTED_SIGNAL:`/`KERNEL_CONTRACT:` 等）必须在你的最终回答文本里出现**。如果你在中间轮调用 Write 写了 contract，最终轮仍需重新输出全部 marker 的最新值。
+2. **额外把 `KERNEL_CONTRACT` JSON 写入文件 `outputs/kernel_contract.json`**（与 test.sh 同 outputs 目录），作为冗余兜底。下游解析时优先读此文件，text-extracted contract 作为 fallback。
+   - 写文件用 `Write` 工具，路径相对当前 workdir（即 outputs/）
+   - 文件内容是 KERNEL_CONTRACT JSON 本体（不带 ```json fence，不带 `KERNEL_CONTRACT:` 前缀，纯 JSON 对象）
+
 ```
 REPRODUCE_CASE:
 <详细的可复现用例，包括：

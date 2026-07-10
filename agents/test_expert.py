@@ -505,6 +505,23 @@ def _build_detection_signals(
     serial_signals: list[str] = []
     if expected_signal:
         serial_signals.append(expected_signal)
+    else:
+        # No expected_signal declared. Fall back to a broad set of
+        # kernel-error patterns so test_runner matches any specific OOPS/
+        # KASAN/hung_task instead of returning INCONCLUSIVE_NO_EXPECTED_SIGNAL.
+        # NOTE: deliberately omit "kernel panic" — bare boot-time panics
+        # (kasan_populate OOM, missing rootfs) would otherwise false-positive.
+        # panic_on_warn escalation is still handled separately below.
+        serial_signals = [
+            "BUG: KASAN:",
+            "BUG:",
+            "WARNING:",
+            "hung_task:",
+            "blocked for more than",
+            "kernel bug at",
+            "unable to handle kernel",
+            "soft lockup",
+        ]
 
     panic_on_warn = bool(expected_signal) and "warning" in expected_signal.lower()
     panic_is_pass = expected_signal.strip().lower() == "kernel panic"
