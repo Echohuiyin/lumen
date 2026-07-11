@@ -3,9 +3,9 @@
 Verifies that:
 1. config.json has valid semcode_mcp config
 2. The semcode-mcp binary exists at the configured path
-3. .semcode.db indexes exist for all kernel source trees referenced by test cases
+3. .semcode.db path is derived from kernel_source in input text
 4. _write_semcode_mcp_config() produces valid CLI-format MCP config
-5. kernel_source_path from input.txt correctly overrides the semcode db path
+5. kernel_source_path from input.txt supplies the semcode db path
 """
 
 from __future__ import annotations
@@ -42,14 +42,11 @@ def test_semcode_mcp_has_command():
     assert sm.get("command"), "semcode_mcp.command is empty"
 
 
-def test_semcode_mcp_has_db_arg():
-    """semcode_mcp args must include -d with a db path."""
+def test_semcode_mcp_has_no_default_db_arg():
+    """semcode_mcp should not hard-code a default db path."""
     sm = _get_semcode_config()
     args = sm.get("args", [])
-    assert "-d" in args, "semcode_mcp.args must contain -d"
-    db_idx = args.index("-d") + 1
-    assert db_idx < len(args), "no path after -d in semcode_mcp.args"
-    assert args[db_idx], "db path after -d is empty"
+    assert "-d" not in args, "semcode_mcp db path must come from input.txt kernel_source"
 
 
 def test_semcode_mcp_binary_exists():
@@ -60,22 +57,18 @@ def test_semcode_mcp_binary_exists():
     assert os.access(cmd, os.X_OK), f"semcode-mcp binary not executable: {cmd}"
 
 
-def test_default_semcode_db_exists():
-    """The default .semcode.db (OLK-6.6) must exist."""
-    sm = _get_semcode_config()
-    args = sm.get("args", [])
-    db_idx = args.index("-d") + 1
-    db_path = os.path.expanduser(args[db_idx])
-    assert os.path.exists(db_path), f"Default semcode db not found: {db_path}"
+def test_semcode_db_comes_from_input_kernel_source(tmp_path):
+    """The semcode db path must be derived from input.txt kernel_source."""
+    kernel_source = tmp_path / "linux"
+    kernel_source.mkdir()
+    semcode_db = kernel_source / ".semcode.db"
+    semcode_db.mkdir()
 
+    text = f"Bug Promote: kernel panic\nkernel_source: {kernel_source}\n"
+    artifacts = parse_input_artifacts(text, validate_paths=False)
 
-def test_linux_next_semcode_db_exists():
-    """The linux-next .semcode.db must exist (for kvm/btrfs test cases)."""
-    db_path = os.path.expanduser("~/linux-next/.semcode.db")
-    assert os.path.exists(db_path), (
-        f"linux-next semcode db not found: {db_path}\n"
-        f"  Run: cd ~/linux-next && semcode-index -s ."
-    )
+    assert artifacts.kernel_source_path == str(kernel_source)
+    assert Path(artifacts.kernel_source_path, ".semcode.db").exists()
 
 
 def test_input_artifacts_parses_kernel_source():
@@ -225,13 +218,22 @@ def test_input_artifacts_validates_kernel_source(tmp_path):
 
 
 if __name__ == "__main__":
+    def _run_direct(test):
+        if test.__name__ in {
+            "test_semcode_db_comes_from_input_kernel_source",
+            "test_write_semcode_mcp_config_format",
+            "test_input_artifacts_validates_kernel_source",
+        }:
+            with tempfile.TemporaryDirectory() as tmp:
+                return test(Path(tmp))
+        return test()
+
     for test in [
         test_semcode_mcp_config_present,
         test_semcode_mcp_has_command,
-        test_semcode_mcp_has_db_arg,
+        test_semcode_mcp_has_no_default_db_arg,
         test_semcode_mcp_binary_exists,
-        test_default_semcode_db_exists,
-        test_linux_next_semcode_db_exists,
+        test_semcode_db_comes_from_input_kernel_source,
         test_input_artifacts_parses_kernel_source,
         test_input_artifacts_kernel_source_absent_by_default,
         test_write_semcode_mcp_config_format,
@@ -241,6 +243,6 @@ if __name__ == "__main__":
         test_input_artifacts_validates_kernel_source,
     ]:
         print(f"  {test.__name__}...", end=" ", flush=True)
-        test()
+        _run_direct(test)
         print("OK")
     print("semcode_mcp OK")

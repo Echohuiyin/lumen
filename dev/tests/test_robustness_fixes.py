@@ -32,6 +32,7 @@ sys.path.insert(0, str(project_root))
 
 from agents.backends import AnthropicBackend
 from agents.contracts import KernelExpertOutput
+from agents import crash_tools
 from agents.crash_tools import RunCrashCommandsInput
 from agents.test_expert import _build_detection_signals
 from llm_config import get_llm_with_config
@@ -86,6 +87,19 @@ def test_get_llm_with_config_respects_explicit_max_tokens_override():
         agent_name="validator",
     )
     assert llm._max_tokens == 4096
+
+
+def test_crash_binary_lookup_prefers_project_managed_tools(tmp_path, monkeypatch):
+    """Arch-specific crash binaries should come from Analysis-SKILL/tools/crash."""
+    crash_dir = tmp_path / "Analysis-SKILL" / "tools" / "crash"
+    crash_dir.mkdir(parents=True)
+    crash_bin = crash_dir / "crash_arm64"
+    crash_bin.write_text("#!/bin/sh\n")
+    crash_bin.chmod(0o755)
+
+    monkeypatch.setattr(crash_tools, "PROJECT_ROOT", tmp_path)
+
+    assert crash_tools._select_crash_binary_for_arch("arm64") == str(crash_bin)
 
 
 def test_get_llm_with_config_uses_default_config_max_tokens():

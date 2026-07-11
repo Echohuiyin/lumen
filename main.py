@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 import uuid
 from datetime import datetime
 
@@ -7,7 +8,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 from agents.session import create_session_dir
 from llm_config import load_config
-from project import format_user_input, parse_input_file
+from project import PROJECT_ROOT, format_user_input, parse_input_file
 from graph.rn_state import make_initial_state
 from graph.rn_workflow import build_maintenance_workflow
 
@@ -39,6 +40,9 @@ def main():
 
     # Parse input file into structured fields
     fields = parse_input_file(args.input_file)
+    if fields.get("kernel_source"):
+        os.environ["KERNEL_SOURCE_DIR"] = fields["kernel_source"]
+    os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))
     user_input = format_user_input(fields)
     if not user_input:
         print(f"[Error] Input file {args.input_file} is empty or malformed.")

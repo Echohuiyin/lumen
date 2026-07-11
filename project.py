@@ -15,9 +15,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 def _resolve_env_vars(text: str) -> str:
     """Resolve ${VAR:-default} and ${VAR} in text (same as llm_config.py).
 
-    Supports ${VAR}, ${VAR:-default}, and simple $HOME/$USER/$KERNEL_SOURCE_DIR.
+    Supports ${VAR}, ${VAR:-default}, and simple $HOME/$USER.
     """
-    _SIMPLE_VARS = {"HOME", "USER", "KERNEL_SOURCE_DIR"}
+    _SIMPLE_VARS = {"HOME", "USER"}
 
     def _replace_one_braced(m: re.Match) -> str:
         inner = m.group(1)
@@ -103,7 +103,11 @@ def parse_input_file(file_path: str) -> dict[str, str]:
             continue
         if ":" in line:
             key, _, value = line.partition(":")
-            fields[key.strip()] = _resolve_env_vars(value.strip())
+            key = key.strip()
+            value = value.strip()
+            # Kernel source is always supplied as an absolute path in input.txt.
+            # Do not expand environment variables for this field.
+            fields[key] = value if key == "kernel_source" else _resolve_env_vars(value)
 
     # Return only recognised fields so unknown keys don't leak through.
     return {k: v for k, v in fields.items() if k in INPUT_FILE_FIELDS}

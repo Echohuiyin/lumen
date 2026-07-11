@@ -231,11 +231,12 @@ def test_resolve_env_vars_basic():
     assert _resolve_env_vars("${A:-${B:-inner}}") == "inner"
 
     # Simple $HOME
+    original_home = os.environ.get("HOME", "")
     os.environ["HOME"] = "/test/home"
     try:
         assert _resolve_env_vars("$HOME/code") == "/test/home/code"
     finally:
-        os.environ["HOME"] = os.environ.get("HOME", "")
+        os.environ["HOME"] = original_home
 
 
 def test_resolve_env_vars_unresolved_strict():
