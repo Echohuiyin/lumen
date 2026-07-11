@@ -55,6 +55,7 @@ preflight_check() {
     check_cmd patch "apt install patch" || ((fail_count++))
     check_cmd makeinfo "apt install texinfo" || ((fail_count++))
     check_cmd file "apt install file" || ((fail_count++))
+    check_cmd mke2fs "apt install e2fsprogs" || ((fail_count++))
     check_cmd aarch64-linux-gnu-gcc "apt install gcc-aarch64-linux-gnu" || ((fail_count++))
 
     # ── Crash utility: arch-specific binaries ────────────────────────────────

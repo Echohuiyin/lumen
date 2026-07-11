@@ -166,6 +166,13 @@ def test_qemu_recipe_defaults_are_backward_compatible():
     assert recipe.timeout_sec == 0
 
 
+def test_test_plan_rootfs_defaults_are_backward_compatible():
+    plan = TestPlan()
+    assert plan.rootfs_mode == "initramfs"
+    assert plan.rootfs_path == ""
+    assert plan.rootfs_size_mb == 128
+
+
 def test_qemu_recipe_pvqspinlock_config():
     """Recipe for pvqspinlock: q35 + smp=4 + panic_on_warn=1 + numa=off."""
     recipe = QemuRecipe(

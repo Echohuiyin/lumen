@@ -108,6 +108,9 @@ class TestPlan(BaseModel):
 
     target_arch: str = ""
     boot_kernel_path: str = ""
+    rootfs_mode: Literal["initramfs", "ext4"] = "initramfs"
+    rootfs_path: str = ""
+    rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer_module_path: str = ""
     test_script_path: str = ""
@@ -168,6 +171,9 @@ class KernelExpertOutput(BaseModel):
     target_arch: str = ""
     vmlinux_path: str = ""
     boot_kernel_path: str = ""
+    rootfs_mode: Literal["initramfs", "ext4"] = "ext4"
+    rootfs_path: str = ""
+    rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer_module_path: str = ""
     test_script_path: str = ""

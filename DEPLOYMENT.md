@@ -82,7 +82,7 @@ sudo apt install -y cpio gzip
 # Build crash and BusyBox from bundled/project-managed source
 sudo apt install -y \
   build-essential gcc g++ gcc-aarch64-linux-gnu \
-  bison flex patch texinfo file \
+  bison flex patch texinfo file e2fsprogs \
   libncurses-dev zlib1g-dev liblzo2-dev libsnappy-dev \
   libzstd-dev libgmp-dev libmpfr-dev
 
@@ -289,8 +289,9 @@ ls -la /dev/kvm
 
 ### 6.2 Busybox
 
-BusyBox is used by `create_initramfs.sh` to build the initramfs for QEMU boot.
-Lumen uses static BusyBox binaries built from the bundled source:
+BusyBox is used to build the QEMU guest userspace. Lumen builds static BusyBox
+binaries from the bundled source, then uses them for ext4 rootfs images by
+default. The older initramfs path remains available for compatibility.
 
 ```bash
 bash Analysis-SKILL/tools/build_busybox.sh --arch x86_64 --clean
@@ -301,6 +302,14 @@ file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 ```
 
 `deploy.sh` builds both automatically when the prebuilt files are missing.
+
+To create a standalone ext4 rootfs image:
+
+```bash
+bash Analysis-SKILL/skills/qemu-test/scripts/create_ext4_rootfs.sh \
+  --arch x86_64 \
+  --output /tmp/rootfs_x86_64.ext4
+```
 
 ---
 

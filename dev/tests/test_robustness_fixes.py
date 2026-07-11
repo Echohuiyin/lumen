@@ -23,6 +23,7 @@ import json
 import os
 import sys
 import tempfile
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,42 @@ from agents import crash_tools
 from agents.crash_tools import RunCrashCommandsInput
 from agents.test_expert import _build_detection_signals
 from llm_config import get_llm_with_config
+
+
+def test_boot_kernel_ext4_rootfs_uses_virtio_disk(monkeypatch, tmp_path):
+    """boot_kernel(rootfs_path=...) should use an ext4 virtio root disk."""
+    from agents.qemu_tools import boot_kernel
+
+    kernel = tmp_path / "bzImage"
+    kernel.write_bytes(b"MZ fake bootable image")
+    rootfs = tmp_path / "rootfs.ext4"
+    rootfs.write_bytes(b"fake ext4")
+    captured = {}
+
+    def fake_run(cmd, capture_output=True, text=True, timeout=300):
+        if "-serial" not in cmd:
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        captured["cmd"] = cmd
+        serial_arg = cmd[cmd.index("-serial") + 1]
+        serial_path = serial_arg.split("file:", 1)[1]
+        Path(serial_path).write_text("Linux version test\nAutomated test complete\n")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = boot_kernel(
+        kernel_path=str(kernel),
+        rootfs_path=str(rootfs),
+        arch="x86_64",
+        timeout=1,
+        memory="256M",
+    )
+
+    cmd = captured["cmd"]
+    assert result.startswith("✓ Boot completed successfully")
+    assert "-initrd" not in cmd
+    assert any(str(rootfs) in item for item in cmd)
+    assert "root=/dev/vda rw rootfstype=ext4 init=/init" in cmd[cmd.index("-append") + 1]
+    assert "virtio-blk-pci,drive=rootfs" in cmd
 
 
 # ---------------------------------------------------------------------------

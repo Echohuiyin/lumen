@@ -61,7 +61,7 @@ PROMPT_REQUIRED_TERMS = {
     "crash_analysis": ["collect_baseline", "run_crash_command", "run_crash_commands"],
     "lock_analysis": ["collect_baseline", "run_crash_command", "run_crash_commands"],
     "kernel_expert": ["write_file", "compile_module", "search_files", "bash", "KERNEL_CONTRACT"],
-    "test_expert": ["run_qemu_test_plan", "check_qemu_available", "create_initramfs", "boot_kernel", "analyze_boot_log"],
+    "test_expert": ["run_qemu_test_plan", "check_qemu_available", "create_ext4_rootfs", "create_initramfs", "boot_kernel", "analyze_boot_log"],
 }
 
 

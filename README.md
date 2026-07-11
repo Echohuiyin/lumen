@@ -36,6 +36,7 @@ python3 main.py input.txt --config config.json
 | QEMU (x86_64 / arm64) | Kernel boot and reproduction testing | `apt install qemu-system-x86 qemu-system-arm` |
 | gcc-aarch64-linux-gnu | Build arm64 BusyBox | `apt install gcc-aarch64-linux-gnu` |
 | Build tools | Build crash and BusyBox | `apt install build-essential bison flex patch texinfo file` |
+| e2fsprogs | Build ext4 QEMU rootfs images | `apt install e2fsprogs` |
 | crash build libraries | Build crash for both targets | `apt install libncurses-dev zlib1g-dev liblzo2-dev libsnappy-dev libzstd-dev libgmp-dev libmpfr-dev` |
 | cpio / gzip | Initramfs packaging | `apt install cpio gzip` |
 | git / wget | Fetch sources during deployment | `apt install git wget` |
@@ -112,7 +113,9 @@ generated reproducer files. Use `--session-id` to supply your own ID.
 Lumen selects `crash_x86_64` or `crash_arm64` from
 `Analysis-SKILL/tools/crash/` according to the target `vmlinux`. `deploy.sh`
 builds both from crash source, and also builds static BusyBox binaries for both
-architectures under `Analysis-SKILL/`.
+architectures under `Analysis-SKILL/`. QEMU tests use those BusyBox binaries to
+build an ext4 rootfs by default, with the older initramfs path kept for
+compatibility.
 
 ## Project Structure
 
