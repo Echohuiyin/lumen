@@ -27,8 +27,8 @@
       "max_turns": 100,
       "disable_skills": true,
       "semcode_mcp": {
-        "command": "${SEMCODE_MCP_BIN:-${HOME}/semcode/target/release/semcode-mcp}",
-        "args": ["-d", "${SEMCODE_DB_DIR:-${KERNEL_SOURCE_DIR:-${HOME}/code/OLK-6.6}/.semcode.db}"]
+        "command": "${LUMEN_SEMCODE_MCP:-${LUMEN_PROJECT_ROOT:-.}/Analysis-SKILL/tools/semcode/target/release/semcode-mcp}",
+        "args": []
       }
     },
     "_kernel_expert_opencode_alt": {

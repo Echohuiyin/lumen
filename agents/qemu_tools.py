@@ -31,13 +31,25 @@ class CreateInitramfsInput(BaseModel):
     arch: str = "x86_64"
     test_script_path: Optional[str] = None
     modules_dir: Optional[str] = None
+    binaries_dir: Optional[str] = None
     output_path: Optional[str] = None
+
+
+class CreateExt4RootfsInput(BaseModel):
+    """Input schema for create_ext4_rootfs."""
+    arch: str = "x86_64"
+    test_script_path: Optional[str] = None
+    modules_dir: Optional[str] = None
+    binaries_dir: Optional[str] = None
+    output_path: Optional[str] = None
+    size_mb: int = 128
 
 
 class BootKernelInput(BaseModel):
     """Input schema for boot_kernel."""
     kernel_path: str
-    initramfs_path: str
+    initramfs_path: str = ""
+    rootfs_path: str = ""
     arch: str = "x86_64"
     timeout: int = 300
     memory: str = ""
@@ -379,6 +391,78 @@ def create_initramfs(
         return f"Error: {str(e)}"
 
 
+def create_ext4_rootfs(
+    arch: str = "x86_64",
+    test_script_path: Optional[str] = None,
+    modules_dir: Optional[str] = None,
+    binaries_dir: Optional[str] = None,
+    output_path: Optional[str] = None,
+    size_mb: int = 128,
+) -> str:
+    """Create an ext4 root filesystem image for QEMU kernel testing."""
+    arch = _normalize_arch(arch)
+    script_path = find_qemu_script("create_ext4_rootfs.sh")
+
+    if not script_path:
+        return "Error: create_ext4_rootfs.sh not found in qemu-test skill"
+
+    if output_path is None:
+        output_path = str(tempfile.mktemp(suffix=".ext4", prefix=f"rootfs_{arch}_"))
+    else:
+        output_path = str(_resolve_runtime_path(output_path))
+
+    cmd = [
+        "bash", str(script_path),
+        "--arch", arch,
+        "--output", output_path,
+        "--size-mb", str(size_mb),
+    ]
+
+    if test_script_path:
+        test_script = _resolve_runtime_path(test_script_path)
+        if not test_script.exists():
+            return f"Error: test script not found: {test_script_path}"
+        cmd.extend(["--test-script", str(test_script)])
+
+    if modules_dir:
+        module_path = _resolve_runtime_path(modules_dir)
+        if module_path.is_file() and module_path.suffix == ".ko":
+            module_path = module_path.parent
+        if not module_path.exists() or not module_path.is_dir():
+            return f"Error: modules dir not found: {modules_dir}"
+        cmd.extend(["--modules", str(module_path)])
+
+    if binaries_dir:
+        binaries_path = _resolve_runtime_path(binaries_dir)
+        if not binaries_path.exists() or not binaries_path.is_dir():
+            return f"Error: binaries dir not found: {binaries_dir}"
+        filtered_dir = _filter_binaries_by_arch(binaries_path, arch)
+        if filtered_dir is None:
+            cmd.extend(["--binaries", str(binaries_path)])
+        else:
+            cmd.extend(["--binaries", str(filtered_dir)])
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=90,
+            cwd=str(script_path.parent),
+        )
+        if result.returncode != 0:
+            return f"Error creating ext4 rootfs: {(result.stderr or result.stdout)[:800]}"
+
+        if Path(output_path).exists():
+            size = Path(output_path).stat().st_size
+            return f"✓ ext4 rootfs created\n  Path: {output_path}\n  Size: {size // 1024} KB\n  Arch: {arch}"
+        return f"Error: ext4 rootfs not created at {output_path}"
+    except subprocess.TimeoutExpired:
+        return "Error: ext4 rootfs creation timed out (90s)"
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+
 # ---------------------------------------------------------------------------
 # NUMA topology auto-detection
 # ---------------------------------------------------------------------------
@@ -461,9 +545,15 @@ def _build_numa_qemu_args(n: int, smp_spec: str, memory: str) -> list[str]:
     return args
 
 
+def _rootfs_device_for_arch(arch: str) -> str:
+    """Return the QEMU virtio-blk device name for the target arch."""
+    return "virtio-blk-device,drive=rootfs" if arch in {"arm64", "arm32"} else "virtio-blk-pci,drive=rootfs"
+
+
 def boot_kernel(
     kernel_path: str,
-    initramfs_path: str,
+    initramfs_path: str = "",
+    rootfs_path: str = "",
     arch: str = "x86_64",
     timeout: int = 300,
     memory: str = "",
@@ -477,6 +567,8 @@ def boot_kernel(
     Args:
         kernel_path: Path to kernel image (vmlinux or Image)
         initramfs_path: Path to initramfs/initrd
+        rootfs_path: Optional ext4 root filesystem image. When set, QEMU boots
+            with this image as /dev/vda and root=/dev/vda.
         arch: Target architecture
         timeout: Boot timeout in seconds
         memory: Memory allocation; empty = auto-select based on kernel size
@@ -491,12 +583,17 @@ def boot_kernel(
 
     # Validate inputs
     kernel = _resolve_runtime_path(kernel_path)
-    initramfs = _resolve_runtime_path(initramfs_path)
+    initramfs = _resolve_runtime_path(initramfs_path) if initramfs_path else None
+    rootfs = _resolve_runtime_path(rootfs_path) if rootfs_path else None
 
     if not kernel.exists():
         return f"Error: kernel not found: {kernel_path}"
-    if not initramfs.exists():
+    if initramfs is not None and not initramfs.exists():
         return f"Error: initramfs not found: {initramfs_path}"
+    if rootfs is not None and not rootfs.exists():
+        return f"Error: rootfs not found: {rootfs_path}"
+    if initramfs is None and rootfs is None:
+        return "Error: either initramfs_path or rootfs_path is required"
 
     # Auto-select memory: KASAN/debug kernels need >=2GB or they panic during
     # kasan_populate_shadow before any test code runs.
@@ -536,8 +633,9 @@ def boot_kernel(
         # hung_task_panic=1 + hung_task_timeout_secs=60: khungtaskd panics on
         #   D-state tasks blocked >= 60s — required for deadlock reproducers.
         # These flags are inert for kernels/bug types that don't trigger them.
+        root_cmdline = "root=/dev/vda rw rootfstype=ext4 init=/init" if rootfs is not None else "root=/dev/ram rw"
         cmdline = (
-            f"console={defaults['console']} root=/dev/ram rw panic=1 "
+            f"console={defaults['console']} {root_cmdline} panic=1 "
             "oops=panic kasan.fault=panic "
             "hung_task_panic=1 hung_task_timeout_secs=60"
         )
@@ -584,9 +682,15 @@ def boot_kernel(
             "-serial", f"file:{serial_log}",
             "-no-reboot",
             "-kernel", str(kernel),
-            "-initrd", str(initramfs),
             "-append", cmdline,
         ]
+        if initramfs is not None:
+            qemu_cmd.extend(["-initrd", str(initramfs)])
+        if rootfs is not None:
+            qemu_cmd.extend([
+                "-drive", f"if=none,id=rootfs,file={rootfs},format=raw",
+                "-device", _rootfs_device_for_arch(arch),
+            ])
         # Inject auto-detected NUMA topology after -smp so the node
         # config is available when QEMU parses the CPU topology.
         if numa_args:
@@ -642,7 +746,8 @@ def boot_kernel(
 
         return f"""{status}
   Kernel: {kernel}
-  Initramfs: {initramfs}
+  Initramfs: {initramfs or ''}
+  RootFS: {rootfs or ''}
   Arch: {arch}
   Memory: {memory}
   Timeout: {timeout}s
@@ -669,7 +774,8 @@ Last 20 lines:
             Path(log_path).write_text(partial)
             return f"""⚠ Boot timed out ({timeout}s) — partial output captured
   Kernel: {kernel}
-  Initramfs: {initramfs}
+  Initramfs: {initramfs or ''}
+  RootFS: {rootfs or ''}
 
 Boot Log saved to: {log_path}
 Log size: {len(partial)} bytes
@@ -801,9 +907,49 @@ def create_initramfs_result(
     )
 
 
+def create_ext4_rootfs_result(
+    arch: str = "x86_64",
+    test_script_path: Optional[str] = None,
+    modules_dir: Optional[str] = None,
+    binaries_dir: Optional[str] = None,
+    output_path: Optional[str] = None,
+    size_mb: int = 128,
+) -> ToolStepResult:
+    """Structured wrapper around create_ext4_rootfs."""
+    normalized_arch = _normalize_arch(arch)
+    output = create_ext4_rootfs(
+        arch=normalized_arch,
+        test_script_path=test_script_path,
+        modules_dir=modules_dir,
+        binaries_dir=binaries_dir,
+        output_path=output_path,
+        size_mb=size_mb,
+    )
+    rootfs_path = _extract_labeled_value(output, "Path")
+    ok = output.startswith("✓ ext4 rootfs created") and bool(rootfs_path)
+    artifacts = {"rootfs_path": rootfs_path} if rootfs_path else {}
+    return ToolStepResult(
+        name="create_ext4_rootfs",
+        status="ok" if ok else "failed",
+        message="ext4 rootfs created" if ok else "ext4 rootfs creation failed",
+        inputs={
+            "arch": normalized_arch,
+            "test_script_path": test_script_path or "",
+            "modules_dir": modules_dir or "",
+            "binaries_dir": binaries_dir or "",
+            "output_path": output_path or "",
+            "size_mb": size_mb,
+        },
+        artifacts=artifacts,
+        output=output,
+        error="" if ok else output,
+    )
+
+
 def boot_kernel_result(
     kernel_path: str,
-    initramfs_path: str,
+    initramfs_path: str = "",
+    rootfs_path: str = "",
     arch: str = "x86_64",
     timeout: int = 300,
     memory: str = "",
@@ -814,6 +960,7 @@ def boot_kernel_result(
     output = boot_kernel(
         kernel_path=kernel_path,
         initramfs_path=initramfs_path,
+        rootfs_path=rootfs_path,
         arch=normalized_arch,
         timeout=timeout,
         memory=memory,
@@ -837,6 +984,7 @@ def boot_kernel_result(
         inputs={
             "kernel_path": kernel_path,
             "initramfs_path": initramfs_path,
+            "rootfs_path": rootfs_path,
             "arch": normalized_arch,
             "timeout": timeout,
             "memory": memory,
@@ -895,9 +1043,20 @@ def create_qemu_tools() -> list[StructuredTool]:
             args_schema=CreateInitramfsInput,
         ),
         StructuredTool(
+            name="create_ext4_rootfs",
+            description=(
+                "Create an ext4 root filesystem image for QEMU kernel testing. "
+                "Includes architecture-matched BusyBox, init script, optional "
+                "test script, kernel modules, and userspace binaries. "
+                "Returns path to created rootfs image."
+            ),
+            func=create_ext4_rootfs,
+            args_schema=CreateExt4RootfsInput,
+        ),
+        StructuredTool(
             name="boot_kernel",
             description=(
-                "Boot a kernel in QEMU with specified initramfs. "
+                "Boot a kernel in QEMU with specified initramfs or ext4 rootfs. "
                 "Captures boot log and detects kernel panics or errors. "
                 "Returns boot status and log analysis. "
                 "Use for verifying kernel functionality or reproducing issues."

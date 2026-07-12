@@ -21,6 +21,8 @@ from typing import Any, Dict, List
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, field_validator
 
+from paths import PROJECT_ROOT
+
 # ---------------------------------------------------------------------------
 # Shared session registry — prevents multiple concurrent crash processes
 # ---------------------------------------------------------------------------
@@ -60,14 +62,14 @@ def _sniff_arch_from_elf(path: str) -> str:
 def _select_crash_binary_for_arch(arch: str) -> str | None:
     """Pick the right crash binary for the target arch.
 
-    Looks for crash_<arch> alongside the default crash binary
-    (typically ~/crash/crash_<arch>). Returns None if no arch-specific
-    binary is found — caller falls back to AppConfig's default detection.
+    Looks for crash_<arch> in Lumen's project-managed tool directory, then
+    system locations. Returns None if no arch-specific binary is found —
+    caller falls back to AppConfig's default detection.
     """
     if not arch:
         return None
     candidates = [
-        Path.home() / "crash" / f"crash_{arch}",
+        PROJECT_ROOT / "Analysis-SKILL" / "tools" / "crash" / f"crash_{arch}",
         Path("/usr/local/bin") / f"crash_{arch}",
     ]
     for c in candidates:

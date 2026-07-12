@@ -256,9 +256,9 @@ echo 1 > /proc/sys/kernel/hung_task_panic           # 检测到 hung task 时 pa
 
 UAF/越界/双重释放等问题在 KASAN 内核上会触发 `BUG: KASAN: ...` 报告。QEMU 启动 cmdline 已含 `kasan.fault=panic`（见 run_vmcore_test.sh），KASAN 报告即 panic，无需 test.sh 运行时设置。
 
-如果复现器需要用户态触发（如 ioctl 序列），用 `gcc -static` 编译触发程序，在 test.sh 里 `insmod /modules/<reproducer>.ko` 后调用 `/bin/<trigger>`。触发程序二进制由 `create_initramfs --binaries` 注入 initramfs `/bin/`。
+如果复现器需要用户态触发（如 ioctl 序列），用 `gcc -static` 编译触发程序，在 test.sh 里 `insmod /modules/<reproducer>.ko` 后调用 `/bin/<trigger>`。触发程序二进制由 test_expert 注入 QEMU guest 的 `/bin/`（默认 ext4 rootfs，兼容路径为 initramfs）。
 
-**重要：触发程序二进制必须放在 reproducer_dir 下**（与 reproducer.c/Makefile/test.sh 同目录），并在 KERNEL_CONTRACT 的 `binaries_dir` 字段填 reproducer_dir 路径。test_expert 会读 `binaries_dir` 并通过 `create_initramfs --binaries <dir>` 把目录下所有可执行文件塞进 initramfs `/bin/`。如果 `binaries_dir` 留空，触发程序不会进 initramfs，test.sh 会报 "trigger binary not found"。
+**重要：触发程序二进制必须放在 reproducer_dir 下**（与 reproducer.c/Makefile/test.sh 同目录），并在 KERNEL_CONTRACT 的 `binaries_dir` 字段填 reproducer_dir 路径。test_expert 会读 `binaries_dir` 并把目录下所有可执行文件塞进 guest `/bin/`。如果 `binaries_dir` 留空，触发程序不会进 guest，test.sh 会报 "trigger binary not found"。
 
 预期信号：`BUG: KASAN: slab-use-after-free`、`BUG: KASAN: slab-out-of-bounds`、`BUG: KASAN`（按问题类型选择具体子串）
 
@@ -396,7 +396,7 @@ REPRODUCER_DIR: <实际创建的复现目录>
 REPRODUCER_MODULE_PATH: <实际编译出的 .ko 路径；未编译写 N/A>
 TEST_SCRIPT_PATH: <实际创建的 test.sh 路径>
 EXPECTED_SIGNAL: <测试专家应在 QEMU boot log 中查找的复现证据；按问题类型选，见上方 expected_signal 表>
-BINARIES_DIR: <用户态触发程序所在目录；纯内核态复现器留空。配合形态下用户态触发程序（如 uaf_trigger）放在此目录，test_expert 会通过 create_initramfs --binaries 把它们注入 initramfs 的 /bin/ 下>
+BINARIES_DIR: <用户态触发程序所在目录；纯内核态复现器留空。配合形态下用户态触发程序（如 uaf_trigger）放在此目录，test_expert 会把它们注入 guest /bin/ 下>
 
 KERNEL_CONTRACT:
 ```json
@@ -405,6 +405,9 @@ KERNEL_CONTRACT:
   "target_arch": "x86_64",
   "vmlinux_path": "",
   "boot_kernel_path": "/path/to/bzImage",
+  "rootfs_mode": "ext4",
+  "rootfs_path": "",
+  "rootfs_size_mb": 128,
   "reproducer_dir": "<OUTPUT_DIR>/<bug>_reproducer",
   "reproducer_module_path": "<OUTPUT_DIR>/<bug>_reproducer/<name>.ko",
   "test_script_path": "<OUTPUT_DIR>/<bug>_reproducer/test.sh",
@@ -462,8 +465,6 @@ KERNEL_CONTRACT:
   - 复现器源码/Makefile/test.sh/KERNEL_CONTRACT 由本专家产出
   - QEMU 复现由 test_expert 消费 KERNEL_CONTRACT 后执行
   - 知识库归档由 knowledge_base 汇总 contract、证据和产物路径
-
-
 
 
 

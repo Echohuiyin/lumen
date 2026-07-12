@@ -12,6 +12,14 @@ fail()  { echo -e "${RED}[FAIL]${NC} $1"; }
 # ── Config ───────────────────────────────────────────────────────────────────
 VENV_DIR="venv"
 USE_VENV=true
+CRASH_SOURCE_DIR="${CRASH_SOURCE_DIR:-Analysis-SKILL/tools/crash}"
+CRASH_REPO="${CRASH_REPO:-https://github.com/crash-utility/crash.git}"
+CRASH_REF="${CRASH_REF:-9.0.2}"
+CRASH_BUILDER="Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh"
+BUSYBOX_BUILDER="Analysis-SKILL/tools/build_busybox.sh"
+SEMCODE_SOURCE_DIR="Analysis-SKILL/tools/semcode"
+SEMCODE_REPO="${SEMCODE_REPO:-https://github.com/facebookexperimental/semcode.git}"
+SEMCODE_MCP_BIN="${SEMCODE_SOURCE_DIR}/target/release/semcode-mcp"
 
 # ── Pre-flight: check required external binaries ──────────────────────────────
 check_cmd() {
@@ -33,37 +41,37 @@ preflight_check() {
 
     check_cmd python3 "python3 (>= 3.10)" || ((fail_count++))
     check_cmd qemu-system-x86_64 "apt install qemu-system-x86" || ((fail_count++))
+    check_cmd qemu-system-aarch64 "apt install qemu-system-arm" || ((fail_count++))
     check_cmd cpio "apt install cpio" || ((fail_count++))
     check_cmd gzip "apt install gzip (usually pre-installed)" || ((fail_count++))
-    check_cmd crash "apt install crash" || ((fail_count++))
     check_cmd claude "npm install -g @anthropic-ai/claude-code" || ((fail_count++))
     check_cmd git "apt install git" || ((fail_count++))
+    check_cmd wget "apt install wget" || ((fail_count++))
+    check_cmd make "apt install build-essential" || ((fail_count++))
+    check_cmd gcc "apt install build-essential" || ((fail_count++))
+    check_cmd g++ "apt install build-essential" || ((fail_count++))
+    check_cmd bison "apt install bison" || ((fail_count++))
+    check_cmd flex "apt install flex" || ((fail_count++))
+    check_cmd patch "apt install patch" || ((fail_count++))
+    check_cmd makeinfo "apt install texinfo" || ((fail_count++))
+    check_cmd file "apt install file" || ((fail_count++))
+    check_cmd mke2fs "apt install e2fsprogs" || ((fail_count++))
+    check_cmd aarch64-linux-gnu-gcc "apt install gcc-aarch64-linux-gnu" || ((fail_count++))
 
     # ── Crash utility: arch-specific binaries ────────────────────────────────
     # crash is compiled with a single TARGET arch hardcoded. An x86_64-targeted
     # crash CANNOT parse an arm64 vmcore ("machine type mismatch" → "not a
     # supported file format"). Lumen auto-selects crash_<arch> based on
-    # vmlinux's ELF e_machine (commit 980d89b). Verify the binaries exist.
+    # vmlinux's ELF e_machine. Verify the binaries exist.
     # Lumen looks for arch-suffixed binaries at:
-    #   ~/crash/crash_<arch>      (source-built)
+    #   Analysis-SKILL/tools/crash/crash_<arch>  (source-built)
     #   /usr/local/bin/crash_<arch>
     echo ""
     info "=== crash 二进制 (按架构区分) ==="
-    local crash_default=""
-    if [ -x "${HOME}/crash/crash" ]; then
-        crash_default="${HOME}/crash/crash"
-        ok "crash (default) — $crash_default (source-built)"
-    elif command -v crash &>/dev/null; then
-        crash_default="$(command -v crash)"
-        ok "crash (default) — $crash_default (system)"
-    else
-        warn "crash (default) — NOT FOUND (apt install crash, or build from source)"
-    fi
-
     # Check for arch-suffixed binaries in Lumen's lookup paths
     local crash_x86_64_found=""
     local crash_arm64_found=""
-    for d in "${HOME}/crash" "/usr/local/bin"; do
+    for d in "$CRASH_SOURCE_DIR" "/usr/local/bin"; do
         if [ -z "$crash_x86_64_found" ] && [ -x "${d}/crash_x86_64" ]; then
             crash_x86_64_found="${d}/crash_x86_64"
         fi
@@ -75,46 +83,38 @@ preflight_check() {
     if [ -n "$crash_x86_64_found" ]; then
         ok "crash_x86_64 — $crash_x86_64_found"
     else
-        warn "crash_x86_64 — NOT FOUND (x86_64 vmcore analysis works with default crash, but arch-suffixed binary recommended for consistency)"
+        warn "crash_x86_64 — NOT FOUND (will build from source)"
     fi
     if [ -n "$crash_arm64_found" ]; then
         ok "crash_arm64 — $crash_arm64_found"
     else
-        warn "crash_arm64 — NOT FOUND (arm64 vmcore analysis will FAIL; see crash_build_hint at end of deploy)"
+        warn "crash_arm64 — NOT FOUND (will build from source)"
     fi
 
-    # Optional: arm64 cross-arch analysis & reproduction
-    # Not required for x86_64-only deployments
+    # Optional: arm32 cross-arch analysis & reproduction
     echo ""
-    info "=== arm64 跨架构分析 (可选) ==="
-    check_cmd qemu-system-aarch64 "apt install qemu-system-arm (for arm64 QEMU boot)" || true
-    check_cmd aarch64-linux-gnu-gcc "apt install gcc-aarch64-linux-gnu (for arm64 cross-compile)" || true
+    info "=== arm32 跨架构分析 (可选) ==="
     check_cmd arm-linux-gnueabi-gcc "apt install gcc-arm-linux-gnueabi (for arm32 cross-compile)" || true
 
-    # busybox: check both system and project prebuilt
-    if command -v busybox &>/dev/null; then
-        ok "busybox — found at $(command -v busybox)"
-    elif [ -f Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64 ]; then
+    # BusyBox binaries are built from the bundled source for each target.
+    if [ -f Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64 ]; then
         ok "busybox x86_64 — Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64"
     else
-        warn "busybox x86_64 — NOT FOUND (install: apt install busybox-static)"
-        ((fail_count++))
+        warn "busybox x86_64 — NOT FOUND (will build from source)"
     fi
 
-    # arm64 busybox prebuilt (committed to repo)
+    # arm64 BusyBox target
     if [ -f Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64 ]; then
         ok "busybox arm64 — Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64"
     else
-        warn "busybox arm64 — NOT FOUND (arm64 QEMU boot will fail; run: bash Analysis-SKILL/tools/build_busybox.sh --arch arm64)"
+        warn "busybox arm64 — NOT FOUND (will build from source)"
     fi
 
-    # semcode MCP (optional)
-    if command -v semcode-mcp &>/dev/null; then
-        ok "semcode-mcp — found at $(command -v semcode-mcp)"
-    elif [ -x "${HOME}/semcode/target/release/semcode-mcp" ]; then
-        ok "semcode-mcp — found at ${HOME}/semcode/target/release/semcode-mcp"
+    # semcode MCP is built into Analysis-SKILL/tools/semcode by deploy.sh.
+    if [ -x "$SEMCODE_MCP_BIN" ]; then
+        ok "semcode-mcp — found at $SEMCODE_MCP_BIN"
     else
-        warn "semcode-mcp — NOT FOUND (optional, kernel_expert will skip MCP tools)"
+        warn "semcode-mcp — NOT FOUND (will build into $SEMCODE_SOURCE_DIR)"
     fi
 
     # git submodule
@@ -125,9 +125,18 @@ preflight_check() {
         ((fail_count++))
     fi
 
-    # busybox build script (if no busybox at all)
-    if [ -f tools/build_busybox.sh ]; then
-        ok "busybox build script — tools/build_busybox.sh"
+    if [ -f "$BUSYBOX_BUILDER" ]; then
+        ok "busybox build script — $BUSYBOX_BUILDER"
+    else
+        warn "busybox build script — NOT FOUND (initialize Analysis-SKILL submodule)"
+        ((fail_count++))
+    fi
+
+    if [ -f "$CRASH_BUILDER" ]; then
+        ok "crash build script — $CRASH_BUILDER"
+    else
+        warn "crash build script — NOT FOUND (initialize Analysis-SKILL submodule)"
+        ((fail_count++))
     fi
 
     if [ "$fail_count" -gt 0 ]; then
@@ -193,16 +202,15 @@ export ANTHROPIC_API_KEY="sk-your-key-here"
 export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
 export ANTHROPIC_MODEL="deepseek-v4-flash"
 
-# ── Kernel source (必须) ─────────────────────────────────────────────────────
-# 内核源码目录，Crash 分析和语义搜索需要
-export KERNEL_SOURCE_DIR="${HOME}/code/OLK-6.6"
+# ── RAG Embedding API ────────────────────────────────────────────────────────
+# Required by knowledge_search and knowledge_base Chroma import.
+# Any OpenAI-compatible /v1/embeddings endpoint can be used.
+export EMBEDDING_BASE_URL="http://localhost:11434/v1"
+export EMBEDDING_MODEL="bge-large-zh"
+export EMBEDDING_API_KEY="not-required"
 
-# ── semcode MCP (可选) ───────────────────────────────────────────────────────
-# 语义代码搜索 MCP 服务器，用于 kernel_expert 自动代码分析
-export SEMCODE_MCP_BIN="${HOME}/semcode/target/release/semcode-mcp"
-export SEMCODE_DB_DIR="${KERNEL_SOURCE_DIR}/.semcode.db"
 ENVEOF
-        warn "已创建 .env 模板 — 请编辑 .env 填写 API key 和 KERNEL_SOURCE_DIR"
+        warn "已创建 .env 模板 — 请编辑 .env 填写 LLM 配置；如使用非默认 RAG embedding，请调整 EMBEDDING_*"
     else
         ok ".env 已存在"
     fi
@@ -216,11 +224,10 @@ ENVEOF
     # config.json
     if [ ! -f config.json ]; then
         if [ -f config.json.template ]; then
-            # Substitute env vars into template
-            envsubst < config.json.template > config.json 2>/dev/null || \
-                cp config.json.template config.json
+            # Keep variable placeholders so values from .env are resolved at runtime.
+            cp config.json.template config.json
             ok "已从模板创建 config.json"
-            warn "请检查 config.json 中的 API key 配置"
+            warn "请编辑 .env 填写 LLM 配置；如使用非默认 RAG embedding，请调整 EMBEDDING_*，并在运行前执行 source .env"
         else
             warn "未找到 config.json.template，请手动创建 config.json"
         fi
@@ -233,6 +240,78 @@ ENVEOF
 init_dirs() {
     mkdir -p knowledge_base outputs
     ok "目录结构已创建 (knowledge_base/ outputs/)"
+}
+
+# ── Dual-architecture tools ──────────────────────────────────────────────────
+build_crash_binary() {
+    local target="$1" output="$2"
+    if [ -x "$output" ]; then
+        ok "crash_${target} 已存在: $output"
+        return
+    fi
+
+    info "从源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
+    bash "$CRASH_BUILDER" \
+        --arch "$target" \
+        --source-dir "$CRASH_SOURCE_DIR" \
+        --output "$output" \
+        --repo-url "$CRASH_REPO" \
+        --repo-ref "$CRASH_REF" \
+        --clean
+    ok "crash_${target} 构建完成: $output"
+}
+
+build_dual_arch_tools() {
+    echo ""
+    info "=== 构建 x86_64 / arm64 分析与复现工具 ==="
+
+    # crash is target-specific: a binary built for one target cannot parse the
+    # other target's vmcore. Keep both in the runtime lookup directory.
+    build_crash_binary "x86_64" "${CRASH_SOURCE_DIR}/crash_x86_64"
+    build_crash_binary "arm64" "${CRASH_SOURCE_DIR}/crash_arm64"
+
+    local busybox_dir="Analysis-SKILL/tools/busybox/prebuilt"
+    if [ ! -x "${busybox_dir}/busybox_x86_64" ]; then
+        info "从源码构建 BusyBox x86_64"
+        bash "$BUSYBOX_BUILDER" --arch x86_64 --clean
+    else
+        ok "BusyBox x86_64 已存在: ${busybox_dir}/busybox_x86_64"
+    fi
+    if [ ! -x "${busybox_dir}/busybox_arm64" ]; then
+        info "从源码构建 BusyBox arm64"
+        bash "$BUSYBOX_BUILDER" --arch arm64 --clean
+    else
+        ok "BusyBox arm64 已存在: ${busybox_dir}/busybox_arm64"
+    fi
+}
+
+# ── semcode MCP ───────────────────────────────────────────────────────────────
+build_semcode_mcp() {
+    echo ""
+    info "=== 构建 semcode MCP ==="
+
+    if [ -x "$SEMCODE_MCP_BIN" ]; then
+        ok "semcode-mcp 已存在: $SEMCODE_MCP_BIN"
+        return
+    fi
+
+    if ! command -v cargo &>/dev/null; then
+        fail "未找到 cargo，无法构建 semcode-mcp。请先安装 Rust 工具链。"
+        exit 1
+    fi
+
+    if [ ! -f "${SEMCODE_SOURCE_DIR}/Cargo.toml" ]; then
+        info "获取 semcode 源码: $SEMCODE_SOURCE_DIR"
+        rm -rf "$SEMCODE_SOURCE_DIR"
+        git clone "$SEMCODE_REPO" "$SEMCODE_SOURCE_DIR"
+    fi
+
+    info "从源码构建 semcode-mcp（首次构建耗时较长）"
+    (
+        cd "$SEMCODE_SOURCE_DIR"
+        cargo build --release
+    )
+    ok "semcode-mcp 构建完成: $SEMCODE_MCP_BIN"
 }
 
 # ── Verify ────────────────────────────────────────────────────────────────────
@@ -274,50 +353,11 @@ usage() {
     echo '    vmcore: ./test_case/vmcore.elf'
     echo '    vmlinux: ./test_case/vmlinux'
     echo '    boot_kernel: ./test_case/bzImage'
-    echo '    kernel_source: $KERNEL_SOURCE_DIR'
+    echo '    kernel_source: /path/to/linux'
     echo ""
     echo "  也可以用 test_assets/ 内置用例快速测试:"
     echo "    python main.py test_assets/deadlock/input.txt --config config.json"
     echo "    python main.py test_assets/deadlock_arm64/input.txt --config config.json  # arm64"
-    echo ""
-}
-
-# ── Build crash binaries hint ─────────────────────────────────────────────────
-crash_build_hint() {
-    local has_x86=0 has_arm64=0
-    for d in "${HOME}/crash" "/usr/local/bin"; do
-        [ -x "${d}/crash_x86_64" ] && has_x86=1
-        [ -x "${d}/crash_arm64" ] && has_arm64=1
-    done
-
-    if [ "$has_x86" = "1" ] && [ "$has_arm64" = "1" ]; then
-        return 0
-    fi
-
-    echo ""
-    warn "=== 需要构建 arch-specific crash 二进制 (用于跨架构分析) ==="
-    echo ""
-    echo "  crash 编译时硬编码 TARGET arch — x86_64-targeted crash 不能分析 arm64 vmcore。"
-    echo "  Lumen 自动按 vmlinux 的 ELF e_machine 选择 ~/crash/crash_<arch> 或 /usr/local/bin/crash_<arch>。"
-    echo ""
-    if [ "$has_x86" = "0" ]; then
-        echo "  构建 x86_64 版本（用于分析 x86_64 vmcore）:"
-        echo "    cd ~/crash && make target=X86_64 -j\$(nproc)"
-        echo "    cp crash crash_x86_64"
-        echo ""
-    fi
-    if [ "$has_arm64" = "0" ]; then
-        echo "  构建 arm64 版本（用于分析 arm64 vmcore，约 5-10 min）:"
-        echo "    cd ~/crash && rm -rf gdb-16.2 && make clean"
-        echo "    make target=ARM64 -j\$(nproc)"
-        echo "    cp crash crash_arm64"
-        echo ""
-        echo "  注意：crash 源码树每次只能编一种 target，切换 target 必须:"
-        echo "    rm -rf gdb-16.2 && make clean && make target=<ARCH>"
-        echo ""
-    fi
-    echo "  如果 ~/crash 不存在，先 clone crash 源码:"
-    echo "    git clone https://github.com/crash-utility/crash.git ~/crash"
     echo ""
 }
 
@@ -329,16 +369,17 @@ main() {
     echo "======================================"
     echo -e "${NC}"
 
+    git submodule update --init --recursive
     check_python
     preflight_check
     create_virtualenv
     install_deps
     setup_env
     init_dirs
-    git submodule update --init 2>/dev/null || true
+    build_dual_arch_tools
+    build_semcode_mcp
     verify
     usage
-    crash_build_hint
 
     echo ""
     ok "部署完成！"

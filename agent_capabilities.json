@@ -126,7 +126,7 @@
       "required_inputs": ["user_input", "kernel_contract", "config"],
       "optional_inputs": ["input_artifacts_contract", "reproduce_case", "kernel_diagnosis", "test_attempts"],
       "outputs": ["test_result", "test_passed", "test_attempts", "test_contract"],
-      "tools": ["check_qemu_available", "create_initramfs", "boot_kernel", "analyze_boot_log"],
+      "tools": ["check_qemu_available", "create_ext4_rootfs", "create_initramfs", "boot_kernel", "analyze_boot_log"],
       "downstream_consumers": ["kernel_expert", "knowledge_base"]
     },
     "knowledge_base": {

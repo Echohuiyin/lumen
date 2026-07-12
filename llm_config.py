@@ -162,8 +162,8 @@ def _resolve_env_vars(text: str) -> str:
     The inner-most brace is resolved first on each pass.
     """
     # Known vars we allow for simple $VAR style (no braces)
-    _SIMPLE_VARS = {"HOME", "USER", "LUMEN_OUTPUT_DIR", "KERNEL_SOURCE_DIR",
-                    "SEMCODE_MCP_BIN", "CLAUDE_SETTINGS", "SEMCODE_DB_DIR"}
+    _SIMPLE_VARS = {"HOME", "USER", "LUMEN_OUTPUT_DIR", "LUMEN_PROJECT_ROOT",
+                    "KERNEL_SOURCE_DIR", "LUMEN_SEMCODE_MCP", "CLAUDE_SETTINGS"}
 
     def _resolve_simple(m: re.Match) -> str:
         return os.environ.get(m.group(1), "")

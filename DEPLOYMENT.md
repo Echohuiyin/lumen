@@ -13,7 +13,7 @@ on a fresh Ubuntu/Debian machine.
 4. [LLM & Claude Code Setup](#4-llm--claude-code-setup)
 5. [Kernel Source & Crash Setup](#5-kernel-source--crash-setup)
 6. [QEMU & Busybox Setup](#6-qemu--busybox-setup)
-7. [semcode MCP (Optional)](#7-semcode-mcp-optional)
+7. [semcode MCP](#7-semcode-mcp)
 8. [RAG / Knowledge Base (Optional)](#8-rag--knowledge-base-optional)
 9. [Deploy Script](#9-deploy-script)
 10. [First Run & Validation](#10-first-run--validation)
@@ -73,24 +73,21 @@ sudo apt install -y \
   python3 python3-venv python3-pip \
   git curl wget
 
-# QEMU (x86_64 kernel testing)
-sudo apt install -y qemu-system-x86
+# QEMU (x86_64 / arm64 kernel testing)
+sudo apt install -y qemu-system-x86 qemu-system-arm
 
 # Initramfs creation
-sudo apt install -y cpio gzip busybox-static
+sudo apt install -y cpio gzip
 
-# Crash dump analysis
-sudo apt install -y crash
+# Build crash and BusyBox from bundled/project-managed source
+sudo apt install -y \
+  build-essential gcc g++ gcc-aarch64-linux-gnu \
+  bison flex patch texinfo file e2fsprogs \
+  libncurses-dev zlib1g-dev liblzo2-dev libsnappy-dev \
+  libzstd-dev libgmp-dev libmpfr-dev
 
 # Optional: faster text search in kernel source
 sudo apt install -y ripgrep
-
-# Optional: cross-architecture QEMU
-sudo apt install -y qemu-system-arm
-
-# Optional: crash source build (if distro crash is too old)
-# sudo apt install -y build-essential gcc g++ libncurses-dev \
-#   zlib1g-dev liblzo2-dev libsnappy-dev libzstd-dev bison flex
 ```
 
 ### Verify system dependencies
@@ -99,12 +96,12 @@ sudo apt install -y qemu-system-arm
 # Each of these should print a path or version
 command -v python3       && python3 --version
 command -v qemu-system-x86_64 && qemu-system-x86_64 --version | head -1
-command -v busybox       && busybox --list | head -3
-command -v crash         && crash --version | head -1
+command -v qemu-system-aarch64 && qemu-system-aarch64 --version | head -1
+command -v aarch64-linux-gnu-gcc && aarch64-linux-gnu-gcc --version | head -1
 command -v cpio          && cpio --version | head -1
 ```
 
-Expected: Python 3.10+, QEMU 7+, busybox 1.36+, crash 8.0+.
+Expected: Python 3.10+, QEMU 7+, and the build tools above available.
 
 ---
 
@@ -211,79 +208,68 @@ git clone git://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git \
 # git clone https://github.com/openanolis/cloud-kernel.git ~/code/OLK-6.6
 ```
 
-Set the environment variable:
-
-```bash
-export KERNEL_SOURCE_DIR="${HOME}/code/OLK-6.6"
-```
-
 > The deadlock and uaf test cases reference a specific commit in OLK-6.6. For
 > those cases to compile kernel modules correctly, you need the matching tree.
 
 ### 5.2 Crash Utility
 
 The `crash` utility is required for vmcore analysis (lock_analysis,
-crash_analysis, kernel_log_analysis experts). The system crash from
-apt works for x86_64 vmcores:
+crash_analysis, kernel_log_analysis experts). Lumen uses arch-suffixed crash
+binaries built from the bundled crash source.
 
-```bash
-crash --version
-# Expected: crash 8.0.4+
-```
-
-#### 5.2.1 Arch-specific binaries (REQUIRED for cross-arch analysis)
+#### 5.2.1 Arch-specific binaries
 
 **Crash is compiled with a single TARGET arch hardcoded.** An x86_64-targeted
 crash CANNOT parse an arm64 vmcore — it errors with `machine type mismatch:
 crash=X86_64 vmcore=ARM64` then `not a supported file format`.
 
 Lumen auto-selects the right crash binary by sniffing the vmlinux's ELF
-`e_machine` field (commit `980d89b`). It looks for `crash_<arch>` at:
-- `~/crash/crash_<arch>` (source-built, recommended)
+`e_machine` field. It looks for `crash_<arch>` at:
+- `Analysis-SKILL/tools/crash/crash_<arch>` (source-built default)
 - `/usr/local/bin/crash_<arch>`
 
-Build both binaries from crash source (one-time setup, ~10 min each):
+The bundled crash source is pinned in
+`Analysis-SKILL/tools/crash/SOURCE_VERSION`:
 
-```bash
-# Clone crash source (9.0.2+ recommended for QEMU vmscores with VMCOREINFO)
-git clone https://github.com/crash-utility/crash.git ~/crash
-cd ~/crash
-
-# Build x86_64-targeted binary
-make target=X86_64 -j$(nproc)
-cp crash crash_x86_64
-
-# Build arm64-targeted binary (must clean gdb-16.2 between target switches)
-rm -rf gdb-16.2 && make clean
-make target=ARM64 -j$(nproc)
-cp crash crash_arm64
-
-# Keep a default `crash` symlink/binary for system fallback
-cp crash_x86_64 crash   # default = x86_64
+```text
+repo: https://github.com/crash-utility/crash.git
+ref: 9.0.2
+commit: 61fe107
 ```
 
-> **Gotcha**: crash's `Makefile` rejects target switches without a clean.
-> Always run `rm -rf gdb-16.2 && make clean` before `make target=<ARCH>`,
-> or the build silently reuses the previous target's gdb config.
+Build both binaries via the bundled crash build script:
+
+```bash
+bash Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh \
+  --arch x86_64 \
+  --source-dir Analysis-SKILL/tools/crash \
+  --output Analysis-SKILL/tools/crash/crash_x86_64 \
+  --clean
+
+bash Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh \
+  --arch arm64 \
+  --source-dir Analysis-SKILL/tools/crash \
+  --output Analysis-SKILL/tools/crash/crash_arm64 \
+  --clean
+```
+
+`deploy.sh` runs these builds automatically when the binaries are missing.
 
 Verify:
 
 ```bash
-$ ~/crash/crash_arm64 -v | head -1
-crash 9.0.2++
+$ Analysis-SKILL/tools/crash/crash_arm64 -v | head -1
+crash_arm64 9.0.2
 
-$ strings ~/crash/crash_arm64 | grep -E '^(X86_64|ARM64)$' | head -1
+$ Analysis-SKILL/tools/crash/crash_x86_64 -v | head -1
+crash_x86_64 9.0.2
+
+$ strings Analysis-SKILL/tools/crash/crash_arm64 | grep -E '^(X86_64|ARM64)$' | head -1
 ARM64
 
-$ strings ~/crash/crash_x86_64 | grep -E '^(X86_64|ARM64)$' | head -1
+$ strings Analysis-SKILL/tools/crash/crash_x86_64 | grep -E '^(X86_64|ARM64)$' | head -1
 X86_64
 ```
-
-#### 5.2.2 Alternative: use system crash (x86_64 only)
-
-If you only analyze x86_64 vmcores, the system `crash` from apt is sufficient.
-Skip the source build and ignore the `crash_build_hint` warning at end of
-deploy. Arch-suffixed binaries are only needed for arm64/arm32 vmcores.
 
 ---
 
@@ -303,29 +289,31 @@ ls -la /dev/kvm
 
 ### 6.2 Busybox
 
-Busybox is used by `create_initramfs.sh` to build the initramfs for QEMU boot.
+BusyBox is used to build the QEMU guest userspace. Lumen builds static BusyBox
+binaries from the bundled source, then uses them for ext4 rootfs images by
+default. The older initramfs path remains available for compatibility.
 
 ```bash
-# Check system busybox (from apt install busybox-static in Section 2)
-busybox --help | head -1
+bash Analysis-SKILL/tools/build_busybox.sh --arch x86_64 --clean
+bash Analysis-SKILL/tools/build_busybox.sh --arch arm64 --clean
 
-# It should be a static binary
-file $(command -v busybox)
-# Expected: "ELF 64-bit LSB executable, ... statically linked"
+file Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64
+file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 ```
 
-If system busybox is dynamically linked (not static), it will need libraries
-copied into initramfs. This works but is fragile — prefer rebuilding:
+`deploy.sh` builds both automatically when the prebuilt files are missing.
+
+To create a standalone ext4 rootfs image:
 
 ```bash
-# Build busybox from the project's build script
-cd tools
-./build_busybox.sh --arch x86_64 --clean
+bash Analysis-SKILL/skills/qemu-test/scripts/create_ext4_rootfs.sh \
+  --arch x86_64 \
+  --output /tmp/rootfs_x86_64.ext4
 ```
 
 ---
 
-## 7. semcode MCP (Optional)
+## 7. semcode MCP
 
 semcode-mcp provides semantic code search to the kernel_expert agent, enabling
 it to find kernel functions, callers, callees, and types across the kernel
@@ -340,27 +328,29 @@ Requires the Rust toolchain:
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source "$HOME/.cargo/env"
 
-# Clone and build semcode
-git clone https://github.com/anthropics/semcode ~/semcode
-cd ~/semcode
+# Build semcode from the project-managed source
+cd Analysis-SKILL/tools/semcode
 cargo build --release
 ```
 
-The binary will be at `~/semcode/target/release/semcode-mcp`.
+The binary will be at `Analysis-SKILL/tools/semcode/target/release/semcode-mcp`.
+If the source directory is missing, `deploy.sh` clones it from
+`https://github.com/facebookexperimental/semcode` and builds it there.
 
 ### 7.2 Index kernel source
 
 ```bash
 # Index your kernel source tree (this takes 5-30 minutes)
-~/semcode/target/release/semcode-mcp -d ~/code/OLK-6.6/.semcode.db \
-  --index ~/code/OLK-6.6
+Analysis-SKILL/tools/semcode/target/release/semcode-index \
+  -s ~/code/OLK-6.6 \
+  -d ~/code/OLK-6.6/.semcode.db
 ```
 
 ### 7.3 Verify
 
 ```bash
-~/semcode/target/release/semcode-mcp --version
-# Expected: prints version, exits 0
+Analysis-SKILL/tools/semcode/target/release/semcode-mcp --help
+# Expected: prints usage, exits 0
 
 # Check DB exists
 ls -lh ~/code/OLK-6.6/.semcode.db
@@ -410,19 +400,20 @@ bash deploy.sh
 ### What deploy.sh does
 
 1. **Python check**: verifies Python 3.10+
-2. **External dependency check**: looks for qemu, busybox, crash, claude, cpio, gzip, git, semcode-mcp
+2. **External dependency check**: looks for QEMU, build tools, cross compiler,
+   Claude Code, cpio, gzip, git, wget, and project-managed tool outputs
 3. **Arch-specific crash binary check**: verifies `crash_x86_64` and
-   `crash_arm64` are present at `~/crash/` or `/usr/local/bin/` (required
-   for cross-arch vmcore analysis — see Section 5.2.1)
+   `crash_arm64` are present at `Analysis-SKILL/tools/crash/` or
+   `/usr/local/bin/` (required for cross-arch vmcore analysis — see Section
+   5.2.1)
 4. **Virtual environment**: creates `venv/` and activates it
 5. **Python deps**: `pip install -r requirements.txt`
 6. **Env setup**: creates `.env` template if it doesn't exist (edit this!)
 7. **Config**: generates `config.json` from `config.json.template` if not present
 8. **Directory init**: creates `knowledge_base/` and `outputs/`
-9. **Submodule init**: `git submodule update --init`
+9. **Tool builds**: builds `crash_x86_64`, `crash_arm64`,
+   `busybox_x86_64`, `busybox_arm64`, and `semcode-mcp` when missing
 10. **Verification**: imports langgraph, langchain, langchain_openai to confirm deps work
-11. **Crash build hint**: prints build commands for missing `crash_<arch>`
-    binaries (non-fatal — x86_64-only deployments can ignore)
 
 ### Post-deploy: configure .env
 
@@ -439,22 +430,16 @@ Required settings:
 # Your LLM API key (from Section 4.3)
 export ANTHROPIC_API_KEY="sk-xxxxxxxxxxxxxxxx"
 
-# Path to kernel source tree (from Section 5.1)
-export KERNEL_SOURCE_DIR="${HOME}/code/OLK-6.6"
-```
-
-Optional settings (defaults are usually fine):
-
-```bash
 # API endpoint (DeepSeek Anthropic-compatible, or use OpenAI/Anthropic)
 export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
 
 # Model
 export ANTHROPIC_MODEL="deepseek-v4-flash"
 
-# semcode (if built in Section 7)
-export SEMCODE_MCP_BIN="${HOME}/semcode/target/release/semcode-mcp"
-export SEMCODE_DB_DIR="${KERNEL_SOURCE_DIR}/.semcode.db"
+# RAG embedding endpoint for full knowledge_search and Chroma import
+export EMBEDDING_BASE_URL="http://localhost:11434/v1"
+export EMBEDDING_MODEL="bge-large-zh"
+export EMBEDDING_API_KEY="not-required"
 ```
 
 After editing, reload and verify:
@@ -462,7 +447,6 @@ After editing, reload and verify:
 ```bash
 set -a; source .env; set +a
 echo "API Key: ${ANTHROPIC_API_KEY:0:8}..."
-echo "Kernel: $KERNEL_SOURCE_DIR"
 ```
 
 ---
@@ -505,7 +489,7 @@ The workflow takes 5-20 minutes depending on LLM speed and hardware:
   vmcore: ${PROJECT_ROOT}/test_assets/deadlock/vmcore.elf
   vmlinux: ${PROJECT_ROOT}/test_assets/deadlock/vmlinux
   boot_kernel: ${PROJECT_ROOT}/test_assets/deadlock/bzImage
-  kernel_source: ${KERNEL_SOURCE_DIR}
+  kernel_source: /home/user/code/OLK-6.6
   ────────────────────────────────────────────────────────
   Model: deepseek-v4-flash
   Input: test_assets/deadlock/input.txt
@@ -635,8 +619,8 @@ file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 # Expected: "ELF 64-bit LSB executable, ARM aarch64, ... statically linked"
 
 # Crash arm64 binary (REQUIRED for arm64 vmcore analysis)
-ls -x ~/crash/crash_arm64 /usr/local/bin/crash_arm64 2>/dev/null
-strings ~/crash/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head -1
+ls -x Analysis-SKILL/tools/crash/crash_arm64 /usr/local/bin/crash_arm64 2>/dev/null
+strings Analysis-SKILL/tools/crash/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head -1
 # Expected: ARM64
 ```
 
@@ -668,13 +652,12 @@ Bug Promote: arm64 内核 [...bug description...]
 vmcore: /path/to/arm64/vmcore.elf
 vmlinux: /path/to/arm64/vmlinux
 boot_kernel: /path/to/arm64/Image
-kernel_source: $ARM64_KERNEL_DIR
+kernel_source: /home/user/linux-next-arm64
 ```
 
-Set env vars and run:
+Run:
 
 ```bash
-export ARM64_KERNEL_DIR="${HOME}/linux-next-arm64"
 source venv/bin/activate
 python3 main.py arm64_input.txt --config config.json
 ```
@@ -771,11 +754,13 @@ which claude || npm list -g @anthropic-ai/claude-code
 
 ### "busybox applet not found" in initramfs
 
-The system busybox may be a stub. Install the full version:
+Rebuild the project-managed static BusyBox binaries:
 
 ```bash
-sudo apt install --reinstall busybox-static
-file /bin/busybox  # Should say "statically linked"
+bash Analysis-SKILL/tools/build_busybox.sh --arch x86_64 --clean
+bash Analysis-SKILL/tools/build_busybox.sh --arch arm64 --clean
+file Analysis-SKILL/tools/busybox/prebuilt/busybox_x86_64
+file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 ```
 
 ### Crash: "vmlinux: no debugging data available"
@@ -828,12 +813,9 @@ This means the test script (PID 1) exited. Common causes:
 | `ANTHROPIC_API_KEY` | **Yes** | — | LLM API key for chat agents |
 | `ANTHROPIC_BASE_URL` | No | `https://api.deepseek.com/anthropic` | LLM API endpoint |
 | `ANTHROPIC_MODEL` | No | `deepseek-v4-flash` | Chat model name |
-| `KERNEL_SOURCE_DIR` | For crash analysis | `${HOME}/code/OLK-6.6` | Kernel source tree path |
-| `SEMCODE_MCP_BIN` | No | `${HOME}/semcode/target/release/semcode-mcp` | semcode binary path |
-| `SEMCODE_DB_DIR` | No | `${KERNEL_SOURCE_DIR}/.semcode.db` | semcode index database |
-| `CRASH_BINARY` | No | auto-detected | Path to crash utility |
-| `EMBEDDING_BASE_URL` | No | `http://localhost:11434/v1` | Ollama endpoint for RAG |
-| `EMBEDDING_MODEL` | No | `nomic-embed-text` | Embedding model for RAG |
+| `EMBEDDING_BASE_URL` | Recommended | `http://localhost:11434/v1` | RAG embedding API endpoint |
+| `EMBEDDING_MODEL` | Recommended | `bge-large-zh` | RAG embedding model |
+| `EMBEDDING_API_KEY` | Recommended | `not-required` | RAG embedding API key or placeholder |
 
 ---
 
@@ -842,7 +824,7 @@ This means the test script (PID 1) exited. Common causes:
 | Path | Purpose | Created by |
 |------|---------|------------|
 | `config.json` | Workflow configuration | `deploy.sh` from `config.json.template` |
-| `.env` | Environment variables (API keys, paths) | `deploy.sh` template, user edits |
+| `.env` | LLM environment variables | `deploy.sh` template, user edits |
 | `venv/` | Python virtual environment | `deploy.sh` |
 | `knowledge_base/` | Archived analysis reports | `deploy.sh` |
 | `outputs/` | Reproducer artifacts | `deploy.sh` |

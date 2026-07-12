@@ -56,16 +56,20 @@ def test_validator():
     print_result("空输入阻断", result.status == "blocked", f"status={result.status}")
 
     # 测试 2: 规则验证 - kernel panic
-    result = _validate_input_by_rules("kernel panic with vmcore and vmlinux")
+    result = _validate_input_by_rules(
+        "kernel panic with vmcore and vmlinux, kernel_source: /tmp/linux"
+    )
     print_result("panic信号识别", result.status == "ok", f"signals={result.detected_signals}")
 
     # 测试 3: 规则验证 - deadlock
-    result = _validate_input_by_rules("hung task blocked for more than 120 seconds, deadlock")
+    result = _validate_input_by_rules(
+        "hung task blocked for more than 120 seconds, deadlock, kernel_source: /tmp/linux"
+    )
     print_result("deadlock信号识别", result.status == "ok", f"signals={result.detected_signals}")
 
     # 测试 4: validator_node 输出契约
     state = {
-        "user_input": "kernel panic, vmcore: /tmp/vmcore, vmlinux: /tmp/vmlinux",
+        "user_input": "kernel panic, vmcore: /tmp/vmcore, vmlinux: /tmp/vmlinux, kernel_source: /tmp/linux",
         "config_path": CONFIG_PATH,
     }
     result = validator_node(state)

@@ -1,5 +1,6 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 from pathlib import Path
+import os
 import re
 
 from agents.contracts import ValidationResultContract, model_to_dict
@@ -7,6 +8,7 @@ from agents.input_artifacts import parse_input_artifacts
 from agents.llm_display import call_llm_with_persistence, set_session_dir, GREEN, YELLOW, DIM, _c
 from llm_config import get_llm_with_config, load_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
+from project import PROJECT_ROOT
 
 
 def validator_node(state: MaintenanceWorkflowState) -> dict:
@@ -15,8 +17,11 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
     只负责判断信息是否完整，不完整则要求用户补充，完整则交给 PM。
     """
     set_session_dir(state.get("session_dir"))
-    config = load_config(state["config_path"])
     input_artifacts = parse_input_artifacts(state.get("user_input", ""))
+    if input_artifacts.kernel_source_path:
+        os.environ["KERNEL_SOURCE_DIR"] = input_artifacts.kernel_source_path
+    os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))
+    config = load_config(state["config_path"])
     rule_result = _validate_input_by_rules(state.get("user_input", ""))
     if rule_result.status in {"ok", "blocked"}:
         # Compact rule-based validation result
@@ -110,6 +115,25 @@ def _validate_input_by_rules(user_input: str) -> ValidationResultContract:
             reason="input_too_short",
             missing_fields=["problem_description"],
             feedback="输入过短，请补充具体内核问题现象、错误日志或相关文件路径。",
+        )
+
+    input_artifacts = parse_input_artifacts(text, validate_paths=False)
+    kernel_source_path = input_artifacts.kernel_source_path
+    if not kernel_source_path:
+        return ValidationResultContract(
+            status="blocked",
+            validation_passed=False,
+            reason="missing_kernel_source",
+            missing_fields=["kernel_source"],
+            feedback="缺少 kernel_source，请在 input.txt 中配置内核源码树的绝对路径。",
+        )
+    if not Path(kernel_source_path).is_absolute():
+        return ValidationResultContract(
+            status="blocked",
+            validation_passed=False,
+            reason="invalid_kernel_source",
+            missing_fields=["kernel_source"],
+            feedback="kernel_source 必须是 input.txt 中的绝对路径。",
         )
 
     lowered = text.lower()

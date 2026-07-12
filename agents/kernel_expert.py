@@ -1246,6 +1246,7 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
         "test_script_path": contract.test_script_path,
         "reproducer_dir": contract.reproducer_dir,
         "reproducer_module_path": contract.reproducer_module_path,
+        "rootfs_path": contract.rootfs_path,
     }
 
     for field, raw_path in required_paths.items():
@@ -1462,7 +1463,7 @@ echo "Fork-kill pressure running (200MB per cycle, 5s rhythm)"
     #    didn't set it (LLM often omits this marker/field). The
     #    reproducer_dir typically contains compiled trigger programs
     #    (repro_c.bin, uaf_trigger, etc.) that must be injected into
-    #    /bin inside the initramfs via create_initramfs --binaries.
+    #    /bin inside the QEMU guest rootfs/initramfs.
     #    Without this, test.sh reports "trigger binary not found".
     binaries_dir = data.get("binaries_dir", "") or ""
     reproducer_dir = data.get("reproducer_dir", "") or ""

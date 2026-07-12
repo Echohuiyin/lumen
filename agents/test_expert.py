@@ -229,7 +229,8 @@ def _run_qemu_test_with_tools(
 
 You MUST use the following QEMU testing tools that are bound to you:
 - check_qemu_available: Check if QEMU is installed. Call this FIRST and ONLY ONCE.
-- create_initramfs: Create minimal initramfs for testing. Call ONCE and reuse the path.
+- create_ext4_rootfs: Create ext4 rootfs for testing. Call ONCE and reuse the path.
+- create_initramfs: Create minimal initramfs for compatibility fallback.
 - boot_kernel: Boot a kernel in QEMU and capture boot log. THIS IS THE KEY TOOL.
 - analyze_boot_log: Analyze QEMU boot log for errors and patterns. Call ONCE per log.
 
@@ -238,19 +239,19 @@ Do NOT say you "cannot execute QEMU" — you CAN, by calling these tools.
 
 EFFICIENCY RULES:
 - Call each tool ONCE with the correct arguments. Do NOT retry with different args.
-- Use the initramfs path returned by create_initramfs() directly in boot_kernel().
+- Prefer the rootfs path returned by create_ext4_rootfs() directly in boot_kernel(rootfs_path=...).
 - If boot_kernel fails, check whether the kernel is a bootable bzImage or an ELF
   vmlinux (debug symbols only, not bootable). QEMU requires bzImage for x86_64.
 - If the kernel is ELF vmlinux, report REPRODUCE: FAILED immediately — do not
   retry multiple times. Explain that a bootable bzImage is needed.
-- Do NOT call create_initramfs more than once — use the first result.
+- Do NOT call create_ext4_rootfs or create_initramfs more than once — use the first result.
 
 REQUIRED execution flow:
 1. Call check_qemu_available(arch="{target_arch}") to verify QEMU
-2. Call create_initramfs(arch="{target_arch}") ONCE. If Test script exists, pass test_script_path={test_script_path or 'N/A'}.
+2. Call create_ext4_rootfs(arch="{target_arch}") ONCE. If Test script exists, pass test_script_path={test_script_path or 'N/A'}.
    If Modules dir exists, pass modules_dir={modules_dir or 'N/A'} so the .ko is included in /modules.
    If Binaries dir exists, pass binaries_dir={binaries_dir or 'N/A'} so trigger programs are included in /bin.
-3. Call boot_kernel() with arch="{target_arch}", kernel_path={kernel_path or 'N/A'} and the initramfs path
+3. Call boot_kernel() with arch="{target_arch}", kernel_path={kernel_path or 'N/A'} and the rootfs path
 4. Call analyze_boot_log() on the resulting log
 5. Based on actual tool outputs and Expected signal, determine if issue reproduced
 """
@@ -313,7 +314,7 @@ Do not say you "cannot execute" — the tools give you that ability."""
 {qemu_status}
 
 Based on this result, you MUST now proceed with the verification by calling the tools.
-If QEMU is available, use create_initramfs(arch="{target_arch}", test_script_path="{test_script_path or ''}", modules_dir="{modules_dir or ''}") then boot_kernel(arch="{target_arch}") to test the kernel.
+If QEMU is available, use create_ext4_rootfs(arch="{target_arch}", test_script_path="{test_script_path or ''}", modules_dir="{modules_dir or ''}") then boot_kernel(arch="{target_arch}") with rootfs_path to test the kernel.
 If QEMU is not available, report REPRODUCE: FAILED with the reason.
 Do not describe what you would do — call the tools.""")
             messages.append(force_msg)
@@ -404,12 +405,20 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     reproducer_module_path = kernel_contract.get("reproducer_module_path") or state.get("reproducer_module_path", "")
     expected_signal = kernel_contract.get("expected_signal") or state.get("expected_signal", "")
     binaries_dir = kernel_contract.get("binaries_dir") or state.get("binaries_dir", "")
+    rootfs_mode = kernel_contract.get("rootfs_mode") or "ext4"
+    if rootfs_mode not in {"initramfs", "ext4"}:
+        rootfs_mode = "ext4"
+    rootfs_path = kernel_contract.get("rootfs_path") or ""
+    rootfs_size_mb = kernel_contract.get("rootfs_size_mb") or 128
 
     # Deterministic QEMU execution path. The LLM is no longer responsible for
     # choosing or ordering QEMU tools.
     plan = TestPlan(
         target_arch=target_arch,
         boot_kernel_path=kernel_path or "",
+        rootfs_mode=rootfs_mode,
+        rootfs_path=rootfs_path,
+        rootfs_size_mb=rootfs_size_mb,
         reproducer_dir=reproducer_dir,
         reproducer_module_path=reproducer_module_path,
         test_script_path=test_script_path,
