@@ -112,10 +112,14 @@ def get_or_create_crash_session(vmcore_path: str, vmlinux_path: str) -> Any:
 
         arch = _sniff_arch_from_elf(str(vmlinux))
         arch_binary = _select_crash_binary_for_arch(arch)
+        # Pass arch_binary directly to AppConfig instead of mutating the
+        # process-global CRASH_BINARY env var. Concurrent sessions for
+        # different arches (x86_64 + arm64) would otherwise overwrite each
+        # other's binary path.
         if arch_binary:
-            os.environ["CRASH_BINARY"] = arch_binary
-
-        config = AppConfig()
+            config = AppConfig(crash_binary=arch_binary)
+        else:
+            config = AppConfig()
         session = CrashSessionManager(
             vmcore_path=vmcore,
             vmlinux_path=vmlinux,

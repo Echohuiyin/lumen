@@ -362,6 +362,28 @@ def test_blocked_contract_still_triggers_on_explicit_failure_text(monkeypatch):
     assert result["kernel_ready_for_test"] is False
 
 
+def test_dsml_fragments_treated_as_empty(monkeypatch, patch_session_dir):
+    """When text is only DSML/XML tool_use fragments (DeepSeek serialization
+    mismatch), treat it as empty so the disk-contract fallback runs."""
+    result = _parse_with_empty_text(monkeypatch, patch_session_dir)
+    contract = result["kernel_contract"]
+    # Sanity: with empty text + disk contract, fallback picks up the file
+    assert contract["status"] == "ok"
+    assert contract["expected_signal"] == "BUG: KASAN: slab-use-after-free"
+
+
+def test_dsml_fragment_detection_helper():
+    """Unit test the _looks_like_dsml_fragments helper directly."""
+    from agents.kernel_expert import _looks_like_dsml_fragments
+    assert _looks_like_dsml_fragments("</tool_calls>")
+    assert _looks_like_dsml_fragments("</DSML>")
+    assert _looks_like_dsml_fragments("<tool_use></tool_use>")
+    assert _looks_like_dsml_fragments("  </tool_calls>  ")
+    assert not _looks_like_dsml_fragments("## 分析结果\n这是真实的分析文本。")
+    assert not _looks_like_dsml_fragments("Kernel panic at line 42")
+    assert not _looks_like_dsml_fragments("OpenCode 调用失败: xxx")
+
+
 # ---------------------------------------------------------------------------
 # 3. Integration-style: OpenCodeBackend + kernel_expert end-to-end
 # ---------------------------------------------------------------------------

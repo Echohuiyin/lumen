@@ -575,6 +575,28 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     )
 
 
+def _looks_like_dsml_fragments(text: str) -> bool:
+    """Detect whether the LLM response is only DSML/XML tool_use fragments.
+
+    DeepSeek's tool_use serialization may emit closing tags like
+    ``</tool_calls>`` or ``</DSML>`` without any prose when the CLI's
+    response extractor only catches the tail of a tool-call sequence.
+    These fragments are not real analysis text and would produce a
+    degraded contract if fed to the section parser.
+
+    Returns True when the text (after stripping XML/DSML tags and
+    whitespace) is empty or contains only punctuation.
+    """
+    import re
+    # Strip XML/DSML tool_use tags: <tool_use>, </tool_use>, <tool_calls>,
+    # </tool_calls>, <DSML>, </DSML>, and similar.
+    tag_pattern = re.compile(r'</?(?:tool_use|tool_calls|DSML|function_call|function_calls)\s*/?>', re.IGNORECASE)
+    stripped = tag_pattern.sub('', text).strip()
+    # Also strip stray punctuation that the fragment leaves behind
+    stripped = re.sub(r'[\s<>/]+', '', stripped)
+    return len(stripped) == 0
+
+
 def _parse_kernel_expert_response(
     *,
     text: str,
@@ -613,6 +635,14 @@ def _parse_kernel_expert_response(
             "kernel_contract": model_to_dict(blocked_contract),
             "final_response": text,
         }
+
+    # Detect DSML/XML tool_use fragments (DeepSeek tool_use serialization
+    # mismatch with Claude Code CLI). When the LLM emits only closing tags
+    # like </tool_calls> or <tool_use>...</tool_use> without a proper text
+    # section, the text-extraction path returns garbage. Treat it as empty
+    # so the disk-contract fallback can recover the agent's artifacts.
+    if text and _looks_like_dsml_fragments(text):
+        text = ""
 
     # Fallback for empty response: auto-generate contract from state
     if not text:
