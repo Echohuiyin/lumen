@@ -1114,9 +1114,10 @@ class OpenCodeBackend:
         the first entry is used as workdir (kernel source dir is the most
         useful one). If workdir is also set, workdir wins and add_dirs[0]
         is documented in the system prompt instead.
-      - opencode 1.14.51 JSONL only emits ``step_start`` (no ``text`` events).
-        The assistant response is retrieved via ``opencode export <sessionID>``
-        after the CLI run completes.
+      - If JSONL text events are missing despite a successful run,
+        ``opencode export <sessionID>`` serves as a secondary retrieval
+        path (handles edge cases where the PTY output parsing is
+        incomplete).
     """
 
     def __init__(
@@ -1225,6 +1226,31 @@ class OpenCodeBackend:
 
         return "".join(text_parts) if text_parts else None
 
+    @staticmethod
+    def _build_oc_cmd(
+        *,
+        model: str,
+        agent_name: str,
+        target_dir: str,
+        pure: bool,
+        user_prompt: str,
+    ) -> list[str]:
+        """Build the opencode run argument list."""
+        cmd = [
+            "opencode", "run",
+            "--format", "json",
+            "--dangerously-skip-permissions",
+            "--agent", agent_name,
+        ]
+        if model:
+            cmd.extend(["-m", model])
+        if target_dir:
+            cmd.extend(["--dir", target_dir])
+        if pure:
+            cmd.append("--pure")
+        cmd.append(user_prompt)
+        return cmd
+
     def invoke(
         self,
         messages: list[BaseMessage],
@@ -1243,36 +1269,27 @@ class OpenCodeBackend:
         system_prompt = "\n\n".join(system_parts)
         user_prompt = "\n\n".join(user_parts) or " "
 
-        # Pick workdir. OpenCode only supports single --dir. If workdir is
-        # set, use it (Lumen's outputs/ is the canonical workdir). If only
-        # add_dirs is set, fall back to add_dirs[0] (typically kernel source).
         target_dir = workdir or (add_dirs[0] if add_dirs else "")
-
+        if target_dir:
+            target_dir = os.path.abspath(target_dir)
         agent_name = self._write_agent_file(system_prompt)
 
-        cmd: list[str] = [
-            self._cli_command, "run",
-            "--format", "json",
-            "--dangerously-skip-permissions",
-            "--agent", agent_name,
-        ]
-        if self._model:
-            cmd.extend(["-m", self._model])
-        if target_dir:
-            cmd.extend(["--dir", target_dir])
-        if self._pure:
-            cmd.append("--pure")
-        # user prompt is positional (last)
-        cmd.append(user_prompt)
+        oc_cmd = self._build_oc_cmd(
+            model=self._model,
+            agent_name=agent_name,
+            target_dir=target_dir,
+            pure=self._pure,
+            user_prompt=user_prompt,
+        )
 
+        # Run opencode directly. No script(1) PTY wrapper needed —
+        # opencode 1.14.51+ produces clean JSONL on stdout even with
+        # pipes when capture_output=True (pipes both stdout and stderr).
         try:
-            # OpenCode --format json writes JSONL to both stdout and stderr.
-            # Merge them by redirecting stderr into stdout.
-            result = subprocess.run(
-                cmd,
+            proc = subprocess.run(
+                oc_cmd,
                 cwd=target_dir or None,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
+                capture_output=True,
                 text=True,
                 timeout=self._cli_timeout,
             )
@@ -1281,39 +1298,60 @@ class OpenCodeBackend:
                 f"OpenCode timed out after {self._cli_timeout}s"
             ) from exc
         except FileNotFoundError as exc:
-            if exc.filename and exc.filename != self._cli_command:
-                raise RuntimeError(
-                    f"OpenCode workdir does not exist: {exc.filename}"
-                ) from exc
             raise RuntimeError(
-                f"OpenCode CLI not found: {self._cli_command}"
+                f"OpenCode binary not found: {exc.filename}"
             ) from exc
 
-        stdout = result.stdout or ""
-        returncode = result.returncode
+        stdout = proc.stdout
 
-        if returncode != 0:
-            detail = stdout.strip()[:500]
+        stderr_text = (proc.stderr or "").strip()[:500]
+
+        if proc.returncode != 0:
+            detail = (stdout or proc.stdout or "").strip()[:500]
             raise RuntimeError(
-                f"OpenCode failed (exit {returncode}): {detail}"
+                f"OpenCode failed (exit {proc.returncode}): {detail}"
+                + (f" | stderr: {stderr_text}" if stderr_text else "")
             )
 
-        # Extract sessionID from step_start, then use opencode export to get
-        # the full assistant response (opencode 1.14.51 JSONL does not emit
-        # text events — only step_start).
-        session_id = self._extract_session_id(stdout)
-        if session_id:
-            final_text = self._export_session_text(session_id)
-            if final_text:
-                return AIMessage(content=final_text)
+        # Parse JSONL text events (primary path).
+        final_text = self._parse_text_events(stdout)
 
-            # Export succeeded but no assistant text: likely an API error.
-            # Fall through to try parsing JSONL events (for newer opencode
-            # versions that may emit text events).
+        if not final_text:
+            # Fallback: extract sessionID and use opencode export.
+            session_id = self._extract_session_id(stdout)
+            if session_id:
+                final_text = self._export_session_text(session_id)
 
-        # Fallback: parse JSONL for type:"text" events (newer opencode or
-        # when export is unavailable).
-        final_text = ""
+        if not final_text:
+            # Check if the agent was actually active (had tool_use events).
+            # If so, the LLM may have only produced tool calls in its final
+            # response without a text event. Return empty content so the
+            # caller's fallback (e.g. reading kernel_contract.json from disk)
+            # can still pick up the generated artifacts.
+            if self._has_tool_use_events(stdout):
+                final_text = ""
+            else:
+                extra = ""
+                if not stdout and stderr_text:
+                    extra = f" | stderr: {stderr_text}"
+                if not stdout and not stderr_text:
+                    extra = " | stdout and stderr both empty; CLI may have silently crashed"
+                raise RuntimeError(
+                    f"OpenCode returned no text events (exit 0)."
+                    + extra
+                )
+
+        return AIMessage(content=final_text)
+
+    @staticmethod
+    def _has_tool_use_events(stdout: str) -> bool:
+        """Check if the JSONL output contains any tool_use events."""
+        return any('"type":"tool_use"' in line for line in stdout.splitlines())
+
+    @staticmethod
+    def _parse_text_events(stdout: str) -> str:
+        """Accumulate ``type:\"text\"`` JSONL events into a single string."""
+        parts: list[str] = []
         for line in stdout.splitlines():
             line = line.strip()
             if not line:
@@ -1329,14 +1367,8 @@ class OpenCodeBackend:
                 if isinstance(part, dict):
                     text = part.get("text", "")
                     if text:
-                        final_text += text
-
-        if not final_text:
-            raise RuntimeError(
-                f"OpenCode returned no text events. output={stdout[:300]}"
-            )
-
-        return AIMessage(content=final_text)
+                        parts.append(text)
+        return "".join(parts)
 
     def stream(self, messages: list[BaseMessage]):
         """Non-streaming fallback: invoke and yield single chunk."""

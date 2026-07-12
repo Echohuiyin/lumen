@@ -620,6 +620,37 @@ def _parse_kernel_expert_response(
         # Search for actual reproducer files
         outputs_dir = paths_get_output_dir()
         reproducer_dir, test_script_path, reproducer_module_path, _ = _find_actual_reproducer_path(outputs_dir)
+
+        # Prefer the agent-written kernel_contract.json when the text was
+        # empty — the agent may have written a complete contract via its
+        # tools even though the final text event was missing (model ended
+        # with tool calls only).
+        contract_file = outputs_dir / "kernel_contract.json"
+        if contract_file.exists():
+            try:
+                data = json.loads(contract_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    file_contract = _model_validate(KernelExpertOutput, data)
+                    if _kernel_contract_has_handoff(file_contract):
+                        kernel_contract = file_contract
+                        kernel_contract = _validate_kernel_contract_artifacts(kernel_contract)
+                        contract_ready = _kernel_contract_ready_for_test(kernel_contract)
+                        return {
+                            "kernel_analysis": text,
+                            "reproduce_case": text,
+                            "kernel_diagnosis": "",
+                            "kernel_ready_for_test": contract_ready,
+                            "kernel_contract": model_to_dict(kernel_contract),
+                            "target_arch": kernel_contract.target_arch,
+                            "boot_kernel_path": kernel_contract.boot_kernel_path,
+                            "reproducer_dir": kernel_contract.reproducer_dir,
+                            "reproducer_module_path": kernel_contract.reproducer_module_path,
+                            "test_script_path": kernel_contract.test_script_path,
+                            "expected_signal": kernel_contract.expected_signal,
+                        }
+            except (OSError, json.JSONDecodeError, ValueError):
+                pass
+
         fallback_arch = _resolve_target_arch_fallback(input_artifacts.get("vmlinux_path", ""))
         fallback_boot = (
             input_artifacts.get("boot_kernel_path")
