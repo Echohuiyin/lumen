@@ -45,8 +45,8 @@ def complete_contract(session_dir):
     contract = {
         "status": "ok",
         "target_arch": "x86_64",
-        "vmlinux_path": "/home/test/vmlinux",
-        "boot_kernel_path": "/home/test/bzImage",
+        "vmlinux_path": "/home/user/vmlinux",
+        "boot_kernel_path": "/home/user/bzImage",
         "reproducer_dir": str(session_dir / "reproducer"),
         "reproducer_module_path": str(session_dir / "reproducer" / "crash_uaf.ko"),
         "test_script_path": str(session_dir / "reproducer" / "test.sh"),
@@ -450,7 +450,7 @@ def test_integration_opencode_empty_text_disk_contract(monkeypatch, integration_
         "user_input": "test",
         "vmlinux_path": str(integration_env / "vmlinux"),
         "boot_kernel_path": str(integration_env / "bzImage"),
-        "kernel_source_path": "/home/test/kernel",
+        "kernel_source_path": "/home/user/kernel",
         "tool_experts": [],
         "artifacts": {
             "pm_issue_url": "",
