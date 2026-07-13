@@ -8,6 +8,7 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from agents.kernel_expert import (
+    _extract_section,
     _extract_kernel_contract,
     _kernel_contract_from_markers,
     _kernel_contract_ready_for_test,
@@ -50,6 +51,25 @@ KERNEL_CONTRACT:
         assert contract.boot_kernel_path == kernel_file.name
         assert contract.evidence[0]["path"] == "outputs/repro/repro.c"
         assert _kernel_contract_ready_for_test(contract) is True
+
+
+def test_uaf_path_sections_are_preserved_in_contract():
+    text = """ALL_POSSIBLE_PATHS:
+1. open -> get -> error path misses put -> leaked reference
+2. close -> put -> release -> later access -> UAF
+
+MAX_LIKELY_PATH:
+close -> put -> release -> later access -> UAF (vmcore evidence)
+
+KERNEL_CONTRACT:
+```json
+{"status":"blocked", "all_possible_paths": ["json path"]}
+```
+"""
+    assert _extract_section(text, "ALL_POSSIBLE_PATHS").startswith("1. open")
+    assert "later access" in _extract_section(text, "MAX_LIKELY_PATH")
+    contract = _extract_kernel_contract(text)
+    assert contract.all_possible_paths == ["json path"]
 
 
 def test_marker_fallback_blocks_incomplete_handoff():

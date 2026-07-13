@@ -716,6 +716,8 @@ def _parse_kernel_expert_response(
     # 解析必现用例和维测方案
     reproduce_case = _extract_section(text, "REPRODUCE_CASE")
     kernel_diagnosis = _extract_section(text, "KERNEL_DIAGNOSIS")
+    all_possible_paths_text = _extract_section(text, "ALL_POSSIBLE_PATHS")
+    max_likely_path = _extract_section(text, "MAX_LIKELY_PATH")
     target_arch = _extract_scalar_marker(text, "TARGET_ARCH")
     boot_kernel_path = _extract_scalar_marker(text, "BOOT_KERNEL_PATH")
     reproducer_dir = _extract_scalar_marker(text, "REPRODUCER_DIR")
@@ -758,6 +760,19 @@ def _parse_kernel_expert_response(
         data["binaries_dir"] = binaries_dir
         kernel_contract = _model_validate(KernelExpertOutput, data)
 
+    # Preserve path findings emitted as human-readable sections even when the
+    # CLI returned a contract JSON without the additive fields.
+    if all_possible_paths_text or max_likely_path:
+        data = model_to_dict(kernel_contract)
+        if all_possible_paths_text and not data.get("all_possible_paths"):
+            data["all_possible_paths"] = [
+                line.strip() for line in all_possible_paths_text.splitlines()
+                if line.strip()
+            ]
+        if max_likely_path and not data.get("max_likely_path"):
+            data["max_likely_path"] = max_likely_path.strip()
+        kernel_contract = _model_validate(KernelExpertOutput, data)
+
     # Final fallback: auto-fill from input_artifacts if contract still incomplete
     if not _kernel_contract_has_handoff(kernel_contract):
         auto_fields = _generate_auto_contract_fields(kernel_contract, input_artifacts)
@@ -777,10 +792,22 @@ def _parse_kernel_expert_response(
           f"expected_signal={kernel_contract.expected_signal is not None} "
           f"ready_for_test={contract_ready}", flush=True)
 
+    # Retries must not erase the first round's path inventory.  Preserve all
+    # previously established paths and append newly discovered ones.
+    previous_paths = state.get("all_possible_paths", []) or []
+    current_paths = kernel_contract.all_possible_paths or []
+    merged_paths = list(previous_paths)
+    for path in current_paths:
+        if path not in merged_paths:
+            merged_paths.append(path)
+    merged_max_path = kernel_contract.max_likely_path or state.get("max_likely_path", "")
+
     return {
         "kernel_analysis": text,
         "reproduce_case": reproduce_case or text,
         "kernel_diagnosis": kernel_diagnosis or "",
+        "all_possible_paths": merged_paths,
+        "max_likely_path": merged_max_path,
         "kernel_ready_for_test": contract_ready,
         "kernel_contract": model_to_dict(kernel_contract),
         "target_arch": kernel_contract.target_arch,

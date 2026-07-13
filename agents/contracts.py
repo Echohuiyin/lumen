@@ -181,6 +181,11 @@ class KernelExpertOutput(BaseModel):
     binaries_dir: str = ""
     build_status: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)
+    # UAF/refcount investigations must preserve the complete path set even
+    # when QEMU reproduction fails.  These fields are intentionally additive
+    # and default to empty for non-UAF cases and legacy contracts.
+    all_possible_paths: list[str] = Field(default_factory=list)
+    max_likely_path: str = ""
     warnings: list[str] = Field(default_factory=list)
     blocked_reason: str = ""
     detection_signals: DetectionSignals = Field(default_factory=DetectionSignals)

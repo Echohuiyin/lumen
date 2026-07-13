@@ -1139,3 +1139,868 @@ PY
 ### 影响
 
 本地快速回归不再依赖在线 LLM 服务或外部 crash session。需要验证完整在线链路时显式加 `--run-online`。
+
+---
+
+# UAF / 引用计数形式化分析与复现设计规范
+
+## 1. 背景与目标
+
+对于 UAF、`kref`、`refcount` 和引用计数增减不平衡问题，用户需要的不只是一个复现器，而是一条可以持续排查的完整证据链：
+
+1. 在明确边界内列出所有可能的引用计数路径。
+2. 从候选路径中找出证据支持度最高的路径。
+3. 基于该路径构造复现器并执行验证。
+4. 无论复现成功、失败、环境阻塞或结论不确定，都保留全部路径的排查结果。
+
+本规范同时解决工作流中以下共性问题：
+
+- LLM 自由文本无法保证路径完整性。
+- Kernel Expert 重试可能覆盖前一轮证据。
+- 复现结果与根因分析耦合，复现失败时容易丢失分析价值。
+- QEMU 仅靠日志子串判断成功，可能产生假阳性。
+- 专家状态、资源生命周期和会话数据缺少可验证的不变量。
+
+## 2. 范围与非目标
+
+### 2.1 范围
+
+- Linux 内核 UAF、引用计数泄漏、重复释放、漏 `put`、错误引用转移。
+- 同步路径、错误回滚路径、异步 workqueue/RCU/timer 路径及有限并发交错。
+- Kernel Expert、Test Expert、Knowledge Base 之间的数据契约和证据传递。
+- Crash、源码、日志、QEMU 结果的统一证据表示。
+
+### 2.2 非目标
+
+- 不承诺在无边界条件下枚举内核中的数学意义“全部执行路径”。
+- 不使用复现成功替代根因证明。
+- 不把 LLM 判断作为可验证事实的唯一来源。
+- 第一阶段不引入完整定理证明器或全内核模型检查。
+
+“所有可能路径”定义为：在指定内核版本、Kconfig、分析入口集合、对象类型、调用深度、间接调用解析结果和并发模型下，所有已发现的可达引用计数路径。
+
+## 3. 形式化模型
+
+### 3.1 对象状态
+
+```text
+ObjectState = (lifecycle, refcount, owners, aliases)
+
+lifecycle ∈ {allocated, alive, releasing, freed}
+refcount ∈ Z
+owners    = 当前持有引用的主体集合
+aliases   = 仍可能访问对象的指针或容器集合
+```
+
+### 3.2 状态迁移事件
+
+| 事件 | 状态变化 | 典型 API |
+|------|----------|----------|
+| `GET` | `refcount += 1` | `kref_get`、`refcount_inc`、`get_device` |
+| `PUT` | `refcount -= 1` | `kref_put`、`refcount_dec_and_test`、`put_device` |
+| `TRANSFER` | owner A → owner B，计数通常不变 | 保存到容器、交给 worker、回调接管 |
+| `FREE` | `lifecycle = freed` | release callback、`kfree`、slab free |
+| `ACCESS` | 读取或修改对象 | 解引用、回调、异步任务 |
+| `CANCEL` | 取消异步访问能力 | cancel work、del timer、RCU grace period |
+
+### 3.3 必须保持的不变量
+
+```text
+I1: refcount >= 0
+I2: ACCESS => lifecycle != freed
+I3: FREE => refcount == 0
+I4: GET 最终必须对应 PUT 或显式 TRANSFER
+I5: max_likely_path_id ∈ all_possible_path_ids
+I6: Paths(n+1) ⊇ Paths(n)
+I7: test_passed => reproducer_started
+                  ∧ target_signal_after_start
+                  ∧ target_context_matched
+I8: 每次 crash session acquire 恰好对应一次 release
+```
+
+其中 `I6` 保证 Kernel Expert 重试只能补充路径，不能删除已经确认或已经排除的路径。
+
+## 4. 数据契约设计
+
+### 4.1 问题分类
+
+新增确定性字段：
+
+```json
+{
+  "issue_type": "uaf",
+  "reference_model": "kref",
+  "target_object": "struct foo",
+  "classification_evidence": []
+}
+```
+
+`issue_type` 至少支持：
+
+- `uaf`
+- `refcount_leak`
+- `refcount_underflow`
+- `double_put`
+- `missing_put`
+- `ownership_transfer_error`
+- `unknown_memory_lifetime`
+
+### 4.2 单条引用路径
+
+目标 contract：
+
+```json
+{
+  "id": "P1",
+  "entrypoint": "foo_ioctl",
+  "description": "ioctl 获取引用后交给 worker，close 提前释放",
+  "events": [
+    {
+      "sequence": 1,
+      "function": "foo_ioctl",
+      "source": "drivers/foo/foo.c:120",
+      "operation": "get",
+      "delta": 1,
+      "owner": "userspace fd",
+      "guard": "cmd == FOO_START",
+      "thread": "caller"
+    },
+    {
+      "sequence": 2,
+      "function": "foo_release",
+      "source": "drivers/foo/foo.c:240",
+      "operation": "put",
+      "delta": -1,
+      "owner": "userspace fd",
+      "thread": "close"
+    },
+    {
+      "sequence": 3,
+      "function": "foo_worker",
+      "source": "drivers/foo/foo.c:310",
+      "operation": "access",
+      "delta": 0,
+      "owner": "workqueue",
+      "thread": "kworker"
+    }
+  ],
+  "net_delta": 0,
+  "terminal_state": "uaf",
+  "reachability": "reachable",
+  "evidence_level": "observed",
+  "evidence": [],
+  "unknowns": [],
+  "eliminated_by": []
+}
+```
+
+关键字段要求：
+
+- `id`：稳定路径 ID，跨重试保持不变。
+- `events`：按发生顺序保存 get/put/transfer/free/access。
+- `net_delta`：由程序根据事件计算，不能只信任 LLM 输出。
+- `terminal_state`：`balanced`、`leak`、`underflow`、`uaf`、`inconclusive`。
+- `reachability`：`reachable`、`unreachable`、`unknown`。
+- `evidence_level`：`observed`、`inferred`、`hypothetical`。
+- `eliminated_by`：被排除路径仍须保存排除依据。
+
+### 4.3 路径覆盖范围
+
+```json
+{
+  "kernel_commit": "<commit>",
+  "kernel_config": "<config artifact>",
+  "target_object": "struct foo",
+  "entrypoints": ["open", "ioctl", "release", "worker callback"],
+  "terminal_functions": ["foo_release", "kfree"],
+  "max_call_depth": 12,
+  "concurrency_model": "two threads plus one workqueue",
+  "resolved_indirect_calls": 8,
+  "unresolved_indirect_calls": 2,
+  "status": "incomplete",
+  "limitations": []
+}
+```
+
+`status` 支持：
+
+- `complete_within_scope`
+- `incomplete`
+- `blocked`
+
+只有提供了上述覆盖边界，最终文本才可以使用“全部路径”表述；否则必须写“当前已发现路径”。
+
+### 4.4 UAF 分析总契约
+
+```json
+{
+  "issue_type": "uaf",
+  "coverage": {},
+  "all_possible_paths": [],
+  "max_likely_path_id": "P1",
+  "ranking_reason": [],
+  "reproduction_target_path_id": "P1",
+  "analysis_status": "complete_within_scope"
+}
+```
+
+校验规则：
+
+1. UAF/refcount 问题的 `all_possible_paths` 不得为空。
+2. `max_likely_path_id` 必须属于候选路径集合。
+3. 每条路径必须包含入口、事件、终态、证据等级和未知项。
+4. `net_delta` 必须由确定性校验器重新计算。
+5. `reachable` 路径不能缺少 guard 和至少一项证据。
+6. `analysis_status=incomplete` 时允许继续复现，但最终报告必须显示限制。
+
+## 5. 最大可能路径选择
+
+在没有真实概率模型时，不使用未经依据的百分比，而选择“证据支持度最高路径”。采用确定性优先级：
+
+1. vmcore 中直接观察到目标对象、引用值和调用栈。
+2. free/access 栈与源码路径一致。
+3. 路径 guard 与现场变量一致。
+4. 引用计数变化能够解释现场计数和对象终态。
+5. 并发关系可由锁、workqueue、RCU、timer 或任务状态解释。
+6. 历史案例和静态代码模式仅作为辅助证据。
+
+排序结果必须输出：
+
+- `max_likely_path_id`
+- 选择依据
+- 反证和不确定项
+- 其他路径没有被选择的原因
+
+复现器只针对最大可能路径构造，但不得删除其他路径。
+
+## 6. 工作流设计
+
+### 6.1 状态流转
+
+```text
+Validator
+  → PM/Issue Classifier
+  → Tool Experts
+  → Reference Path Analyzer
+  → Kernel Expert
+  → Contract Validator
+  → Test Expert
+  → Knowledge Base
+  → Final Response
+```
+
+### 6.2 Validator
+
+- 从 `input.txt` 确定 kernel source、vmcore、vmlinux、boot kernel 和架构。
+- 检测 UAF/refcount 关键字和 KASAN 证据。
+- 只做输入与问题类型分类，不生成候选路径。
+
+### 6.3 Tool Experts
+
+- Crash Expert：提供真实对象地址、引用计数、allocation/free/access 栈。
+- Kernel Log Expert：提取 KASAN 报告和时间关系，不假定所有问题都是 hung task。
+- Knowledge Search：只提供历史模式，不可把相似案例当作当前事实。
+- 每条结论必须绑定 evidence，工具错误时状态为 `degraded` 或 `failed`，不能仍标为 `ok`。
+
+### 6.4 Reference Path Analyzer / Kernel Expert
+
+执行顺序：
+
+1. 确定目标对象、引用 API、release callback 和访问点。
+2. 使用 semcode 建立入口到 get/put/free/access 的调用图。
+3. 解析正常路径、错误回滚路径、引用转移路径和异步路径。
+4. 对有限并发场景生成必要的事件交错。
+5. 计算每条路径的 `net_delta` 和 terminal state。
+6. 保存全部路径，包括排除路径和未知路径。
+7. 选择最大可能路径。
+8. 针对该路径生成 reproducer、Makefile 和 test.sh。
+
+### 6.5 Contract Validator
+
+UAF/refcount 问题进入 Test Expert 前执行：
+
+```text
+all_possible_paths 非空
+max_likely_path_id 属于 all_possible_paths
+coverage 已声明
+reproduction_target_path_id == max_likely_path_id
+测试所需 kernel/artifact 字段有效
+```
+
+路径覆盖不完整不阻止复现，但必须进入 `degraded/incomplete` 状态；结构错误或最大路径不存在时阻止测试。
+
+### 6.6 Test Expert
+
+测试成功条件从“日志包含子串”升级为：
+
+```text
+guest_booted
+∧ REPRO_START 已出现
+∧ reproducer 实际执行
+∧ REPRO_START 之后出现目标故障信号
+∧ KASAN/free/access 栈与目标模块或函数匹配
+```
+
+guest 测试脚本必须输出唯一标记：
+
+```text
+LUMEN_REPRO_START:<case-id>:<path-id>
+LUMEN_REPRO_END:<case-id>:<path-id>:<status>
+```
+
+TestResult 增加：
+
+- `target_path_id`
+- `reproducer_started`
+- `signal_after_start`
+- `target_context_matched`
+- `matched_stack_frames`
+- `false_positive_checks`
+
+### 6.7 Knowledge Base 与最终输出
+
+最终输出必须由两部分组成：
+
+1. LLM 生成的问题摘要和建议。
+2. 程序确定性追加的路径分析附录和原始结构化 JSON。
+
+固定结构：
+
+```markdown
+## 路径覆盖范围
+## 所有已发现路径
+## 已排除路径及依据
+## 最大可能路径
+## 复现目标与构造方式
+## 复现结果
+## 未覆盖范围和下一步排查建议
+```
+
+复现失败、QEMU 缺失、内核无法启动或测试达到上限时，以上路径章节仍必须完整输出。
+
+## 7. 状态与资源一致性改造
+
+### 7.1 单一事实源
+
+避免顶层 state、`kernel_contract` 和 `test_contract.plan` 保存可独立修改的重复字段。
+
+目标数据流：
+
+```text
+KernelExpertOutput → TestPlan → TestResult
+```
+
+顶层兼容字段只能由 contract 派生，不能作为独立输入源。
+
+### 7.2 状态单调性
+
+- `all_possible_paths` 使用路径 ID 去重并累积。
+- 已排除路径不能删除，只能增加新的排除依据。
+- 每次 Kernel Expert 重试保存独立 attempt 记录。
+- `kernel_analysis` 和 `test_result` 不覆盖历史，改为 append-only attempts。
+
+### 7.3 Crash session 生命周期
+
+引入上下文管理器或 lease token：
+
+```python
+with crash_session(vmcore, vmlinux) as session:
+    ...
+```
+
+要求所有成功、异常、超时和提前返回路径都释放引用，并增加 acquire/release 平衡测试。
+
+### 7.4 会话隔离
+
+- 不使用进程级 `_session_dir` 保存单次工作流状态。
+- 不使用进程级 `KERNEL_SOURCE_DIR` 作为下游配置来源。
+- session 路径、kernel source 和 semcode db 通过 state/contract 显式传递。
+- 并发运行不同 input.txt 时不得互相覆盖输出目录或源码路径。
+
+## 8. 实施计划
+
+### Phase 1：信息保持与兼容字段
+
+状态：部分完成。
+
+- 增加 `all_possible_paths` 和 `max_likely_path`。
+- Kernel Expert 重试合并历史路径。
+- Knowledge Base 和最终响应显示路径分析。
+- 兼容旧的文本 marker 和旧 contract。
+
+验收：复现失败或重试后，已发现路径仍出现在最终响应。
+
+### Phase 2：结构化路径契约
+
+- 新增 `ReferenceEvent`、`RefcountPath`、`PathCoverage`、`UafAnalysisContract`。
+- 把 `list[str]` 迁移为结构化路径；旧字段保留一个兼容周期。
+- 实现 `net_delta`、path ID、最大路径成员关系校验。
+- 为 marker 输出保留只读 fallback，不再作为主要事实源。
+
+验收：构造错误 contract 时能够确定性拒绝，并指出具体路径和字段。
+
+### Phase 3：路径分析器与覆盖声明
+
+- 基于 semcode 获取函数、调用者、被调用者、类型和调用链。
+- 建立 get/put/transfer/free/access 事件图。
+- 支持正常、错误回滚、异步和有限并发路径。
+- 输出 unresolved indirect calls 和覆盖限制。
+
+验收：对测试 UAF 模块能枚举预置的全部路径，识别漏 put、重复 put 和 free 后访问。
+
+### Phase 4：复现因果验证
+
+- test.sh 输出 `LUMEN_REPRO_START/END`。
+- 串口日志按时间窗口截取复现器执行后的内容。
+- KASAN 报告匹配目标模块、函数或对象上下文。
+- 防止 expected signal 被 echo 或无关启动故障触发。
+
+验收：伪造 signal、启动期 KASAN 和无关 WARNING 均不能判定复现成功。
+
+### Phase 5：资源与会话一致性
+
+- Crash session 改为上下文管理器。
+- 修复 kernel log 分支异常路径未释放的问题。
+- 移除 per-session 全局变量和环境变量依赖。
+- 增加两个 workflow 并发运行的隔离测试。
+
+验收：所有异常注入点 acquire/release 平衡，不同 session 的文件和 kernel source 不串扰。
+
+### Phase 6：路由强约束与清理
+
+- UAF/refcount 路由消费结构化分析 contract。
+- 删除无 contract 时默认进入 Test Expert 的 legacy fallthrough。
+- 将 `kernel_ready_for_test` 默认值改为 false，并由有效 contract 推导。
+- 移除过渡 marker 和重复顶层字段。
+
+验收：所有状态转移满足路由不变量，非法状态不能进入 QEMU 测试。
+
+## 9. 测试方案
+
+### 9.1 单元测试
+
+- `GET/PUT/TRANSFER/FREE/ACCESS` delta 计算。
+- `refcount < 0`、漏 put、重复 put、free 后 access 检测。
+- `max_likely_path_id` 成员关系。
+- 路径跨重试单调合并。
+- coverage incomplete 的最终文本展示。
+- Crash session 异常路径释放。
+
+### 9.2 状态机性质测试
+
+使用 property-based test 或等价状态遍历验证：
+
+```text
+test_passed => test_contract.code == PASSED_REPRODUCED
+PASSED_REPRODUCED => reproducer_started && target_context_matched
+uaf_issue => all_possible_paths 非空或 analysis_status == blocked
+max_likely_path_id ∈ path_ids
+attempts 单调增加且最终终止
+```
+
+### 9.3 集成测试
+
+至少覆盖：
+
+1. 漏 `put` 导致引用泄漏。
+2. 重复 `put` 导致提前释放。
+3. workqueue 持有裸指针，close 后异步访问导致 UAF。
+4. 错误回滚路径漏释放。
+5. 复现失败但路径分析完整保留。
+6. QEMU 不可用但最终输出仍包含全部路径。
+7. 第一次分析发现 P1/P2，重试发现 P3，最终包含 P1/P2/P3。
+8. 日志中 echo expected signal，不得误判成功。
+
+### 9.4 门禁
+
+```bash
+venv/bin/python -m compileall -q agents graph dev/scripts dev/tests
+venv/bin/python dev/scripts/check_agent_contracts.py
+venv/bin/python dev/scripts/run_static_checks.py
+venv/bin/pytest -q dev/tests/
+```
+
+重型 UAF QEMU E2E 放入显式 E2E 门禁，不作为普通离线单元测试的硬依赖。
+
+## 10. 验收标准
+
+方案完成需要同时满足：
+
+1. 每个 UAF/refcount 案例都有范围明确的路径覆盖声明。
+2. 所有候选路径以结构化 contract 保存，并可追溯到源码或现场证据。
+3. 最大可能路径属于候选集合，选择依据可解释。
+4. 复现器明确绑定一个 path ID。
+5. 只有满足因果条件的目标故障才能判为复现成功。
+6. 复现失败、环境跳过或工具故障不删除路径分析。
+7. Knowledge Base 和 CLI 最终输出都包含确定性路径附录。
+8. Kernel Expert 重试满足路径集合单调性。
+9. Crash session 引用获取和释放在所有控制流上平衡。
+10. 并发 workflow 之间不存在 session、输出目录或 kernel source 串扰。
+
+## 11. 兼容与迁移
+
+- 当前 `all_possible_paths: list[str]` 作为 Phase 1 兼容字段。
+- 新结构上线后，读取旧结果时转换为 `RefcountPath` 的 degraded 形式，并标记 `legacy_unstructured`。
+- 一个兼容周期内同时输出旧 marker 和新 JSON contract。
+- 下游完成迁移后，marker 仅用于人工阅读，不再参与路由和成功判定。
+- 所有强制门禁先在测试资产上验证，再从 warning/degraded 升级为 blocked。
+
+## 12. 当前结论
+
+现阶段已完成“路径信息保持”的基础改造，但尚未完成严格的路径完整性证明、最大路径一致性校验和复现因果验证。后续应优先推进 Phase 2 和 Phase 4：先让路径可机器验证，再消除 QEMU 复现假阳性；随后处理资源生命周期和并发会话隔离问题。
+
+## 13. 长链路 Agent 可靠性设计
+
+### 13.1 可靠性目标
+
+长链路的整体成功率近似为各节点成功率的乘积。若 10 个串行节点单次成功率均为 95%，一次执行成功率约为：
+
+```text
+0.95 ^ 10 ≈ 59.9%
+```
+
+工程目标不是假设每个 Agent 永不犯错，而是让每个节点满足：
+
+```text
+失败可检测
+∧ 状态可持久化
+∧ 输入可重放
+∧ 失败类型可分类
+∧ 恢复行为确定
+```
+
+若一个可重试节点最多执行 3 次，且失败近似独立，则该节点有效成功率为：
+
+```text
+1 - (1 - 0.95) ^ 3 = 99.9875%
+```
+
+但真实系统中的限流、配置错误、脏缓存和错误 prompt 往往是相关失败，因此不能只依赖重试；必须同时具备校验、错误分类和确定性降级。
+
+### 13.2 当前能力与缺口
+
+| 能力 | 当前实现 | 主要缺口 |
+|------|----------|----------|
+| 输出持久化 | Agent 输出和部分工具结果写入磁盘 | 输出文件不能直接驱动节点级恢复；写失败部分被静默忽略 |
+| 工作流 checkpoint | LangGraph `MemorySaver` | 仅进程内有效，进程退出后不能续跑 |
+| 确定性缓存 | ikconfig、crash command、initramfs | 部分 key 未包含代码/contract/tool 版本；部分写入非原子 |
+| 输出校验 | Pydantic contract、artifact 检查 | 各节点 precondition/postcondition/failure behavior 未统一声明 |
+| 超时 | LLM、CLI、QEMU、脚本多数已有 timeout | 缺少全链路 deadline、统一 timeout 分类和取消传播 |
+| 重试 | Test Expert 和 E2E 有有限重试 | E2E 仍可能整链重跑；瞬时/永久/合法空未统一分类 |
+| 语义错误 | 部分 blocked reason 和状态码 | 大量路径仍使用字符串或吞异常，缺少统一 ErrorEnvelope |
+| 可重放 | session 保存部分输入输出 | 缺少输入指纹、代码版本、分支选择和依赖版本 manifest |
+| 熔断/预检 | QEMU、文件、部分工具有 preflight | 外部 LLM、RAG、MCP 缺少统一健康检查和熔断状态 |
+
+### 13.3 节点执行契约
+
+每个节点必须声明统一的 `NodeExecutionContract`：
+
+```json
+{
+  "node": "kernel_expert",
+  "version": "<code hash or contract version>",
+  "input_fingerprint": "sha256:...",
+  "preconditions": [],
+  "status": "ok",
+  "branch": "normal",
+  "attempt": 1,
+  "started_at": "...",
+  "finished_at": "...",
+  "duration_ms": 1234,
+  "output_artifacts": {},
+  "postconditions": [],
+  "error": null,
+  "retry": {
+    "retryable": false,
+    "max_attempts": 1,
+    "next_delay_ms": 0
+  }
+}
+```
+
+节点契约包含三类规则：
+
+1. `preconditions`：输入不满足时 fail-fast，错误归因给正确的上游。
+2. `failure behavior`：明确停止、重试、降级、合法跳过或复用缓存，禁止隐式行为。
+3. `postconditions`：输出只有通过校验后才能交给下游。
+
+建议节点行为：
+
+| 节点 | 前置条件 | 后置条件 | 失败行为 |
+|------|----------|----------|----------|
+| Validator | input 可解析 | artifact contract 完整 | `blocked`，请求补充输入 |
+| PM | validation passed | 专家集合属于能力清单 | 规则降级；不能产生未知专家 |
+| Tool Expert | 所需工具和 artifact 可用 | evidence 带来源和状态 | 瞬时错误节点重试；工具缺失 `blocked`；无数据 `valid_empty` |
+| Kernel Expert | 源码和专家证据可访问 | kernel/UAF contract 校验通过 | 保留已有路径；输出 `incomplete` 或 `blocked` |
+| Test Expert | boot artifact 和 test plan 有效 | 因果复现 contract 完整 | 仅重试可恢复步骤；环境问题 `skipped/blocked` |
+| Knowledge Base | 至少有原始状态快照 | 文件原子落盘且确定性附录存在 | LLM 失败时保存原始结构化内容 |
+
+### 13.4 统一错误分类
+
+把“取不到”“没结果”“结果不完整”和“永久错误”分开：
+
+```text
+TRANSIENT       超时、连接中断、5xx、临时限流；允许有限重试
+VALID_EMPTY     查询成功但业务上没有数据；不重试，显式继续或跳过
+PARTIAL         返回部分内容；必须通过完整性校验决定降级或失败
+INVALID_INPUT   输入路径、字段、架构或 contract 不合法；不重试
+UNAVAILABLE     工具、QEMU、MCP 或模型未安装；预检后快速阻塞
+PERMANENT       权限、认证、模型不支持、确定性编译错误；不自动重试
+INTERNAL_BUG    断言、解析器异常、非法状态迁移；保存快照并停止
+```
+
+统一错误对象：
+
+```json
+{
+  "category": "TRANSIENT",
+  "code": "LLM_READ_TIMEOUT",
+  "message": "Kernel Expert 请求在 120 秒内未返回",
+  "cause": "upstream read timeout",
+  "node": "kernel_expert",
+  "attempt": 2,
+  "retryable": true,
+  "next_action": "10 秒后仅重试 kernel_expert",
+  "upstream_field": "",
+  "artifacts": {"input_snapshot": "..."}
+}
+```
+
+错误信息必须同时回答：哪里失败、为什么失败、是否可重试、下一步执行什么、从哪个节点恢复。
+
+### 13.5 持久化检查点与恢复
+
+#### 检查点粒度
+
+每个节点只有在 postcondition 通过后才提交检查点：
+
+```text
+RUNNING → VALIDATING → COMMITTED
+                  ↘ FAILED
+```
+
+`COMMITTED` 是下游可以消费的唯一状态。磁盘上存在输出文件不等于节点完成。
+
+#### 检查点内容
+
+- 节点输入和输出 contract。
+- 输入、输出和代码指纹。
+- Agent/prompt/skill/工具版本。
+- 执行分支、attempt、耗时和错误对象。
+- 原始工具证据及其 artifact 路径。
+- 下一个允许执行的节点。
+
+#### 恢复规则
+
+```text
+checkpoint 存在
+∧ status == COMMITTED
+∧ input_fingerprint 相同
+∧ node_version 相同
+∧ artifacts 校验通过
+=> 跳过节点并读取结果
+```
+
+否则缓存失效并重新执行该节点。进程级 `MemorySaver` 应替换为持久化 checkpointer；仅保存文本文件不能视为可恢复 checkpoint。
+
+### 13.6 内容寻址缓存
+
+缓存 key 必须包含所有影响输出的因素：
+
+```text
+cache_key = hash(
+    normalized_input
+    + upstream_contract_hash
+    + node_code_hash
+    + prompt_hash
+    + skill_hash
+    + tool_version
+    + relevant_config
+)
+```
+
+规则：
+
+1. 不缓存 `TRANSIENT`、`PARTIAL` 和未通过 postcondition 的结果。
+2. `VALID_EMPTY` 可以缓存，但必须带有效期和业务上下文。
+3. 缓存文件先写同目录临时文件、`fsync`，再原子 `rename`。
+4. 读取缓存时重新校验 schema、checksum 和 artifact 完整性。
+5. 并发写相同 key 时使用文件锁或 write-once 内容寻址对象。
+6. 失败 cache 与成功 cache 分开，避免一次网络失败长期污染后续运行。
+
+现有缓存的改造重点：
+
+- ikconfig cache：加入解析器版本，改为原子 JSON 写入。
+- crash command cache：避免持久缓存瞬时失败；并发 append 增加锁或改为每 key 单文件。
+- initramfs/rootfs cache：加入构建脚本内容、busybox/toolchain 版本和 rootfs schema；复制完成后再原子发布。
+- Agent 输出：从“按时间戳保存文本”升级为“contract + manifest + raw output”的 committed artifact。
+
+### 13.7 超时、deadline 与取消
+
+每个外部 I/O 必须有 timeout，但还需全链路 deadline：
+
+```text
+workflow_deadline
+  ├── node_deadline
+  │     ├── connect_timeout
+  │     ├── read_timeout
+  │     └── subprocess_timeout
+  └── remaining_budget
+```
+
+要求：
+
+- 下游 timeout 不能超过 workflow 剩余时间。
+- 父节点取消后终止子进程、QEMU 和 CLI，避免孤儿进程。
+- timeout 转换成结构化 `TRANSIENT` 或 `PERMANENT` 错误，禁止无限等待。
+- hint 等人工等待计入独立 human-in-the-loop budget，不占用工具执行 timeout。
+
+### 13.8 节点级重试、退避和熔断
+
+只对幂等且 `retryable=true` 的节点操作重试：
+
+```text
+delay = min(base * 2^attempt + jitter, max_delay)
+```
+
+禁止：
+
+- 对 `INVALID_INPUT`、确定性编译失败、contract 校验失败做盲目重试。
+- 在整条 workflow 外层无条件重跑。
+- 重试时清空已经提交的上游 checkpoint。
+
+熔断器按依赖维度维护：
+
+```text
+CLOSED → 连续失败达到阈值 → OPEN
+OPEN   → 冷却后允许一次探测 → HALF_OPEN
+HALF_OPEN → 成功 CLOSED；失败 OPEN
+```
+
+适用依赖：LLM endpoint、RAG/Chroma、semcode MCP、crash backend 和 QEMU capability。开工前执行轻量 preflight，依赖明确不可用时快速失败，不让每个节点重复撞同一个故障。
+
+### 13.9 可重放与可观测性
+
+每个 session 生成 `run_manifest.json`：
+
+```json
+{
+  "session_id": "...",
+  "git_commit": "...",
+  "dirty_worktree": false,
+  "input_file_hash": "...",
+  "config_hash": "...",
+  "kernel_source_commit": "...",
+  "nodes": [],
+  "external_dependencies": {},
+  "final_state": "..."
+}
+```
+
+每个节点边界记录：
+
+- 输入和输出指纹。
+- contract 摘要和 artifact checksum。
+- 正常、缓存命中、重试、降级或阻塞分支。
+- 工具调用次数、耗时和 timeout。
+- 用于复现失败的最小输入快照。
+
+提供重放入口：
+
+```bash
+python main.py --resume-session <session-id>
+python main.py --replay-node <session-id> <node-name>
+```
+
+`--resume-session` 从最后一个合法 committed checkpoint 继续；`--replay-node` 使用保存的输入快照单独重放节点，不调用无关上游。
+
+### 13.10 UAF 流程中的恢复边界
+
+UAF 分析按以下可恢复阶段提交：
+
+```text
+输入校验
+→ vmcore/log 证据采集
+→ 调用图和引用事件图
+→ 全路径 contract
+→ 最大可能路径选择
+→ reproducer 构建
+→ rootfs 构建
+→ QEMU 验证
+→ 归档
+```
+
+恢复要求：
+
+- QEMU 失败只重跑 QEMU 或复现器调整，不重新执行已提交的 vmcore 分析。
+- reproducer 修改只失效 reproducer、rootfs 和 QEMU 下游缓存。
+- kernel source commit 变化时，调用图、路径 contract 和全部下游自动失效。
+- 最大路径排序策略变化时，只失效排序及复现下游，不重新采集原始 Crash 证据。
+- Knowledge Base 失败只重跑归档，不能重新触发分析和 QEMU。
+
+### 13.11 长链路实施计划
+
+#### Reliability Phase R1：节点契约和错误分类
+
+- 定义 `NodeExecutionContract`、`ErrorEnvelope` 和错误分类枚举。
+- 为 Validator、Kernel Expert、Test Expert、Knowledge Base 增加 pre/postcondition。
+- 清理“异常后仍 status=ok”和吞异常无记录的问题。
+
+验收：相同故障始终产生相同 error code、状态和 next action。
+
+#### Reliability Phase R2：持久化 checkpoint
+
+- 引入磁盘或数据库 checkpointer。
+- 节点 postcondition 通过后原子提交 contract 和 manifest。
+- 支持 `--resume-session`。
+
+验收：在任意节点强制终止进程后，重新启动只重跑未提交节点。
+
+#### Reliability Phase R3：缓存正确性
+
+- 统一内容寻址 key 和版本字段。
+- 所有 cache/artifact 使用原子写。
+- 禁止缓存瞬时失败和 partial output。
+- 增加缓存损坏、版本变化、并发写测试。
+
+验收：上游、代码或 prompt 改变时下游自动失效；半写文件永远不被当作命中。
+
+#### Reliability Phase R4：局部重试和熔断
+
+- 为 LLM/MCP/RAG/crash 定义可重试错误集合。
+- 指数退避、jitter、最大尝试次数和依赖级熔断。
+- 删除无条件整链重试。
+
+验收：注入一次瞬时失败只重跑对应节点；永久错误不会重复消耗时间。
+
+#### Reliability Phase R5：重放与故障注入
+
+- 完成 `run_manifest.json`、`--replay-node` 和依赖调用记录。
+- 对 timeout、5xx、合法空、partial、缓存损坏、进程中断做故障注入。
+- 统计首次成功率、恢复后成功率、平均恢复节点数和错误定位时间。
+
+验收：偶发失败可以用保存的输入快照稳定重放，且不依赖整链重跑。
+
+### 13.12 可靠性验收指标
+
+除端到端成功率外，持续统计：
+
+- `first_pass_success_rate`：一次执行成功率。
+- `recovered_success_rate`：有限局部恢复后的成功率。
+- `resume_reuse_ratio`：恢复时复用 committed 节点的比例。
+- `false_success_rate`：错误结果被标记成功的比例，目标为 0。
+- `undetected_partial_rate`：partial output 未被 postcondition 拦截的比例，目标为 0。
+- `mean_recovery_nodes`：一次失败平均需要重跑的节点数，目标接近 1。
+- `mean_time_to_diagnose`：从失败到明确 error code 和 next action 的时间。
+- `cache_invalid_hit_rate`：脏缓存/版本漂移导致的错误命中率，目标为 0。
+- `hung_invocation_count`：无 deadline 的挂起调用数量，目标为 0。
+
+最终验收场景必须包括：
+
+1. Kernel Expert 调用中途进程退出，恢复后从该节点继续。
+2. LLM 发生一次 timeout，只局部重试并保留上游分析。
+3. semcode 返回合法空、部分结果和网络失败时分别进入不同状态。
+4. cache 文件写到一半进程退出，下次运行视为 cache miss。
+5. kernel source、prompt 或代码变化后相关 checkpoint 正确失效。
+6. QEMU 连续失败触发熔断，但所有 UAF 路径仍进入最终输出。
+7. Knowledge Base 调用失败时，确定性报告和原始 contract 仍成功落盘。

@@ -1,5 +1,6 @@
 import os
 import subprocess
+import re
 from pathlib import Path
 from datetime import datetime
 
@@ -24,6 +25,15 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
 
     # 汇总所有分析结果
     expert_results = state.get("expert_results", [])
+    all_paths = state.get("all_possible_paths", [])
+    max_path = state.get("max_likely_path", "")
+    # Keep the raw sections visible even for legacy/retry states whose
+    # structured fields were not populated by the model.
+    raw_kernel_analysis = state.get("kernel_analysis", "")
+    if not all_paths:
+        all_paths = _extract_path_lines(raw_kernel_analysis, "ALL_POSSIBLE_PATHS")
+    if not max_path:
+        max_path = _extract_path_section(raw_kernel_analysis, "MAX_LIKELY_PATH")
     expert_summaries = []
     for result in expert_results:
         expert_summaries.append(
@@ -35,6 +45,9 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"## 结构化输入校验\n{state.get('validation_contract', {})}\n\n"
         f"## 工具专家分析结果\n" + "\n\n".join(expert_summaries) + "\n\n"
         f"## 内核专家分析\n{state.get('kernel_analysis', '')}\n\n"
+        f"## UAF/引用计数路径分析（必须原样保留）\n"
+        f"所有可能路径：\n{_format_paths(all_paths)}\n\n"
+        f"最大可能路径：\n{max_path}\n\n"
         f"## 结构化内核专家契约\n{state.get('kernel_contract', {})}\n\n"
         f"## 复现用例\n{state.get('reproduce_case', '')}\n\n"
         f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
@@ -87,6 +100,9 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"Issue: {issue_id} ({issue_url})\n"
         f"知识库文件: {knowledge_file}\n\n"
         f"Chroma 导入: {import_message}\n\n"
+        f"## UAF/引用计数路径分析\n"
+        f"所有可能路径：\n{_format_paths(all_paths)}\n\n"
+        f"最大可能路径：\n{max_path or '未明确，需结合归档中的完整分析继续排查。'}\n\n"
         f"共调用 {len(expert_results)} 个工具专家，"
         f"测试验证 {state.get('test_attempts', 0)} 次。"
     )
@@ -95,6 +111,25 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         "knowledge_file": knowledge_file,
         "final_response": final_response,
     }
+
+
+def _format_paths(paths) -> str:
+    """Render path findings without allowing an empty list to erase evidence."""
+    if not paths:
+        return "未提取到结构化路径列表；请以知识库中的内核专家原始分析为准。"
+    if isinstance(paths, str):
+        return paths
+    return "\n".join(f"{i}. {path}" for i, path in enumerate(paths, 1))
+
+
+def _extract_path_section(text: str, marker: str) -> str:
+    match = re.search(rf"^{re.escape(marker)}:\s*$([\s\S]*?)(?=^[A-Z_]+:|\Z)", text or "", re.MULTILINE)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_path_lines(text: str, marker: str) -> list[str]:
+    section = _extract_path_section(text, marker)
+    return [line.strip() for line in section.splitlines() if line.strip()]
 
 
 def _save_knowledge_file(state: MaintenanceWorkflowState, content: str, config: dict) -> str:

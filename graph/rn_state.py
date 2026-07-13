@@ -47,6 +47,8 @@ class MaintenanceWorkflowState(TypedDict):
     reproduce_case: str               # 构造的必现用例
     kernel_diagnosis: str             # 内核维测方案
     kernel_analysis: str              # 完整分析内容
+    all_possible_paths: list[str]      # UAF/refcount 全部候选路径
+    max_likely_path: str               # 最大可能路径
     kernel_ready_for_test: bool        # 内核专家是否产出了可交给测试专家验证的内容
     kernel_contract: dict              # 结构化内核专家输出（测试交接契约）
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
@@ -100,6 +102,8 @@ def make_initial_state(
         "reproduce_case": "",
         "kernel_diagnosis": "",
         "kernel_analysis": "",
+        "all_possible_paths": [],
+        "max_likely_path": "",
         "kernel_ready_for_test": True,
         "kernel_contract": {},
         "target_arch": "",
