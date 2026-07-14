@@ -3,10 +3,12 @@ import json
 import os
 import re
 import subprocess
+import hashlib
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from agents.contracts import KernelExpertOutput, model_to_dict
+from agents.contracts import KernelExpertOutput, RefcountPath, UafAnalysisContract, model_to_dict
+from agents.error_handling import classify_error, error_to_evidence
 from agents.llm_display import (
     call_llm_with_persistence,
     display_expert_outputs,
@@ -395,6 +397,45 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     # kernel headers 不存在时直接报错
     if not kernel_headers_exist:
+        # A completed contract written by a previous/partial agent run is
+        # already a self-contained handoff.  It does not need host headers to
+        # be *consumed* by Test Expert; host headers are only a precondition
+        # for compiling a new kernel module.  Recover it after the same
+        # artifact validation used by the normal parsing path.
+        contract_file = paths_get_output_dir() / "kernel_contract.json"
+        if contract_file.exists():
+            try:
+                data = json.loads(contract_file.read_text(encoding="utf-8"))
+                existing_contract = _model_validate(KernelExpertOutput, data)
+                existing_contract = _validate_kernel_contract_artifacts(
+                    existing_contract,
+                    path_analysis_required=_requires_path_analysis(state.get("user_input", "")),
+                )
+                if _kernel_contract_ready_for_test(existing_contract):
+                    analysis_text = (
+                        "## 内核分析结果（复用已存在 contract）\n\n"
+                        "宿主机缺少 kernel headers，因此跳过新的模块编译；"
+                        "已校验并复用此前写入的 kernel_contract.json。"
+                    )
+                    return {
+                        "kernel_analysis": analysis_text,
+                        "reproduce_case": analysis_text,
+                        "kernel_diagnosis": "",
+                        "kernel_ready_for_test": True,
+                        "kernel_contract": model_to_dict(existing_contract),
+                        "target_arch": existing_contract.target_arch,
+                        "boot_kernel_path": existing_contract.boot_kernel_path,
+                        "reproducer_dir": existing_contract.reproducer_dir,
+                        "reproducer_module_path": existing_contract.reproducer_module_path,
+                        "test_script_path": existing_contract.test_script_path,
+                        "expected_signal": existing_contract.expected_signal,
+                        "binaries_dir": existing_contract.binaries_dir,
+                    }
+            except (OSError, ValueError, json.JSONDecodeError):
+                # Keep the original explicit headers failure when the cached
+                # contract is unreadable or does not meet the handoff rules.
+                pass
+
         error_msg = f"ERROR: Kernel Headers 不存在，无法编译内核模块\n"
         error_msg += f"Kernel Headers 路径: {kernel_headers_path}\n"
         error_msg += f"状态: ✗ 不存在\n\n"
@@ -512,6 +553,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             build_status="skipped",
             blocked_reason=err_str,
             warnings=[error_msg],
+            evidence=[error_to_evidence(classify_error(e, operation="kernel_expert CLI"), operation="kernel_expert CLI")],
         )
         return {
             "kernel_analysis": error_msg,
@@ -609,6 +651,11 @@ def _parse_kernel_expert_response(
     Shared between first-round and hint-injected rerun so both produce
     identically-shaped state updates.
     """
+    path_analysis_required = _requires_path_analysis(
+        state.get("user_input", ""),
+        text,
+        "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
+    )
     # Detect CLI failure text (timeout, startup error, max_turns) that
     # slipped through as a non-empty AIMessage. Block here instead of running
     # the empty-text fallback that would search outputs/ for stale reproducer
@@ -663,7 +710,10 @@ def _parse_kernel_expert_response(
                     file_contract = _model_validate(KernelExpertOutput, data)
                     if _kernel_contract_has_handoff(file_contract):
                         kernel_contract = file_contract
-                        kernel_contract = _validate_kernel_contract_artifacts(kernel_contract)
+                        kernel_contract = _validate_kernel_contract_artifacts(
+                            kernel_contract,
+                            path_analysis_required=path_analysis_required,
+                        )
                         contract_ready = _kernel_contract_ready_for_test(kernel_contract)
                         return {
                             "kernel_analysis": text,
@@ -697,7 +747,10 @@ def _parse_kernel_expert_response(
             build_status="skipped",
             warnings=["LLM did not produce structured output; contract auto-generated from state"],
         )
-        kernel_contract = _validate_kernel_contract_artifacts(kernel_contract)
+        kernel_contract = _validate_kernel_contract_artifacts(
+            kernel_contract,
+            path_analysis_required=path_analysis_required,
+        )
         contract_ready = _kernel_contract_ready_for_test(kernel_contract)
         return {
             "kernel_analysis": text,
@@ -773,6 +826,34 @@ def _parse_kernel_expert_response(
             data["max_likely_path"] = max_likely_path.strip()
         kernel_contract = _model_validate(KernelExpertOutput, data)
 
+    # A retry must keep the inventory gathered by earlier attempts.  Do this
+    # before P0 validation so a later attempt cannot turn a valid path set
+    # into a partial one merely by omitting the path section.
+    if path_analysis_required:
+        data = model_to_dict(kernel_contract)
+        previous_paths = state.get("all_possible_paths", []) or []
+        current_paths = data.get("all_possible_paths", []) or []
+        merged_paths = list(previous_paths)
+        for path in current_paths:
+            if path not in merged_paths:
+                merged_paths.append(path)
+        data["all_possible_paths"] = merged_paths
+        data["path_analysis_required"] = True
+        if not data.get("max_likely_path"):
+            data["max_likely_path"] = state.get("max_likely_path", "")
+        kernel_contract = _model_validate(KernelExpertOutput, data)
+        kernel_contract = _normalise_uaf_analysis(kernel_contract)
+        previous_analysis_data = state.get("uaf_analysis_contract") or {}
+        if previous_analysis_data and kernel_contract.uaf_analysis:
+            try:
+                previous_analysis = _model_validate(UafAnalysisContract, previous_analysis_data)
+                merged_analysis = _merge_uaf_analysis(previous_analysis, kernel_contract.uaf_analysis)
+                data = model_to_dict(kernel_contract)
+                data["uaf_analysis"] = model_to_dict(merged_analysis)
+                kernel_contract = _normalise_uaf_analysis(_model_validate(KernelExpertOutput, data))
+            except ValueError:
+                pass
+
     # Final fallback: auto-fill from input_artifacts if contract still incomplete
     if not _kernel_contract_has_handoff(kernel_contract):
         auto_fields = _generate_auto_contract_fields(kernel_contract, input_artifacts)
@@ -784,7 +865,10 @@ def _parse_kernel_expert_response(
             )
             kernel_contract = _model_validate(KernelExpertOutput, data)
 
-    kernel_contract = _validate_kernel_contract_artifacts(kernel_contract)
+    kernel_contract = _validate_kernel_contract_artifacts(
+        kernel_contract,
+        path_analysis_required=path_analysis_required,
+    )
     contract_ready = _kernel_contract_ready_for_test(kernel_contract)
     print(f"  [contract诊断] status={kernel_contract.status} target_arch={kernel_contract.target_arch} "
           f"boot_kernel={kernel_contract.boot_kernel_path is not None} "
@@ -808,6 +892,7 @@ def _parse_kernel_expert_response(
         "kernel_diagnosis": kernel_diagnosis or "",
         "all_possible_paths": merged_paths,
         "max_likely_path": merged_max_path,
+        "uaf_analysis_contract": model_to_dict(kernel_contract.uaf_analysis) if kernel_contract.uaf_analysis else {},
         "kernel_ready_for_test": contract_ready,
         "kernel_contract": model_to_dict(kernel_contract),
         "target_arch": kernel_contract.target_arch,
@@ -1023,7 +1108,10 @@ def _recover_reproducer_from_outputs(
             "reproducer files were written but KERNEL_CONTRACT was not emitted."
         ],
     )
-    contract = _validate_kernel_contract_artifacts(contract)
+    contract = _validate_kernel_contract_artifacts(
+        contract,
+        path_analysis_required=_requires_path_analysis(state.get("user_input", "")),
+    )
 
     analysis_text = (
         f"## kernel_expert 分析（max_turns 后从已生成文件恢复）\n\n"
@@ -1280,8 +1368,207 @@ def _resolve_contract_path(path: str) -> Path:
     return expanded.resolve()
 
 
-def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelExpertOutput:
+def _requires_path_analysis(*texts: str) -> bool:
+    """Return whether this case requires the P0 UAF/refcount path contract."""
+    combined = "\n".join(texts).lower()
+    return any(token in combined for token in (
+        "use-after-free", "use after free", "slab-use-after-free", "uaf",
+        "kref", "refcount", "reference count", "引用计数", "释放后使用",
+    ))
+
+
+def _normalise_path_for_comparison(path: str) -> str:
+    """Ignore list numbering/whitespace, but never guess a different path."""
+    return re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", path or "").strip()
+
+
+def _stable_path_id(summary: str) -> str:
+    """Keep legacy-text path IDs stable across Kernel Expert retries."""
+    digest = hashlib.sha256(_normalise_path_for_comparison(summary).encode("utf-8")).hexdigest()
+    return f"path-{digest[:12]}"
+
+
+def _normalise_uaf_analysis(contract: KernelExpertOutput) -> KernelExpertOutput:
+    """Populate the P1 contract from legacy fields during the compatibility window."""
+    data = model_to_dict(contract)
+    analysis = contract.uaf_analysis
+    if analysis is None and (contract.path_analysis_required or contract.all_possible_paths):
+        paths = [
+            RefcountPath(
+                id=_stable_path_id(summary),
+                summary=summary,
+                unknowns=["legacy_unstructured"],
+            )
+            for summary in contract.all_possible_paths
+            if summary.strip()
+        ]
+        max_id = next(
+            (path.id for path in paths
+             if _normalise_path_for_comparison(path.summary)
+             == _normalise_path_for_comparison(contract.max_likely_path)),
+            "",
+        )
+        target_id = next(
+            (path.id for path in paths
+             if _normalise_path_for_comparison(path.summary)
+             == _normalise_path_for_comparison(contract.reproduction_target_path)),
+            "",
+        )
+        analysis = UafAnalysisContract(
+            paths=paths,
+            excluded_paths=contract.excluded_paths,
+            max_likely_path_id=max_id,
+            selection_rationale=contract.max_likely_path_rationale,
+            reproduction_target_path_id=target_id,
+            legacy_unstructured=True,
+        )
+
+    if analysis is None:
+        return contract
+
+    data["uaf_analysis"] = model_to_dict(analysis)
+    data["all_possible_paths"] = [path.summary for path in analysis.paths]
+    data["excluded_paths"] = [model_to_dict(path) for path in analysis.excluded_paths]
+    path_by_id = {path.id: path for path in analysis.paths}
+    max_path = path_by_id.get(analysis.max_likely_path_id)
+    target_path = path_by_id.get(analysis.reproduction_target_path_id)
+    if max_path:
+        data["max_likely_path"] = max_path.summary
+    if target_path:
+        data["reproduction_target_path"] = target_path.summary
+    if analysis.selection_rationale:
+        data["max_likely_path_rationale"] = analysis.selection_rationale
+    return _model_validate(KernelExpertOutput, data)
+
+
+def _validate_structured_uaf_analysis(
+    contract: KernelExpertOutput, *, path_analysis_required: bool = False,
+) -> list[str]:
+    """Validate P1 path IDs, deltas, coverage declaration, and test target."""
+    analysis = contract.uaf_analysis
+    if not (contract.path_analysis_required or path_analysis_required) or analysis is None or analysis.legacy_unstructured:
+        return []
+
+    errors: list[str] = []
+    path_ids = [path.id for path in analysis.paths]
+    if len(path_ids) != len(set(path_ids)):
+        errors.append("uaf_analysis.paths contains duplicate path IDs")
+    if not analysis.case_id:
+        errors.append("uaf_analysis requires case_id")
+    if analysis.max_likely_path_id not in path_ids:
+        errors.append("uaf_analysis.max_likely_path_id must reference a path")
+    if analysis.reproduction_target_path_id != analysis.max_likely_path_id:
+        errors.append("uaf_analysis.reproduction_target_path_id must match max_likely_path_id")
+    if not analysis.target_contexts:
+        errors.append("uaf_analysis requires target_contexts for causal reproduction")
+    coverage = analysis.coverage
+    if not any((
+        coverage.normal_paths_considered,
+        coverage.error_paths_considered,
+        coverage.transfer_paths_considered,
+        coverage.async_paths_considered,
+        coverage.concurrency_paths_considered,
+    )):
+        errors.append("uaf_analysis.coverage must declare considered path classes")
+    for path in analysis.paths:
+        if path.events and sum(event.ref_delta for event in path.events) != path.net_delta:
+            errors.append(f"uaf_analysis path {path.id} net_delta does not match events")
+    return errors
+
+
+def _merge_uaf_analysis(previous: UafAnalysisContract, current: UafAnalysisContract) -> UafAnalysisContract:
+    """Monotonically retain prior path IDs while allowing a retry to add paths."""
+    merged_paths = list(previous.paths)
+    seen = {path.id for path in merged_paths}
+    for path in current.paths:
+        if path.id not in seen:
+            merged_paths.append(path)
+            seen.add(path.id)
+    data = model_to_dict(current)
+    data["paths"] = [model_to_dict(path) for path in merged_paths]
+    if not data.get("case_id"):
+        data["case_id"] = previous.case_id
+    if not data.get("target_contexts"):
+        data["target_contexts"] = previous.target_contexts
+    return _model_validate(UafAnalysisContract, data)
+
+
+def _validate_path_analysis_contract(
+    data: dict,
+    *,
+    path_analysis_required: bool,
+) -> tuple[list[str], list[dict]]:
+    """Validate the minimal P0 evidence contract for UAF/refcount analysis."""
+    if not path_analysis_required:
+        return [], []
+
+    errors: list[str] = []
+    evidence: list[dict] = []
+    candidates = [str(path).strip() for path in data.get("all_possible_paths") or [] if str(path).strip()]
+    max_path = str(data.get("max_likely_path") or "").strip()
+    reproduction_target = str(data.get("reproduction_target_path") or "").strip()
+    scope = data.get("path_analysis_scope") or {}
+    if hasattr(scope, "model_dump"):
+        scope = scope.model_dump()
+    elif hasattr(scope, "dict"):
+        scope = scope.dict()
+
+    if not candidates:
+        errors.append("path analysis requires non-empty all_possible_paths")
+    if not max_path:
+        errors.append("path analysis requires max_likely_path")
+    if candidates and max_path:
+        normalised_candidates = {_normalise_path_for_comparison(item) for item in candidates}
+        if _normalise_path_for_comparison(max_path) not in normalised_candidates:
+            errors.append("max_likely_path must be a member of all_possible_paths")
+    if not reproduction_target:
+        errors.append("path analysis requires reproduction_target_path")
+    elif candidates:
+        normalised_candidates = {_normalise_path_for_comparison(item) for item in candidates}
+        if _normalise_path_for_comparison(reproduction_target) not in normalised_candidates:
+            errors.append("reproduction_target_path must be a member of all_possible_paths")
+        elif max_path and _normalise_path_for_comparison(reproduction_target) != _normalise_path_for_comparison(max_path):
+            errors.append("reproduction_target_path must match max_likely_path")
+
+    required_scope = ("kernel_commit", "kernel_config", "entry_points", "object_type", "concurrency_model")
+    missing_scope = [
+        field for field in required_scope
+        if not scope.get(field) or (field == "entry_points" and not list(scope.get(field) or []))
+    ]
+    if missing_scope:
+        errors.append("path analysis scope missing: " + ", ".join(missing_scope))
+
+    for excluded in data.get("excluded_paths") or []:
+        if hasattr(excluded, "model_dump"):
+            excluded = excluded.model_dump()
+        elif hasattr(excluded, "dict"):
+            excluded = excluded.dict()
+        if not isinstance(excluded, dict) or not excluded.get("path") or not excluded.get("rationale"):
+            errors.append("each excluded_paths item requires path and rationale")
+            break
+
+    evidence.append({
+        "kind": "path_analysis_contract_check",
+        "required": True,
+        "candidate_count": len(candidates),
+        "excluded_count": len(data.get("excluded_paths") or []),
+        "scope_complete": not missing_scope,
+        "max_path_in_candidates": bool(max_path) and _normalise_path_for_comparison(max_path) in {
+            _normalise_path_for_comparison(item) for item in candidates
+        },
+        "reproduction_target_consistent": bool(reproduction_target and max_path)
+        and _normalise_path_for_comparison(reproduction_target) == _normalise_path_for_comparison(max_path),
+    })
+    return errors, evidence
+
+
+def _validate_kernel_contract_artifacts(
+    contract: KernelExpertOutput,
+    *,
+    path_analysis_required: bool = False,
+) -> KernelExpertOutput:
     """Validate Kernel Expert handoff paths before routing to Test Expert."""
+    contract = _normalise_uaf_analysis(contract)
     data = model_to_dict(contract)
     warnings = list(data.get("warnings") or [])
     evidence = list(data.get("evidence") or [])
@@ -1368,6 +1655,38 @@ def _validate_kernel_contract_artifacts(contract: KernelExpertOutput) -> KernelE
 
     if not contract.expected_signal:
         errors.append("missing expected_signal")
+
+    data["path_analysis_required"] = bool(
+        data.get("path_analysis_required") or path_analysis_required
+    )
+    path_errors, path_evidence = _validate_path_analysis_contract(
+        data,
+        path_analysis_required=data["path_analysis_required"],
+    )
+    errors.extend(path_errors)
+    evidence.extend(path_evidence)
+    errors.extend(_validate_structured_uaf_analysis(
+        contract,
+        path_analysis_required=data["path_analysis_required"],
+    ))
+    analysis = contract.uaf_analysis
+    if (
+        data["path_analysis_required"]
+        and analysis is not None
+        and not analysis.legacy_unstructured
+        and test_script
+        and Path(test_script).exists()
+    ):
+        marker = f"LUMEN_REPRO_START:{analysis.case_id}:{analysis.reproduction_target_path_id}"
+        end_marker = f"LUMEN_REPRO_END:{analysis.case_id}:{analysis.reproduction_target_path_id}:"
+        try:
+            script_content = Path(test_script).read_text(encoding="utf-8", errors="replace")
+            if marker not in script_content:
+                errors.append(f"test_script_path missing causal marker: {marker}")
+            if end_marker not in script_content:
+                errors.append(f"test_script_path missing causal marker: {end_marker}<status>")
+        except OSError as exc:
+            errors.append(f"test_script_path cannot read causal marker: {exc}")
 
     # Post-process test.sh for memory-pressure-sensitive bugs (e.g. btrfs
     # ordered extent WARNING that needs memory pressure to trigger). The

@@ -731,6 +731,7 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
                 f.write(f"Crash Session: {vmcore_path}\n")
                 f.write(f"Vmlinux: {vmlinux_path}\n\n")
 
+            session = None
             try:
                 from agents.crash_tools import get_or_create_crash_session, release_crash_session
                 session = get_or_create_crash_session(vmcore_path, vmlinux_path)
@@ -781,8 +782,6 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                 response = llm.invoke(messages)
                 _write_tool_call_output(output_file, response.content, expert_name)
 
-                release_crash_session(vmcore_path, vmlinux_path)
-
                 return {
                     "expert_results": [_make_tool_result(
                         expert_type=expert_type,
@@ -815,6 +814,9 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                         errors=[error_msg],
                     )],
                 }
+            finally:
+                if session is not None:
+                    release_crash_session(vmcore_path, vmlinux_path)
 
         else:
             # 没有 vmcore，纯文本分析

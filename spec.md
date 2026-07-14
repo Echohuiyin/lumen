@@ -1647,9 +1647,61 @@ venv/bin/pytest -q dev/tests/
 
 ## 12. 当前结论
 
-现阶段已完成“路径信息保持”的基础改造，但尚未完成严格的路径完整性证明、最大路径一致性校验和复现因果验证。后续应优先推进 Phase 2 和 Phase 4：先让路径可机器验证，再消除 QEMU 复现假阳性；随后处理资源生命周期和并发会话隔离问题。
+现阶段的实现可以按以下状态理解：
+
+### 已完成
+
+- `KernelExpertOutput`、`MaintenanceWorkflowState` 已增加 `all_possible_paths` 与 `max_likely_path`。
+- `kernel_expert` 已能解析 `ALL_POSSIBLE_PATHS` / `MAX_LIKELY_PATH` 标记，并在 JSON 缺失时回填。
+- `kernel_expert` 的重试会合并历史路径，避免覆盖已发现路径。
+- UAF/refcount 场景会强制声明分析范围（kernel commit/config、入口、对象类型、并发模型）、排除路径及其依据、最大路径的选择依据和复现目标。
+- Kernel contract 会校验候选路径非空、最大路径属于候选集合、复现目标属于候选集合且与最大路径一致；不满足时阻断进入 QEMU。
+- `knowledge_base` 会在最终归档和 CLI 最终响应中追加确定性路径附录，不再依赖 LLM 是否保留该段内容。
+- Agent 中间输出、session 元数据和知识库文件改为原子写入；Kernel Expert / Knowledge Base 已将超时、依赖缺失和认证等错误转换为带下一步建议的语义化错误。
+- `dev/tests/test_kernel_contract.py`、`test_path_analysis_archive.py`、`test_error_handling.py` 已覆盖路径 contract、归档附录和错误分类。
+- P1 已新增 `ReferenceEvent`、`RefcountPath`、`PathCoverage` 与 `UafAnalysisContract`；旧字符串路径会转换为带 `legacy_unstructured` 标记的兼容结构。
+- UAF/refcount 复现器必须使用 `LUMEN_REPRO_START/END`；Test Expert 只有在目标信号位于 START 之后且匹配目标上下文时才判定复现成功。
+- crash session 启动仅对瞬时错误本地重试，且增加 context-manager lease；kernel-log 分支在异常和提前返回时都会释放 session。
+
+### 部分完成
+
+- 路径覆盖范围、调用深度、并发模型和 unresolved indirect calls 仍主要停留在设计层。
+- 最大可能路径仍以 marker / 文本解析和现有 contract 为主，尚未形成完全独立的确定性路径分析器。
+- 统一错误封装目前先接入 Kernel Expert / Knowledge Base；Validator、Tool Expert、Test Expert 尚未完全迁移，且没有全链路 deadline 与取消传播。
+
+### 未完成
+
+- 严格的路径完整性证明与机器可验证的覆盖校验。
+- 持久化 checkpoint、`--resume-session` / `--replay-node` 重放能力。
+- 内容寻址缓存、节点级熔断和取消传播。
+- 并发 workflow 的全局状态隔离。
+
+后续应优先推进 Phase 2 和 Phase 4：先让路径可机器验证，再消除 QEMU 复现假阳性；随后处理资源生命周期、持久化恢复和并发会话隔离问题。
+
+### 必要性判断
+
+#### P0：必要
+
+- 路径保留：`all_possible_paths`、`max_likely_path`、排除路径及依据。
+- 范围约束：kernel commit、config、入口、对象类型、并发模型。
+- contract 校验：候选集非空、最大路径成员关系、复现目标一致。
+- 最终归档：Knowledge Base 和 CLI 都要保留路径分析附录。
+- 基础可靠性：持久化中间结果、输出校验、语义化报错、超时、错误分类。
+
+#### P1：已完成
+
+- 结构化路径模型、复现因果校验、crash 启动的局部重试和 crash session 生命周期已落地。
+
+#### P2：可选
+
+- 持久化 checkpoint、`--resume-session`、`--replay-node`。
+- 内容寻址缓存完整体系。
+- 统一熔断器和全依赖健康检查。
+- 完整形式化证明器与全内核模型检查。
 
 ## 13. 长链路 Agent 可靠性设计
+
+当前仓库已经落地的是“输出保全 + 部分 contract 校验 + 失败可见性增强”；下列章节中的 checkpoint、replay、content-addressed cache、circuit breaker 等仍以设计为主，尚未在主流程里完整实现。
 
 ### 13.1 可靠性目标
 
@@ -1942,14 +1994,15 @@ UAF 分析按以下可恢复阶段提交：
 
 #### Reliability Phase R1：节点契约和错误分类
 
-- 定义 `NodeExecutionContract`、`ErrorEnvelope` 和错误分类枚举。
-- 为 Validator、Kernel Expert、Test Expert、Knowledge Base 增加 pre/postcondition。
-- 清理“异常后仍 status=ok”和吞异常无记录的问题。
+- 当前状态：部分完成。
+- 已有部分结构化 contract、测试和路由校验，但 `NodeExecutionContract`、统一 `ErrorEnvelope` 和全节点 pre/postcondition 仍未完整落地。
+- 仍需清理“异常后仍 status=ok”和吞异常无记录的问题。
 
 验收：相同故障始终产生相同 error code、状态和 next action。
 
 #### Reliability Phase R2：持久化 checkpoint
 
+- 当前状态：未完成。
 - 引入磁盘或数据库 checkpointer。
 - 节点 postcondition 通过后原子提交 contract 和 manifest。
 - 支持 `--resume-session`。
@@ -1958,6 +2011,7 @@ UAF 分析按以下可恢复阶段提交：
 
 #### Reliability Phase R3：缓存正确性
 
+- 当前状态：未完成。
 - 统一内容寻址 key 和版本字段。
 - 所有 cache/artifact 使用原子写。
 - 禁止缓存瞬时失败和 partial output。
@@ -1967,6 +2021,7 @@ UAF 分析按以下可恢复阶段提交：
 
 #### Reliability Phase R4：局部重试和熔断
 
+- 当前状态：未完成。
 - 为 LLM/MCP/RAG/crash 定义可重试错误集合。
 - 指数退避、jitter、最大尝试次数和依赖级熔断。
 - 删除无条件整链重试。
@@ -1975,6 +2030,7 @@ UAF 分析按以下可恢复阶段提交：
 
 #### Reliability Phase R5：重放与故障注入
 
+- 当前状态：未完成。
 - 完成 `run_manifest.json`、`--replay-node` 和依赖调用记录。
 - 对 timeout、5xx、合法空、partial、缓存损坏、进程中断做故障注入。
 - 统计首次成功率、恢复后成功率、平均恢复节点数和错误定位时间。

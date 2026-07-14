@@ -1,5 +1,6 @@
 from langgraph.graph import END
 from langgraph.types import Send
+import re
 
 from graph.rn_state import MaintenanceWorkflowState
 
@@ -42,7 +43,8 @@ def route_after_kernel(state: MaintenanceWorkflowState):
         required = ("target_arch", "boot_kernel_path", "test_script_path", "expected_signal")
         ok = contract.get("status") == "ok"
         fields_ok = all(contract.get(field) for field in required)
-        if ok and fields_ok:
+        path_contract_ok = _path_contract_ready_for_test(contract)
+        if ok and fields_ok and path_contract_ok:
             return "test_expert"
         # diagnostic logging
         if ok is False:
@@ -50,6 +52,8 @@ def route_after_kernel(state: MaintenanceWorkflowState):
         missing = [f for f in required if not contract.get(f)]
         if missing:
             print(f"  [路由诊断] contract 缺少必填字段: {missing}", flush=True)
+        if not path_contract_ok:
+            print("  [路由诊断] UAF/refcount path contract 未通过，跳过 QEMU", flush=True)
         return "knowledge_base"
 
     if state.get("kernel_ready_for_test") is False:
@@ -62,6 +66,39 @@ def route_after_kernel(state: MaintenanceWorkflowState):
 
     print("  [路由诊断] 无 contract 但 fallthrough → test_expert", flush=True)
     return "test_expert"
+
+
+def _path_contract_ready_for_test(contract: dict) -> bool:
+    """Defence-in-depth before executing a reproducer for a path analysis."""
+    if not contract.get("path_analysis_required"):
+        return True
+    candidates = contract.get("all_possible_paths") or []
+    max_path = contract.get("max_likely_path") or ""
+    target = contract.get("reproduction_target_path") or ""
+    scope = contract.get("path_analysis_scope") or {}
+    analysis = contract.get("uaf_analysis") or {}
+
+    def normalise(value: str) -> str:
+        return re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", str(value)).strip()
+
+    candidate_set = {normalise(item) for item in candidates if normalise(item)}
+    scope_complete = all(scope.get(field) for field in (
+        "kernel_commit", "kernel_config", "entry_points", "object_type", "concurrency_model",
+    ))
+    structured_ready = bool(
+        analysis
+        and not analysis.get("legacy_unstructured", False)
+        and analysis.get("case_id")
+        and analysis.get("max_likely_path_id") == analysis.get("reproduction_target_path_id")
+        and analysis.get("target_contexts")
+    )
+    return bool(
+        candidate_set
+        and normalise(max_path) in candidate_set
+        and normalise(target) == normalise(max_path)
+        and scope_complete
+        and structured_ready
+    )
 
 
 def route_after_test(state: MaintenanceWorkflowState):

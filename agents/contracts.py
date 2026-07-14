@@ -14,6 +14,10 @@ from pydantic import BaseModel, Field
 
 StepStatus = Literal["ok", "failed", "blocked", "skipped"]
 WorkflowStatus = Literal["ok", "failed", "blocked", "skipped", "degraded", "inconclusive"]
+ErrorCategory = Literal[
+    "TRANSIENT", "VALID_EMPTY", "PARTIAL", "INVALID_INPUT", "UNAVAILABLE",
+    "PERMANENT", "INTERNAL_BUG",
+]
 
 
 def model_to_dict(model: BaseModel) -> dict[str, Any]:
@@ -103,6 +107,17 @@ class ToolStepResult(BaseModel):
     error: str = ""
 
 
+class ErrorEnvelope(BaseModel):
+    """Actionable, stable error data for node and external-tool failures."""
+
+    category: ErrorCategory
+    code: str
+    message: str
+    retryable: bool = False
+    next_action: str = ""
+    cause: str = ""
+
+
 class TestPlan(BaseModel):
     """Machine-readable handoff from Kernel Expert to Test Expert."""
 
@@ -118,6 +133,10 @@ class TestPlan(BaseModel):
     binaries_dir: str = ""
     detection_signals: DetectionSignals = Field(default_factory=DetectionSignals)
     qemu_recipe: QemuRecipe = Field(default_factory=QemuRecipe)
+    reproduction_case_id: str = ""
+    target_path_id: str = ""
+    target_contexts: list[str] = Field(default_factory=list)
+    require_causal_reproduction: bool = False
 
 
 class TestResultContract(BaseModel):
@@ -131,6 +150,12 @@ class TestResultContract(BaseModel):
     plan: TestPlan = Field(default_factory=TestPlan)
     steps: list[ToolStepResult] = Field(default_factory=list)
     artifacts: dict[str, str] = Field(default_factory=dict)
+    target_path_id: str = ""
+    reproducer_started: bool = False
+    signal_after_start: bool = False
+    target_context_matched: bool = False
+    matched_stack_frames: list[str] = Field(default_factory=list)
+    false_positive_checks: list[str] = Field(default_factory=list)
 
 
 class ValidationResultContract(BaseModel):
@@ -160,6 +185,76 @@ class InputArtifactsContract(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class PathAnalysisScope(BaseModel):
+    """Boundaries of a UAF/refcount path investigation.
+
+    This is deliberately a small P0 contract rather than a full call-graph
+    model.  It makes the assumptions behind a path inventory explicit, so an
+    archive cannot accidentally present a partial search as exhaustive.
+    """
+
+    kernel_commit: str = ""
+    kernel_config: str = ""
+    entry_points: list[str] = Field(default_factory=list)
+    object_type: str = ""
+    concurrency_model: str = ""
+
+
+class ExcludedPath(BaseModel):
+    """A considered path which was excluded, together with its evidence."""
+
+    path: str
+    rationale: str
+
+
+class ReferenceEvent(BaseModel):
+    """One get/put/transfer/free/access event on a candidate path."""
+
+    kind: Literal["get", "put", "transfer", "free", "access", "unknown"] = "unknown"
+    function: str = ""
+    location: str = ""
+    ref_delta: int = 0
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class RefcountPath(BaseModel):
+    """Stable, structured UAF/refcount candidate path."""
+
+    id: str
+    summary: str
+    events: list[ReferenceEvent] = Field(default_factory=list)
+    net_delta: int = 0
+    terminal_state: Literal["live", "released", "leaked", "uaf", "unknown"] = "unknown"
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    unknowns: list[str] = Field(default_factory=list)
+
+
+class PathCoverage(BaseModel):
+    """Explicit analysis boundary and known unresolved call edges."""
+
+    normal_paths_considered: bool = False
+    error_paths_considered: bool = False
+    transfer_paths_considered: bool = False
+    async_paths_considered: bool = False
+    concurrency_paths_considered: bool = False
+    unresolved_indirect_calls: list[str] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
+
+
+class UafAnalysisContract(BaseModel):
+    """P1 source of truth; legacy string paths remain compatibility output."""
+
+    case_id: str = ""
+    paths: list[RefcountPath] = Field(default_factory=list)
+    coverage: PathCoverage = Field(default_factory=PathCoverage)
+    excluded_paths: list[ExcludedPath] = Field(default_factory=list)
+    max_likely_path_id: str = ""
+    selection_rationale: str = ""
+    reproduction_target_path_id: str = ""
+    target_contexts: list[str] = Field(default_factory=list)
+    legacy_unstructured: bool = False
+
+
 class KernelExpertOutput(BaseModel):
     """Structured Kernel Expert output.
 
@@ -186,6 +281,12 @@ class KernelExpertOutput(BaseModel):
     # and default to empty for non-UAF cases and legacy contracts.
     all_possible_paths: list[str] = Field(default_factory=list)
     max_likely_path: str = ""
+    max_likely_path_rationale: str = ""
+    excluded_paths: list[ExcludedPath] = Field(default_factory=list)
+    path_analysis_required: bool = False
+    path_analysis_scope: PathAnalysisScope = Field(default_factory=PathAnalysisScope)
+    reproduction_target_path: str = ""
+    uaf_analysis: UafAnalysisContract | None = None
     warnings: list[str] = Field(default_factory=list)
     blocked_reason: str = ""
     detection_signals: DetectionSignals = Field(default_factory=DetectionSignals)

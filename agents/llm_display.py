@@ -9,6 +9,7 @@
 
 import sys
 import os
+import tempfile
 from pathlib import Path
 from typing import Any
 from datetime import datetime
@@ -608,11 +609,22 @@ def _persist_agent_output(
 
     output_file = agent_dir / filename
 
-    # 写入内容
-    with open(output_file, "w", encoding="utf-8") as f:
+    # Publish only complete intermediate output.  A process interruption must
+    # never leave a plausible-looking truncated cache for the next analysis.
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=agent_dir,
+        prefix=f".{filename}.", suffix=".tmp", delete=False,
+    ) as f:
         f.write(f"[{agent}] {phase}\n")
         f.write(f"Timestamp: {datetime.now().isoformat()}\n\n")
         f.write(content)
+        f.flush()
+        os.fsync(f.fileno())
+        temp_path = Path(f.name)
+    try:
+        temp_path.replace(output_file)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
     return output_file
 

@@ -1,12 +1,15 @@
 import os
 import subprocess
 import re
+import tempfile
+import json
 from pathlib import Path
 from datetime import datetime
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_display, set_session_dir
+from agents.error_handling import classify_error
 from llm_config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
 from graph.rn_state import MaintenanceWorkflowState
 from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
@@ -27,6 +30,13 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     expert_results = state.get("expert_results", [])
     all_paths = state.get("all_possible_paths", [])
     max_path = state.get("max_likely_path", "")
+    kernel_contract = state.get("kernel_contract") or {}
+    # State fields are maintained for compatibility, but kernel_contract is
+    # the durable handoff and may be recovered directly from disk.
+    if not all_paths:
+        all_paths = kernel_contract.get("all_possible_paths", []) or []
+    if not max_path:
+        max_path = kernel_contract.get("max_likely_path", "") or ""
     # Keep the raw sections visible even for legacy/retry states whose
     # structured fields were not populated by the model.
     raw_kernel_analysis = state.get("kernel_analysis", "")
@@ -48,7 +58,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"## UAF/引用计数路径分析（必须原样保留）\n"
         f"所有可能路径：\n{_format_paths(all_paths)}\n\n"
         f"最大可能路径：\n{max_path}\n\n"
-        f"## 结构化内核专家契约\n{state.get('kernel_contract', {})}\n\n"
+        f"## 结构化内核专家契约\n{kernel_contract}\n\n"
         f"## 复现用例\n{state.get('reproduce_case', '')}\n\n"
         f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
         f"## 结构化测试契约\n"
@@ -75,12 +85,25 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         # raw structured summary so the case is still archived and
         # retrievable. Common triggers: 429 budget_exceeded on the proxy,
         # upstream 5xx, or transient network errors.
-        err_line = f"[knowledge_base LLM failure] {type(e).__name__}: {str(e)[:300]}"
+        error = classify_error(e, operation="knowledge_base LLM summary")
+        err_line = (
+            f"[knowledge_base LLM failure] {error.category}/{error.code}: {error.message}. "
+            f"Next action: {error.next_action} Cause: {error.cause}"
+        )
         knowledge_content = (
             f"# 知识库归档（LLM 总结失败，已降级保存原始输入）\n\n"
             f"{err_line}\n\n"
             f"--- 原始输入 ---\n{user_content}"
         )
+
+    # Do not delegate the evidence appendix to the LLM.  The report remains
+    # useful even when it summarises poorly or its output is truncated.
+    path_appendix = _render_path_analysis_appendix(
+        all_paths=all_paths,
+        max_path=max_path,
+        kernel_contract=kernel_contract,
+    )
+    knowledge_content = f"{knowledge_content.rstrip()}\n\n{path_appendix}\n"
 
     # 保存知识库文件
     knowledge_file = _save_knowledge_file(state, knowledge_content, config)
@@ -100,9 +123,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"Issue: {issue_id} ({issue_url})\n"
         f"知识库文件: {knowledge_file}\n\n"
         f"Chroma 导入: {import_message}\n\n"
-        f"## UAF/引用计数路径分析\n"
-        f"所有可能路径：\n{_format_paths(all_paths)}\n\n"
-        f"最大可能路径：\n{max_path or '未明确，需结合归档中的完整分析继续排查。'}\n\n"
+        f"{path_appendix}\n\n"
         f"共调用 {len(expert_results)} 个工具专家，"
         f"测试验证 {state.get('test_attempts', 0)} 次。"
     )
@@ -132,6 +153,51 @@ def _extract_path_lines(text: str, marker: str) -> list[str]:
     return [line.strip() for line in section.splitlines() if line.strip()]
 
 
+def _render_path_analysis_appendix(*, all_paths, max_path: str, kernel_contract: dict) -> str:
+    """Render a deterministic P0 appendix for both archive and CLI output."""
+    required = bool(kernel_contract.get("path_analysis_required"))
+    scope = kernel_contract.get("path_analysis_scope") or {}
+    excluded = kernel_contract.get("excluded_paths") or []
+    reproduction_target = kernel_contract.get("reproduction_target_path") or ""
+    rationale = kernel_contract.get("max_likely_path_rationale") or ""
+    lines = ["## UAF/引用计数路径分析（确定性附录）"]
+    if not required and not all_paths and not max_path:
+        lines.append("本案例未声明 UAF/引用计数路径分析要求。")
+        return "\n".join(lines)
+
+    lines += ["", "### 分析范围"]
+    scope_labels = (
+        ("kernel_commit", "Kernel commit"),
+        ("kernel_config", "Kernel config"),
+        ("entry_points", "入口"),
+        ("object_type", "对象类型"),
+        ("concurrency_model", "并发模型"),
+    )
+    for key, label in scope_labels:
+        value = scope.get(key, "")
+        if isinstance(value, list):
+            value = ", ".join(str(item) for item in value)
+        lines.append(f"- {label}: {value or '未提供'}")
+
+    lines += ["", "### 所有可能路径", _format_paths(all_paths)]
+    lines += ["", "### 最大可能路径", max_path or "未明确"]
+    lines.append(f"- 选择依据: {rationale or '未提供'}")
+    lines.append(f"- 复现目标路径: {reproduction_target or '未提供'}")
+    lines += ["", "### 已排除路径"]
+    if not excluded:
+        lines.append("- 无；或未提供排除依据。")
+    else:
+        for item in excluded:
+            if not isinstance(item, dict):
+                lines.append(f"- {item}")
+                continue
+            lines.append(f"- {item.get('path', '未命名路径')}：{item.get('rationale', '未提供依据')}")
+    structured = kernel_contract.get("uaf_analysis")
+    if structured:
+        lines += ["", "### 原始结构化路径 Contract", "```json", json.dumps(structured, ensure_ascii=False, indent=2), "```"]
+    return "\n".join(lines)
+
+
 def _save_knowledge_file(state: MaintenanceWorkflowState, content: str, config: dict) -> str:
     """将知识库内容保存为文件（优先 session 目录）。"""
     session_dir = state.get("session_dir")
@@ -149,9 +215,25 @@ def _save_knowledge_file(state: MaintenanceWorkflowState, content: str, config: 
     filename = f"knowledge_{issue_id}_{timestamp}.md"
 
     file_path = output_path / filename
-    file_path.write_text(content, encoding="utf-8")
+    _atomic_write_text(file_path, content)
 
     return str(file_path)
+
+
+def _atomic_write_text(file_path: Path, content: str) -> None:
+    """Publish an archive only after its complete UTF-8 content is written."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=file_path.parent,
+        prefix=f".{file_path.name}.", suffix=".tmp", delete=False,
+    ) as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp_path = Path(handle.name)
+    try:
+        temp_path.replace(file_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
 
 
 def _import_to_chroma(knowledge_file: str) -> tuple[bool, str]:
@@ -163,7 +245,6 @@ def _import_to_chroma(knowledge_file: str) -> tuple[bool, str]:
     Returns:
         (success, message) - 是否成功及消息
     """
-    import json
     from pathlib import Path
 
     skill_path = resolve_best_skill_path("rag-case-retrieval")

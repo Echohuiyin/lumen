@@ -272,6 +272,24 @@ def run_qemu_test_plan(
     )
 
     if matched_signal:
+        causal = _check_causal_reproduction(log_content, plan, matched_signal)
+        if plan.require_causal_reproduction and not (
+            causal["reproducer_started"]
+            and causal["signal_after_start"]
+            and causal["target_context_matched"]
+        ):
+            return TestResultContract(
+                status="failed",
+                code="FAILED_CAUSAL_REPRODUCTION",
+                test_passed=False,
+                attempts=attempt,
+                summary="A matching signal was present, but causal reproduction proof was incomplete.",
+                plan=plan,
+                steps=steps,
+                artifacts=artifacts,
+                target_path_id=plan.target_path_id,
+                **causal,
+            )
         return TestResultContract(
             status="ok",
             code="PASSED_REPRODUCED",
@@ -281,6 +299,8 @@ def run_qemu_test_plan(
             plan=plan,
             steps=steps,
             artifacts=artifacts,
+            target_path_id=plan.target_path_id,
+            **causal,
         )
 
     if not expected_signal and not detection.serial_signals:
@@ -314,6 +334,52 @@ def run_qemu_test_plan(
         steps=steps,
         status="failed",
     )
+
+
+def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal: str) -> dict:
+    """Verify the signal belongs to the selected reproducer, not boot noise."""
+    result = {
+        "reproducer_started": False,
+        "signal_after_start": False,
+        "target_context_matched": False,
+        "matched_stack_frames": [],
+        "false_positive_checks": [],
+    }
+    if not plan.require_causal_reproduction:
+        return result
+
+    start_marker = f"LUMEN_REPRO_START:{plan.reproduction_case_id}:{plan.target_path_id}"
+    lines = log_content.splitlines()
+    start_index = next((i for i, line in enumerate(lines) if start_marker in line), -1)
+    if start_index < 0:
+        result["false_positive_checks"].append(f"missing reproducer marker: {start_marker}")
+        return result
+    result["reproducer_started"] = True
+
+    patterns = [pattern for pattern in (
+        list(plan.detection_signals.serial_signals) + [plan.expected_signal, matched_signal]
+    ) if pattern]
+    signal_index = next(
+        (i for i in range(start_index + 1, len(lines))
+         if any(pattern.lower() in lines[i].lower() for pattern in patterns)),
+        -1,
+    )
+    if signal_index < 0:
+        result["false_positive_checks"].append("target signal was only observed before reproducer start")
+        return result
+    result["signal_after_start"] = True
+
+    window = lines[start_index:signal_index + 81]
+    for context in plan.target_contexts:
+        matches = [line for line in window if context.lower() in line.lower()]
+        if matches:
+            result["matched_stack_frames"].extend(matches[:3])
+    result["target_context_matched"] = bool(result["matched_stack_frames"])
+    if not result["target_context_matched"]:
+        result["false_positive_checks"].append(
+            "no target module/function/object context matched after reproducer start"
+        )
+    return result
 
 
 def _match_serial_signals(

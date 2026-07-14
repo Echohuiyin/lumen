@@ -15,6 +15,7 @@ import json
 import os
 import re
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -22,6 +23,7 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, field_validator
 
 from paths import PROJECT_ROOT
+from agents.error_handling import retry_transient
 
 # ---------------------------------------------------------------------------
 # Shared session registry — prevents multiple concurrent crash processes
@@ -125,7 +127,9 @@ def get_or_create_crash_session(vmcore_path: str, vmlinux_path: str) -> Any:
             vmlinux_path=vmlinux,
             config=config,
         )
-        session.start()
+        # Starting crash is idempotent before publishing to the registry;
+        # retry only transient startup failures and never retry bad inputs.
+        retry_transient("crash session startup", session.start)
         _session_registry[key] = (session, 1)
         return session
 
@@ -149,6 +153,16 @@ def release_crash_session(vmcore_path: str, vmlinux_path: str) -> None:
             del _session_registry[key]
         else:
             _session_registry[key] = (session, refcount)
+
+
+@contextmanager
+def crash_session(vmcore_path: str, vmlinux_path: str):
+    """Acquire a shared crash session and always release its lease."""
+    session = get_or_create_crash_session(vmcore_path, vmlinux_path)
+    try:
+        yield session
+    finally:
+        release_crash_session(vmcore_path, vmlinux_path)
 
 
 # ---------------------------------------------------------------------------

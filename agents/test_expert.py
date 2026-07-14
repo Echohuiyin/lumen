@@ -410,6 +410,12 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         rootfs_mode = "ext4"
     rootfs_path = kernel_contract.get("rootfs_path") or ""
     rootfs_size_mb = kernel_contract.get("rootfs_size_mb") or 128
+    uaf_analysis = kernel_contract.get("uaf_analysis") or {}
+    require_causal_reproduction = bool(
+        kernel_contract.get("path_analysis_required")
+        and uaf_analysis
+        and not uaf_analysis.get("legacy_unstructured", False)
+    )
 
     # Deterministic QEMU execution path. The LLM is no longer responsible for
     # choosing or ordering QEMU tools.
@@ -426,6 +432,10 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         binaries_dir=binaries_dir,
         detection_signals=_build_detection_signals(kernel_contract, expected_signal),
         qemu_recipe=_build_qemu_recipe(kernel_contract),
+        reproduction_case_id=uaf_analysis.get("case_id", ""),
+        target_path_id=uaf_analysis.get("reproduction_target_path_id", ""),
+        target_contexts=uaf_analysis.get("target_contexts", []) or [],
+        require_causal_reproduction=require_causal_reproduction,
     )
     runner_result = run_qemu_test_plan(plan, attempt=current_attempts)
     text = _format_runner_result(runner_result)

@@ -7,6 +7,8 @@ A ``session.json`` metadata file tracks agent execution order and timing.
 """
 
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -121,7 +123,16 @@ def _read_metadata(session_dir: Path) -> dict[str, Any]:
 
 
 def _write_metadata(session_dir: Path, metadata: dict[str, Any]) -> None:
-    (session_dir / "session.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    target = session_dir / "session.json"
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=session_dir,
+        prefix=".session.json.", suffix=".tmp", delete=False,
+    ) as handle:
+        json.dump(metadata, handle, ensure_ascii=False, indent=2)
+        handle.flush()
+        os.fsync(handle.fileno())
+        temp_path = Path(handle.name)
+    try:
+        temp_path.replace(target)
+    finally:
+        temp_path.unlink(missing_ok=True)
