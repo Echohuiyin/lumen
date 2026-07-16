@@ -106,6 +106,10 @@ class ToolStepResult(BaseModel):
 class TestPlan(BaseModel):
     """Machine-readable handoff from Kernel Expert to Test Expert."""
 
+    __test__ = False  # pydantic model, not a pytest test class
+
+    target_arch: str = ""
+
     target_arch: str = ""
     boot_kernel_path: str = ""
     rootfs_mode: Literal["initramfs", "ext4"] = "initramfs"

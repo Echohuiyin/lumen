@@ -32,6 +32,8 @@ EXCLUDE_PATTERNS = (
     ".venv/",
     "Analysis-SKILL/",           # git submodule
     "dev/tests/test_hardcoded_paths.py",  # this file itself is fine
+    ".claude/",                  # local Claude Code config (settings.local.json, etc.)
+    "e2e_no_reproduce_analysis.md",  # local analysis doc, references external source tree
 )
 
 # Source file extensions to scan

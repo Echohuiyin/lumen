@@ -582,7 +582,8 @@ class AnthropicBackend:
             }
             if hasattr(tool, "args_schema") and tool.args_schema:
                 try:
-                    tool_def["input_schema"] = tool.args_schema.schema()
+                    schema_fn = getattr(tool.args_schema, "model_json_schema", None) or tool.args_schema.schema
+                    tool_def["input_schema"] = schema_fn()
                 except Exception:
                     tool_def["input_schema"] = {"type": "object", "properties": {}}
             else:

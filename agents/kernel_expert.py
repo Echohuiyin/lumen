@@ -660,6 +660,7 @@ def _parse_kernel_expert_response(
             try:
                 data = json.loads(contract_file.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    _normalize_evidence_field(data)
                     file_contract = _model_validate(KernelExpertOutput, data)
                     if _kernel_contract_has_handoff(file_contract):
                         kernel_contract = file_contract
@@ -737,6 +738,7 @@ def _parse_kernel_expert_response(
             try:
                 data = json.loads(contract_file.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
+                    _normalize_evidence_field(data)
                     file_contract = _model_validate(KernelExpertOutput, data)
                     if _kernel_contract_has_handoff(file_contract):
                         kernel_contract = file_contract
@@ -1165,6 +1167,24 @@ def _extract_scalar_marker(text: str, marker: str) -> str:
     return value
 
 
+def _normalize_evidence_field(data: dict) -> None:
+    """Coerce ``evidence: list[str]`` → ``list[dict]`` in place.
+
+    LLM occasionally writes evidence as a list of strings instead of list of
+    dicts; pydantic would reject this and the broad except clause would
+    silently fall through to the empty fallback contract, losing
+    ``expected_signal`` and ``boot_kernel_path``. String entries are wrapped
+    as ``{"note": str}`` to preserve the strict ``list[dict[str, Any]]``
+    schema without weakening it.
+    """
+    ev = data.get("evidence")
+    if isinstance(ev, list):
+        data["evidence"] = [
+            (e if isinstance(e, dict) else {"note": str(e)})
+            for e in ev
+        ]
+
+
 def _model_validate(model_cls, data: dict):
     if hasattr(model_cls, "model_validate"):
         return model_cls.model_validate(data)
@@ -1193,6 +1213,8 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
                 if stripped.lower().startswith("json"):
                     stripped = stripped[4:].strip()
             data, _ = json.JSONDecoder().raw_decode(stripped)
+            if isinstance(data, dict):
+                _normalize_evidence_field(data)
             return _model_validate(KernelExpertOutput, data)
         except Exception:
             continue

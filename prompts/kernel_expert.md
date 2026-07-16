@@ -447,11 +447,16 @@ KERNEL_CONTRACT:
     "timeout_sec": 0
   },
   "build_status": "passed",
-  "evidence": [],
+  "evidence": [
+    {"kind": "artifact", "field": "reproducer_module_path", "path": "<OUTPUT_DIR>/<bug>_reproducer/<name>.ko"},
+    {"kind": "log", "field": "expected_signal", "path": "boot.log", "note": "Pre-compiled .ko verified (size bytes)"}
+  ],
   "warnings": [],
   "blocked_reason": ""
 }
 ```
+
+`evidence` 每条必须是**对象**（dict），不能是字符串。推荐字段：`kind`（artifact/log/note）、`field`（指向 contract 中相关字段名）、`path`（文件路径或 `N/A`）、可选 `note`。代码侧有兜底把误写的字符串转成 `{"note": str}`，但请按此形状输出。
 ```
 
 如果缺少 `boot_kernel_path`/`target_arch`/`test_script_path`/`expected_signal`，不要把 `status` 写成 `ok`：

@@ -387,6 +387,16 @@ def test_kernel_expert_capability(fault_type: str, fault_input: str, loaded_conf
         "kernel_expert.txt 应包含 KERNEL_CONTRACT 标记或最终分析结果"
     )
 
+    # evidence entries must be dicts (schema contract: list[dict[str, Any]]).
+    # Regression guard: LLM previously wrote list[str], which pydantic rejected
+    # and the except clause silently dropped to the empty fallback contract,
+    # losing expected_signal. _normalize_evidence_field coerces strings to
+    # {"note": str}; assert the LLM path produces dict-shaped evidence.
+    evidence = contract.get("evidence") or []
+    assert all(isinstance(e, dict) for e in evidence), (
+        f"evidence entries must be dicts, got: {evidence!r}"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Test expert (QEMU)

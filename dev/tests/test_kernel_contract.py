@@ -13,6 +13,7 @@ from agents.kernel_expert import (
     _kernel_contract_from_markers,
     _kernel_contract_ready_for_test,
     _merge_kernel_contract,
+    _normalize_evidence_field,
     _validate_kernel_contract_artifacts,
 )
 from graph.rn_router import route_after_kernel
@@ -236,6 +237,57 @@ def test_route_after_kernel_uses_contract():
     assert route_after_kernel(blocked_state) == "knowledge_base"
 
 
+def test_normalize_evidence_field_coerces_strings_to_dicts():
+    data = {"evidence": ["Pre-compiled .ko verified", "log line"]}
+    _normalize_evidence_field(data)
+    assert data["evidence"] == [
+        {"note": "Pre-compiled .ko verified"},
+        {"note": "log line"},
+    ]
+
+
+def test_normalize_evidence_field_preserves_dicts():
+    original = [{"kind": "artifact", "path": "/tmp/x.ko"}]
+    data = {"evidence": list(original)}
+    _normalize_evidence_field(data)
+    assert data["evidence"] == original
+
+
+def test_normalize_evidence_field_noop_when_missing():
+    data: dict = {}
+    _normalize_evidence_field(data)
+    assert data == {}
+
+
+def test_normalize_evidence_field_rejects_non_list():
+    data = {"evidence": "not a list"}
+    _normalize_evidence_field(data)
+    assert data["evidence"] == "not a list"
+
+
+def test_extract_kernel_contract_accepts_evidence_list_of_strings():
+    text = """
+KERNEL_CONTRACT:
+```json
+{
+  "status": "ok",
+  "target_arch": "x86_64",
+  "boot_kernel_path": "",
+  "reproducer_dir": "outputs/repro",
+  "reproducer_module_path": "outputs/repro/repro.ko",
+  "test_script_path": "outputs/repro/test.sh",
+  "expected_signal": "Kernel panic",
+  "evidence": ["Pre-compiled .ko verified (129952 bytes)", "REPRODUCTION.md exists"]
+}
+```
+"""
+    contract = _extract_kernel_contract(text)
+    assert contract.evidence == [
+        {"note": "Pre-compiled .ko verified (129952 bytes)"},
+        {"note": "REPRODUCTION.md exists"},
+    ]
+
+
 if __name__ == "__main__":
     for test in [
         test_extract_kernel_contract_json_with_nested_evidence,
@@ -245,6 +297,11 @@ if __name__ == "__main__":
         test_validate_kernel_contract_rejects_missing_expected_signal,
         test_validate_kernel_contract_missing_script_generates_warning,
         test_route_after_kernel_uses_contract,
+        test_normalize_evidence_field_coerces_strings_to_dicts,
+        test_normalize_evidence_field_preserves_dicts,
+        test_normalize_evidence_field_noop_when_missing,
+        test_normalize_evidence_field_rejects_non_list,
+        test_extract_kernel_contract_accepts_evidence_list_of_strings,
     ]:
         test()
     print("kernel_contract OK")
