@@ -9,6 +9,12 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from agents.contracts import KernelExpertOutput, RefcountPath, UafAnalysisContract, model_to_dict
 from agents.error_handling import classify_error, error_to_evidence
+from agents.semcode_path_analysis import (
+    SemcodePathAnalysisResult,
+    analyze_uaf_paths,
+    extract_semcode_entry_points,
+    render_semcode_analysis_context,
+)
 from agents.llm_display import (
     call_llm_with_persistence,
     display_expert_outputs,
@@ -371,6 +377,24 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     # Extract evidence summary for LLM context
     evidence_summary = _extract_evidence_summary(expert_results)
+    path_analysis_required = _requires_path_analysis(
+        state.get("user_input", ""),
+        "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
+    )
+    semcode_path_analysis: SemcodePathAnalysisResult | None = None
+    if path_analysis_required:
+        semcode_config = agent_config.get("semcode_mcp") or {}
+        semcode_path_analysis = analyze_uaf_paths(
+            kernel_source_path=kernel_source_path,
+            entry_points=extract_semcode_entry_points(
+                state.get("user_input", ""),
+                expert_results=expert_results,
+            ),
+            semcode_command=str(semcode_config.get("command", "")),
+            semcode_args=semcode_config.get("args", []) or [],
+        )
+        if semcode_path_analysis.status != "ok":
+            return _blocked_semcode_path_analysis(semcode_path_analysis)
 
     user_content = (
         f"用户输入:\n{state['user_input']}\n\n"
@@ -381,6 +405,8 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"## 工具专家分析结果\n" + "\n\n".join(expert_summaries) + "\n\n"
         f"## 关键证据摘要\n{evidence_summary}"
     )
+    if semcode_path_analysis is not None:
+        user_content += "\n\n" + render_semcode_analysis_context(semcode_path_analysis)
 
     # 如果是重试（测试未通过），附加测试反馈
     test_result = state.get("test_result", "")
@@ -407,6 +433,10 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             try:
                 data = json.loads(contract_file.read_text(encoding="utf-8"))
                 existing_contract = _model_validate(KernelExpertOutput, data)
+                if semcode_path_analysis is not None:
+                    existing_contract = _apply_semcode_path_analysis(
+                        existing_contract, semcode_path_analysis,
+                    )
                 existing_contract = _validate_kernel_contract_artifacts(
                     existing_contract,
                     path_analysis_required=_requires_path_analysis(state.get("user_input", "")),
@@ -430,6 +460,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                         "test_script_path": existing_contract.test_script_path,
                         "expected_signal": existing_contract.expected_signal,
                         "binaries_dir": existing_contract.binaries_dir,
+                        "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
                     }
             except (OSError, ValueError, json.JSONDecodeError):
                 # Keep the original explicit headers failure when the cached
@@ -465,6 +496,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 warnings=[error_msg],
             )),
             "final_response": error_msg,
+            "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
         }
 
     # Derive target kernel source dir from boot_kernel_path in input_artifacts
@@ -532,6 +564,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         )
         if recovered is not None:
             contract, analysis_text = recovered
+            if semcode_path_analysis is not None:
+                contract = _apply_semcode_path_analysis(contract, semcode_path_analysis)
+                contract = _validate_kernel_contract_artifacts(contract, path_analysis_required=True)
             return {
                 "kernel_analysis": analysis_text,
                 "reproduce_case": analysis_text,
@@ -546,6 +581,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 "expected_signal": contract.expected_signal,
                 "binaries_dir": contract.binaries_dir,
                 "final_response": analysis_text,
+                "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
             }
 
         blocked_contract = KernelExpertOutput(
@@ -562,6 +598,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "kernel_ready_for_test": False,
             "kernel_contract": model_to_dict(blocked_contract),
             "final_response": error_msg,
+            "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
         }
 
     text = response.content.strip()
@@ -609,12 +646,80 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             pass
 
     # 解析 contract + 构造返回 dict（hint 注入重跑后也复用此函数）
-    return _parse_kernel_expert_response(
+    parsed = _parse_kernel_expert_response(
         text=text,
         expert_results=expert_results,
         input_artifacts=input_artifacts,
         state=state,
+        semcode_path_analysis=semcode_path_analysis,
     )
+    if semcode_path_analysis is not None:
+        parsed["semcode_path_analysis"] = semcode_path_analysis.as_dict()
+    return parsed
+
+
+def _blocked_semcode_path_analysis(result: SemcodePathAnalysisResult) -> dict:
+    """Stop UAF routing when the required deterministic source evidence is absent."""
+    reason = f"semcode P2 path analysis blocked: {result.blocked_reason}"
+    contract = KernelExpertOutput(
+        status="blocked",
+        build_status="skipped",
+        path_analysis_required=True,
+        blocked_reason=reason,
+        warnings=["UAF/refcount analysis cannot use an LLM/source-text fallback."],
+        evidence=result.evidence,
+    )
+    return {
+        "kernel_analysis": reason,
+        "reproduce_case": "",
+        "kernel_diagnosis": "",
+        "all_possible_paths": [],
+        "max_likely_path": "",
+        "uaf_analysis_contract": {},
+        "semcode_path_analysis": result.as_dict(),
+        "kernel_ready_for_test": False,
+        "kernel_contract": model_to_dict(contract),
+        "final_response": reason,
+    }
+
+
+def _merge_semcode_path_scope(automatic_scope, current_scope: dict) -> dict:
+    """Keep semcode's source commit/entries authoritative and fill LLM omissions."""
+    automatic = model_to_dict(automatic_scope)
+    current = model_to_dict(current_scope) if hasattr(current_scope, "dict") else dict(current_scope)
+    merged = dict(current)
+    merged["kernel_commit"] = automatic["kernel_commit"]
+    merged["entry_points"] = automatic["entry_points"]
+    for field in ("kernel_config", "object_type", "concurrency_model"):
+        if not merged.get(field):
+            merged[field] = automatic[field]
+    return merged
+
+
+def _apply_semcode_path_analysis(
+    contract: KernelExpertOutput, result: SemcodePathAnalysisResult,
+) -> KernelExpertOutput:
+    """Monotonically attach deterministic P2 paths to a Kernel Expert contract."""
+    if result.status != "ok" or result.analysis is None:
+        raise ValueError("cannot apply a blocked semcode path analysis")
+    contract = _normalise_uaf_analysis(contract)
+    automated = result.analysis
+    merged = (
+        _merge_uaf_analysis(automated, contract.uaf_analysis)
+        if contract.uaf_analysis else automated
+    )
+    data = model_to_dict(contract)
+    data["path_analysis_required"] = True
+    data["uaf_analysis"] = model_to_dict(merged)
+    data["path_analysis_scope"] = _merge_semcode_path_scope(
+        result.scope, data.get("path_analysis_scope") or {},
+    )
+    existing_evidence = list(data.get("evidence") or [])
+    for evidence in result.evidence:
+        if evidence not in existing_evidence:
+            existing_evidence.append(evidence)
+    data["evidence"] = existing_evidence
+    return _normalise_uaf_analysis(_model_validate(KernelExpertOutput, data))
 
 
 def _looks_like_dsml_fragments(text: str) -> bool:
@@ -645,6 +750,7 @@ def _parse_kernel_expert_response(
     expert_results: list,
     input_artifacts: dict,
     state: dict,
+    semcode_path_analysis: SemcodePathAnalysisResult | None = None,
 ) -> dict:
     """Parse kernel_expert output text into contract + state update dict.
 
@@ -843,6 +949,10 @@ def _parse_kernel_expert_response(
             data["max_likely_path"] = state.get("max_likely_path", "")
         kernel_contract = _model_validate(KernelExpertOutput, data)
         kernel_contract = _normalise_uaf_analysis(kernel_contract)
+        if semcode_path_analysis is not None:
+            kernel_contract = _apply_semcode_path_analysis(
+                kernel_contract, semcode_path_analysis,
+            )
         previous_analysis_data = state.get("uaf_analysis_contract") or {}
         if previous_analysis_data and kernel_contract.uaf_analysis:
             try:

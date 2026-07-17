@@ -50,6 +50,7 @@ class MaintenanceWorkflowState(TypedDict):
     all_possible_paths: list[str]      # UAF/refcount 全部候选路径
     max_likely_path: str               # 最大可能路径
     uaf_analysis_contract: dict        # P1 结构化 UAF/refcount 路径事实源
+    semcode_path_analysis: dict        # P2 semcode 事件图、覆盖边界或明确 blocked 原因
     kernel_ready_for_test: bool        # 内核专家是否产出了可交给测试专家验证的内容
     kernel_contract: dict              # 结构化内核专家输出（测试交接契约）
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
@@ -106,6 +107,7 @@ def make_initial_state(
         "all_possible_paths": [],
         "max_likely_path": "",
         "uaf_analysis_contract": {},
+        "semcode_path_analysis": {},
         "kernel_ready_for_test": True,
         "kernel_contract": {},
         "target_arch": "",

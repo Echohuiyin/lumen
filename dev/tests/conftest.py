@@ -18,6 +18,7 @@ ONLINE_TEST_NODEIDS = (
     "dev/tests/test_semcode_mcp.py::test_semcode_mcp_binary_exists",
     "dev/tests/test_semcode_mcp.py::test_default_semcode_db_exists",
     "dev/tests/test_semcode_mcp.py::test_linux_next_semcode_db_exists",
+    "dev/tests/test_semcode_path_analysis.py::test_semcode_path_analysis_online_llm_roundtrip",
     "dev/tests/test_test_expert.py::test_qemu_tool_calling",
     "dev/tests/test_tool_expert_mcp.py::test_tool_calling_loop",
     "dev/tests/test_tool_experts.py::test_expert_direct",

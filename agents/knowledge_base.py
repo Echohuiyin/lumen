@@ -31,6 +31,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     all_paths = state.get("all_possible_paths", [])
     max_path = state.get("max_likely_path", "")
     kernel_contract = state.get("kernel_contract") or {}
+    semcode_path_analysis = state.get("semcode_path_analysis") or {}
     # State fields are maintained for compatibility, but kernel_contract is
     # the durable handoff and may be recovered directly from disk.
     if not all_paths:
@@ -58,6 +59,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"## UAF/引用计数路径分析（必须原样保留）\n"
         f"所有可能路径：\n{_format_paths(all_paths)}\n\n"
         f"最大可能路径：\n{max_path}\n\n"
+        f"## semcode P2 事件图（原始结果，必须保留）\n{semcode_path_analysis}\n\n"
         f"## 结构化内核专家契约\n{kernel_contract}\n\n"
         f"## 复现用例\n{state.get('reproduce_case', '')}\n\n"
         f"## 内核维测方案\n{state.get('kernel_diagnosis', '')}\n\n"
@@ -102,6 +104,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         all_paths=all_paths,
         max_path=max_path,
         kernel_contract=kernel_contract,
+        semcode_path_analysis=semcode_path_analysis,
     )
     knowledge_content = f"{knowledge_content.rstrip()}\n\n{path_appendix}\n"
 
@@ -153,7 +156,10 @@ def _extract_path_lines(text: str, marker: str) -> list[str]:
     return [line.strip() for line in section.splitlines() if line.strip()]
 
 
-def _render_path_analysis_appendix(*, all_paths, max_path: str, kernel_contract: dict) -> str:
+def _render_path_analysis_appendix(
+    *, all_paths, max_path: str, kernel_contract: dict,
+    semcode_path_analysis: dict | None = None,
+) -> str:
     """Render a deterministic P0 appendix for both archive and CLI output."""
     required = bool(kernel_contract.get("path_analysis_required"))
     scope = kernel_contract.get("path_analysis_scope") or {}
@@ -195,6 +201,11 @@ def _render_path_analysis_appendix(*, all_paths, max_path: str, kernel_contract:
     structured = kernel_contract.get("uaf_analysis")
     if structured:
         lines += ["", "### 原始结构化路径 Contract", "```json", json.dumps(structured, ensure_ascii=False, indent=2), "```"]
+    if semcode_path_analysis:
+        lines += [
+            "", "### semcode P2 原始事件图结果", "```json",
+            json.dumps(semcode_path_analysis, ensure_ascii=False, indent=2), "```",
+        ]
     return "\n".join(lines)
 
 

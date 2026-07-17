@@ -24,10 +24,15 @@ def test_path_appendix_keeps_scope_paths_exclusions_and_reproducer_target():
             },
             "excluded_paths": [{"path": "balanced close", "rationale": "source has matching put"}],
         },
+        semcode_path_analysis={
+            "status": "blocked",
+            "blocked_reason": "semcode index missing: /kernel/.semcode.db",
+        },
     )
     for expected in (
         "v6.12", "get -> error -> missing put", "put -> free -> stale use",
         "vmcore shows final put", "balanced close", "source has matching put",
+        "semcode index missing",
     ):
         assert expected in appendix
 
