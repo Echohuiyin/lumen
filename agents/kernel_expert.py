@@ -655,8 +655,8 @@ def _parse_kernel_expert_response(
         # empty — the agent may have written a complete contract via its
         # tools even though the final text event was missing (model ended
         # with tool calls only).
-        contract_file = outputs_dir / "kernel_contract.json"
-        if contract_file.exists():
+        contract_file = _resolve_agent_contract_file(outputs_dir)
+        if contract_file and contract_file.exists():
             try:
                 data = json.loads(contract_file.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
@@ -733,8 +733,8 @@ def _parse_kernel_expert_response(
     # agent to also write the contract JSON to outputs/kernel_contract.json;
     # prefer that file when the text-extracted contract is incomplete.
     if not _kernel_contract_has_handoff(kernel_contract):
-        contract_file = paths_get_output_dir() / "kernel_contract.json"
-        if contract_file.exists():
+        contract_file = _resolve_agent_contract_file(paths_get_output_dir())
+        if contract_file and contract_file.exists():
             try:
                 data = json.loads(contract_file.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
@@ -868,6 +868,31 @@ def _newest_reproducer_mtime(outputs_dir: Path) -> float | None:
     except OSError:
         return None
     return max(mtimes) if mtimes else None
+
+
+def _resolve_agent_contract_file(workdir: Path | None) -> Path | None:
+    """Find the agent-written ``kernel_contract.json`` under ``workdir``.
+
+    The kernel-expert prompt instructs the agent to write the contract JSON to
+    ``outputs/kernel_contract.json`` relative to its workdir (which is
+    ``sessions/<id>`` in session mode). The file therefore lives at
+    ``sessions/<id>/outputs/kernel_contract.json``.
+
+    The pre-session code path also supported a flat layout where the workdir
+    was ``outputs/`` itself, so the file sat at ``outputs/kernel_contract.json``
+    (i.e. directly under ``workdir``). Check both locations and return the
+    one that exists. Prefer the nested ``outputs/`` location when both exist
+    — that is the documented contract path in the prompt.
+    """
+    if workdir is None or not str(workdir) or str(workdir) == ".":
+        return None
+    nested = workdir / "outputs" / "kernel_contract.json"
+    if nested.exists():
+        return nested
+    flat = workdir / "kernel_contract.json"
+    if flat.exists():
+        return flat
+    return None
 
 
 def _find_actual_reproducer_path(
@@ -1157,8 +1182,15 @@ def _extract_scalar_marker(text: str, marker: str) -> str:
     Uses [^\\S\\n] for whitespace so the regex stays on a single line — \\s*
     would consume the trailing newline and let (.+?) spill onto the next line
     (e.g. matching 'KERNEL_CONTRACT:' as the value of an empty BINARIES_DIR:).
+
+    Supports both plain ``MARKER:`` and markdown-bold ``**MARKER:**`` formats —
+    opencode CLI emits the bolded form, and the plain regex anchor ``^MARKER:``
+    fails to match ``**MARKER:**`` because the line starts with ``**``.
     """
-    match = re.search(rf"^{re.escape(marker)}:[^\S\n]*(.+?)[^\S\n]*$", text, re.MULTILINE)
+    pattern = (
+        rf"^(?:\*\*)?{re.escape(marker)}:(?:\*\*)?[^\S\n]*(?!\*\*)(.+?)[^\S\n]*$"
+    )
+    match = re.search(pattern, text, re.MULTILINE)
     if not match:
         return ""
     value = match.group(1).strip().strip("`'\"")
@@ -1194,8 +1226,14 @@ def _model_validate(model_cls, data: dict):
 def _extract_kernel_contract(text: str) -> KernelExpertOutput:
     """Extract JSON-first Kernel Expert contract from model output."""
     candidates: list[str] = []
+    # Allow optional ``**`` markdown-bold wrapper around the marker, since
+    # opencode CLI emits ``**KERNEL_CONTRACT:**`` instead of plain
+    # ``KERNEL_CONTRACT:``. Without this, the regex's ``KERNEL_CONTRACT:``
+    # would match the substring but ``\s*`` cannot consume the trailing ``**``,
+    # causing the whole fenced-json match to fail and the contract to fall
+    # through to disk recovery / auto-fill.
     fenced = re.search(
-        r"KERNEL_CONTRACT:\s*```(?:json)?\s*(.*?)\s*```",
+        r"\*{0,2}KERNEL_CONTRACT:\*{0,2}\s*```(?:json)?\s*(.*?)\s*```",
         text,
         re.DOTALL | re.IGNORECASE,
     )

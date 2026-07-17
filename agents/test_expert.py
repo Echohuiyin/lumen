@@ -246,6 +246,29 @@ EFFICIENCY RULES:
   retry multiple times. Explain that a bootable bzImage is needed.
 - Do NOT call create_ext4_rootfs or create_initramfs more than once — use the first result.
 
+CRITICAL — MODULES_DIR IS MANDATORY WHEN A .ko EXISTS:
+- The reproducer relies on `insmod /modules/<module>.ko` running inside the VM.
+- Both `create_ext4_rootfs` AND `create_initramfs` accept a `modules_dir` argument
+  that copies every `*.ko` (and `*.bin`) file from that directory into the VM's
+  `/modules/` directory at image-build time.
+- If `modules_dir` (or `reproducer_module_path` deriving a parent dir) is non-empty,
+  you MUST pass `modules_dir=<path>` to whichever creator tool you call. Forgetting
+  this argument leaves `/modules/` empty, the insmod fails, and the test can never
+  reproduce the bug. There is no other path the .ko can take into the VM.
+- The same applies to `binaries_dir` when a userspace trigger binary is part of
+  the reproducer — without it, `/bin/` will lack the trigger program.
+
+CRITICAL — FOR arm64/arm32, PREFER create_initramfs OVER create_ext4_rootfs:
+- arm64 kernels typically ship `CONFIG_VIRTIO_BLK=m` (module, not built-in).
+- `create_ext4_rootfs` attaches the image as a virtio-blk disk (`/dev/vda`), but
+  if virtio_blk is a module, the kernel cannot find the root device at boot and
+  panics with `VFS: Cannot open root device "/dev/vda"`.
+- `create_initramfs` runs entirely from ramfs; the kernel does not need any
+  block driver to reach userspace, so it bypasses the virtio_blk dependency.
+- For arm64/arm32, ALWAYS use `create_initramfs` (with `modules_dir=...` when
+  a .ko exists). Reserve `create_ext4_rootfs` for x86_64 where virtio_blk is
+  built-in to the test kernels.
+
 REQUIRED execution flow:
 1. Call check_qemu_available(arch="{target_arch}") to verify QEMU
 2. Call create_ext4_rootfs(arch="{target_arch}") ONCE. If Test script exists, pass test_script_path={test_script_path or 'N/A'}.

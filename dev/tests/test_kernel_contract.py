@@ -10,10 +10,12 @@ sys.path.insert(0, str(project_root))
 from agents.kernel_expert import (
     _extract_section,
     _extract_kernel_contract,
+    _extract_scalar_marker,
     _kernel_contract_from_markers,
     _kernel_contract_ready_for_test,
     _merge_kernel_contract,
     _normalize_evidence_field,
+    _resolve_agent_contract_file,
     _validate_kernel_contract_artifacts,
 )
 from graph.rn_router import route_after_kernel
@@ -288,20 +290,174 @@ KERNEL_CONTRACT:
     ]
 
 
+def test_extract_scalar_marker_handles_markdown_bold_format():
+    """opencode CLI emits ``**MARKER:** value`` instead of ``MARKER: value``.
+
+    The regex anchor ``^MARKER:`` fails to match ``**MARKER:**`` because the
+    line starts with ``**``. Regression test for the arm64 deadlock case where
+    the LLM produced bolded markers and the contract fell through to auto-fill.
+    """
+    text = """Some preamble text.
+
+**TARGET_ARCH:** arm64
+**BOOT_KERNEL_PATH:** /tmp/Image
+**TEST_SCRIPT_PATH:** /tmp/test.sh
+**EXPECTED_SIGNAL:** blocked for more than
+**BINARIES_DIR:**
+
+trailing context
+"""
+    assert _extract_scalar_marker(text, "TARGET_ARCH") == "arm64"
+    assert _extract_scalar_marker(text, "BOOT_KERNEL_PATH") == "/tmp/Image"
+    assert _extract_scalar_marker(text, "TEST_SCRIPT_PATH") == "/tmp/test.sh"
+    assert _extract_scalar_marker(text, "EXPECTED_SIGNAL") == "blocked for more than"
+    # Empty placeholder (markdown bold) must still be treated as empty
+    assert _extract_scalar_marker(text, "BINARIES_DIR") == ""
+
+
+def test_extract_scalar_marker_still_handles_plain_format():
+    """Plain ``MARKER: value`` format must continue to work after the
+    markdown-bold fix (no regression on x86 sessions that use plain markers)."""
+    text = """
+TARGET_ARCH: x86_64
+EXPECTED_SIGNAL: Kernel panic
+"""
+    assert _extract_scalar_marker(text, "TARGET_ARCH") == "x86_64"
+    assert _extract_scalar_marker(text, "EXPECTED_SIGNAL") == "Kernel panic"
+
+
+def test_extract_kernel_contract_handles_markdown_bold_marker():
+    r"""``**KERNEL_CONTRACT:**`` followed by `` ```json `` fence must parse.
+
+    Regression for the arm64 deadlock case where opencode CLI emitted the
+    bolded marker and the regex's ``KERNEL_CONTRACT:\s*``` failed to match
+    (because ``\s*`` cannot consume the trailing ``**``).
+    """
+    text = """preamble
+
+**KERNEL_CONTRACT:**
+```json
+{
+  "status": "ok",
+  "target_arch": "arm64",
+  "boot_kernel_path": "/tmp/Image",
+  "reproducer_dir": "outputs/repro",
+  "reproducer_module_path": "outputs/repro/repro.ko",
+  "test_script_path": "outputs/repro/test.sh",
+  "expected_signal": "blocked for more than"
+}
+```
+"""
+    contract = _extract_kernel_contract(text)
+    assert contract.status == "ok", f"status={contract.status}"
+    assert contract.target_arch == "arm64"
+    assert contract.boot_kernel_path == "/tmp/Image"
+    assert contract.expected_signal == "blocked for more than"
+
+
+def test_extract_kernel_contract_plain_format_still_works():
+    """Plain ``KERNEL_CONTRACT:`` (no markdown bold) must still parse."""
+    text = """
+KERNEL_CONTRACT:
+```json
+{"status": "ok", "target_arch": "x86_64", "expected_signal": "panic"}
+```
+"""
+    contract = _extract_kernel_contract(text)
+    assert contract.status == "ok"
+    assert contract.target_arch == "x86_64"
+    assert contract.expected_signal == "panic"
+
+
+def test_resolve_agent_contract_file_finds_nested_outputs_layout(tmp_path):
+    """Session-mode layout: agent workdir is ``sessions/<id>``, prompt
+    instructs agent to write ``outputs/kernel_contract.json`` (relative).
+    The file therefore sits at ``<workdir>/outputs/kernel_contract.json``.
+    """
+    nested = tmp_path / "outputs" / "kernel_contract.json"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("{}")
+    resolved = _resolve_agent_contract_file(tmp_path)
+    assert resolved == nested
+
+
+def test_resolve_agent_contract_file_finds_flat_layout(tmp_path):
+    """Pre-session legacy layout: agent workdir was ``outputs/`` itself,
+    so the file sat directly at ``<workdir>/kernel_contract.json``.
+    """
+    flat = tmp_path / "kernel_contract.json"
+    flat.write_text("{}")
+    resolved = _resolve_agent_contract_file(tmp_path)
+    assert resolved == flat
+
+
+def test_resolve_agent_contract_file_prefers_nested_when_both_exist(tmp_path):
+    """When both layouts exist (e.g., a stale flat file from an earlier run
+    plus a fresh nested file from the current run), prefer the nested one
+    — that is the documented contract path in the kernel-expert prompt.
+    """
+    flat = tmp_path / "kernel_contract.json"
+    flat.write_text("{}")
+    nested = tmp_path / "outputs" / "kernel_contract.json"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("{}")
+    resolved = _resolve_agent_contract_file(tmp_path)
+    assert resolved == nested
+
+
+def test_resolve_agent_contract_file_returns_none_when_missing(tmp_path):
+    """No contract file anywhere → return None (caller falls back to
+    auto-fill)."""
+    assert _resolve_agent_contract_file(tmp_path) is None
+
+
+def test_resolve_agent_contract_file_handles_empty_workdir():
+    """Defensive: empty/None workdir returns None instead of crashing."""
+    from pathlib import Path
+    assert _resolve_agent_contract_file(Path("")) is None
+    assert _resolve_agent_contract_file(None) is None
+
+
 if __name__ == "__main__":
+    import tempfile
+    import pathlib
+
     for test in [
         test_extract_kernel_contract_json_with_nested_evidence,
+        test_uaf_path_sections_are_preserved_in_contract,
         test_marker_fallback_blocks_incomplete_handoff,
         test_merge_fills_json_with_marker_fallback,
         test_validate_kernel_contract_rejects_elf_vmlinux,
         test_validate_kernel_contract_rejects_missing_expected_signal,
         test_validate_kernel_contract_missing_script_generates_warning,
+        test_validate_kernel_contract_rejects_syntactically_broken_test_script,
+        test_validate_kernel_contract_valid_test_script_adds_evidence,
         test_route_after_kernel_uses_contract,
         test_normalize_evidence_field_coerces_strings_to_dicts,
         test_normalize_evidence_field_preserves_dicts,
         test_normalize_evidence_field_noop_when_missing,
         test_normalize_evidence_field_rejects_non_list,
         test_extract_kernel_contract_accepts_evidence_list_of_strings,
+        test_extract_scalar_marker_handles_markdown_bold_format,
+        test_extract_scalar_marker_still_handles_plain_format,
+        test_extract_kernel_contract_handles_markdown_bold_marker,
+        test_extract_kernel_contract_plain_format_still_works,
     ]:
         test()
+
+    # tmp_path-parametrized tests — pytest provides tmp_path; in __main__
+    # mode we emulate it with tempfile.TemporaryDirectory.
+    def _run_with_tmp(test_fn):
+        with tempfile.TemporaryDirectory() as td:
+            test_fn(pathlib.Path(td))
+
+    for test in [
+        test_resolve_agent_contract_file_finds_nested_outputs_layout,
+        test_resolve_agent_contract_file_finds_flat_layout,
+        test_resolve_agent_contract_file_prefers_nested_when_both_exist,
+        test_resolve_agent_contract_file_returns_none_when_missing,
+    ]:
+        _run_with_tmp(test)
+
+    test_resolve_agent_contract_file_handles_empty_workdir()
     print("kernel_contract OK")

@@ -27,7 +27,13 @@ class CheckQemuInput(BaseModel):
 
 
 class CreateInitramfsInput(BaseModel):
-    """Input schema for create_initramfs."""
+    """Input schema for create_initramfs.
+
+    modules_dir is REQUIRED when the reproducer needs a .ko inside the VM:
+    passing it ensures every *.ko in that directory is copied to /modules/
+    so `insmod /modules/<name>.ko` works at boot. Leaving it empty means
+    the .ko never reaches the VM and insmod will fail.
+    """
     arch: str = "x86_64"
     test_script_path: Optional[str] = None
     modules_dir: Optional[str] = None
@@ -36,7 +42,13 @@ class CreateInitramfsInput(BaseModel):
 
 
 class CreateExt4RootfsInput(BaseModel):
-    """Input schema for create_ext4_rootfs."""
+    """Input schema for create_ext4_rootfs.
+
+    modules_dir is REQUIRED when the reproducer needs a .ko inside the VM:
+    passing it ensures every *.ko in that directory is copied to /modules/
+    so `insmod /modules/<name>.ko` works at boot. Leaving it empty means
+    the .ko never reaches the VM and insmod will fail.
+    """
     arch: str = "x86_64"
     test_script_path: Optional[str] = None
     modules_dir: Optional[str] = None

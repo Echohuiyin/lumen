@@ -2004,3 +2004,219 @@ UAF 分析按以下可恢复阶段提交：
 5. kernel source、prompt 或代码变化后相关 checkpoint 正确失效。
 6. QEMU 连续失败触发熔断，但所有 UAF 路径仍进入最终输出。
 7. Knowledge Base 调用失败时，确定性报告和原始 contract 仍成功落盘。
+
+---
+
+# E2E 稳定性跟踪（当前主线目标）
+
+## 目标
+
+最终目的：4 个 E2E 用例能稳定通过。
+
+- x86_64 deadlock（mutex ABBA）
+- arm64 deadlock（mutex ABBA，跨架构回归）
+- x86_64 uaf（kref refcount leak）
+- x86_64 kvm-x86（pvqspinlock WARNING）
+
+"稳定通过"的定义：连续 3 次跑 `python dev/scripts/run_e2e_checks.py` 都 PASS（pipeline ≥5/6 + stdout 含 `成功复现`），不允许偶发 PASS / 偶发 INCONCLUSIVE。
+
+## 当前状态（2026-07-16）
+
+| # | 用例 | 状态 | 备注 |
+|---|------|------|------|
+| 1 | x86_64 deadlock | 🟢 **稳定（3/3）** | 326s / 312s / 329s，连续 3 次 6/6 + QEMU 复现 |
+| 2 | arm64 deadlock | 🟡 **3/6 PASS**（LLM flakiness） | Round 2/3/6 PASS（成功复现）；Round 1 contract regex bug（已修）；Round 4 `create_initramfs` 漏 modules_dir；Round 5 `create_ext4_rootfs` + `CONFIG_VIRTIO_BLK=m` 失败。Prompt 已加强（modules_dir MANDATORY + arm64 优先 initramfs），Round 6 PASS 验证有效。 |
+| 3 | x86_64 uaf | 🟢 **稳定（3/3）** | 406s / 372s / 342s，连续 3 次 6/6 + QEMU 复现 |
+| 4 | x86_64 kvm-x86 | 🟢 **稳定（3/3）** | 650s / 701s / 542s，连续 3 次 6/6 + QEMU 复现 |
+
+### 最近进展
+
+**2026-07-16 提交 `961b69e fix: normalize LLM evidence field + minor gate hygiene`**
+
+修复 `test_test_expert_capability[deadlock|uaf]` INCONCLUSIVE_NO_EXPECTED_SIGNAL 失败。
+
+- 根因：LLM 写 `evidence: list[str]`，pydantic ValidationError 被 `kernel_expert.py:681` broad except 静默吞掉，落到空 fallback contract（`expected_signal=""`）。
+- 引入 commit：`bae8570`/`9f279ea0`（evidence 严格类型，06-21）+ `0da68f7`（broad except，07-12）。
+- 修复方案 B+D（保守组合）：
+  - B 代码侧：新增 `_normalize_evidence_field()`，把 `list[str]` 原地转 `list[{"note": str}]`，schema 保持严格。3 个 LLM 入口点（kernel_expert.py:663/742/1198）都加。
+  - D prompt 侧：`prompts/kernel_expert.md` 给出 evidence 的 dict 形状示例 + 推荐字段 `{kind, field, path, note}`。
+- 测试：5 个新离线单元测试 + 在线 `test_kernel_expert_capability[deadlock|uaf]` 增加 evidence-dict 断言。
+- 门禁：`pre-push-ci --full --online` = 190/190 PASSED in 40m06s，0 新失败、0 回归。
+- 附带修了 2 个 pytest warning + hardcoded-paths EXCLUDE 加 `.claude/` 和 `e2e_no_reproduce_analysis.md`。
+
+### 历史进展（之前会话）
+
+- **btrfs NUMA panic**：5/5 稳定性测试通过，0 panic，已自愈。
+- **kvm-x86 /dev/kvm 权限拒绝**：5/5 稳定性测试通过，strace 确认 KVM_CREATE_VM 成功，已自愈。
+- **uaf**：commit `ddea616` 修复 refcount 路径分析后稳定复现，`961b69e` 进一步修复 evidence schema 问题。
+- 3 个不复现分析详见 `e2e_no_reproduce_analysis.md`。
+
+## 待办（按优先级）
+
+### P0-1：验证 3 个 x86 用例 E2E 稳定性
+
+**目的**：capability 测试通过 ≠ E2E 通过。E2E 走完整 6 阶段 LangGraph，可能暴露 retry 路径、knowledge_base 归档、contract 漂移等问题。
+
+**命令**：
+```bash
+source venv/bin/activate
+export PATH="${HOME}/.opencode/bin:$PATH"  # opencode binary 必须在 PATH
+python dev/scripts/run_e2e_checks.py --cases deadlock uaf kvm-x86
+```
+
+**预计耗时**：20-40 min（3 个并行）。
+
+**验收标准**：连续 3 次跑都 PASS。任一失败则按 [[diagnosis-must-locate-commit]] 规则做根因 + 引入 commit 定位。
+
+### P0-2：验证 arm64 deadlock E2E
+
+**资产已就绪**（2026-07-07 构建完成）：
+- `test_assets/deadlock_arm64/`：vmlinux 436MB / Image 38MB / vmcore.elf 536MB / mutex_abba_deadlock.ko 299KB / boot.log / input.txt / REPRODUCTION.md / Makefile / init_script.sh / commit_id.txt / kernel_version.txt
+- 编排脚本：`scripts/build_arm64_deadlock_testcase.sh`（324 行，幂等可重跑）
+- 计划文档：`.claude/plans/async-seeking-mochi.md`（已实施）
+
+**待执行**：
+1. 跑 `python main.py --input test_assets/deadlock_arm64/input.txt --config config.json`（验证 arm64 跨架构工作流）
+2. 验收：pipeline ≥5/6 + stdout 含 `成功复现`
+3. 连续 3 次都 PASS
+
+**注意：`run_e2e_checks.py` 当前不支持 `deadlock_arm64`**（choices 只有 `deadlock/uaf/btrfs/kvm-x86`，行 342）。P0-2 要直接跑 `main.py`，或扩展 `run_e2e_checks.py` 加 arm64 case（后者更优，能让 arm64 进入 E2E 自动化）。
+
+**关键点**：
+- `input.txt` 故意不写 `target_arch:`，验证 `_sniff_arch_from_elf` 自动从 vmlinux ELF e_machine=183 推导出 arm64
+- vmcore.elf 权限是 400（`-r--------`），可能需要 `chmod 444` 让 crash 能读
+- arm64 QEMU 用 TCG（host 是 x86_64），慢 5-10 倍，timeout 必须传 300s+
+
+### P0-3：跑全套 4 用例 E2E 验证
+
+**命令**：
+```bash
+python dev/scripts/run_e2e_checks.py  # 4 个并行
+```
+
+**验收标准**：
+- 4 个用例都 PASS（pipeline ≥5/6 + stdout 含 `成功复现`）
+- 连续 3 次都 PASS
+- 0 个 INCONCLUSIVE / PARTIAL / FAIL / BLOCKED
+
+## 进度日志
+
+| 日期 | 事件 | 结果 |
+|------|------|------|
+| 2026-07-16 | 提交 `961b69e`：normalize LLM evidence field | gate 190/190 PASSED in 40m06s |
+| 2026-07-16 | `test_test_expert_capability[deadlock\|uaf]` 修复验证 | 2 个原失败 case 都 PASS |
+| 2026-07-16 | capability 级测试全过 | test_agent_capabilities + 全套离线单元测试 |
+| 2026-07-16 | 发现 arm64 deadlock 资产已存在 | 2026-07-07 已构建全套产物 + 编排脚本，状态从 🔴 改为 🟡 |
+| 2026-07-16 | 启动 P0-1：3 个 x86 用例 E2E 验证 | task `bhho6kdi4`，预计 20-40 min |
+| 2026-07-16 | P0-1 第 1 轮 ALL PASS | deadlock 326s / uaf 406s / kvm-x86 650s，6/6 stages + QEMU 复现 |
+| 2026-07-17 | P0-1 第 2 轮 ALL PASS | deadlock 312s / uaf 372s / kvm-x86 701s，6/6 + QEMU 复现 |
+| 2026-07-17 | P0-1 第 3 轮启动 | task `bybis059m` |
+| 2026-07-17 | **P0-1 第 3 轮 ALL PASS — x86 3/3 稳定** | deadlock 329s / uaf 342s / kvm-x86 542s |
+| 2026-07-17 | P0-2 arm64 deadlock Round 1 失败 | contract `expected_signal=''` → status=blocked → 路由到 knowledge_base，未复现 |
+| 2026-07-17 | 定位 arm64 contract 根因 | 详见下方"arm64 deadlock 修复"小节 |
+| 2026-07-17 | 修复 arm64 contract bug（regex + path） | 3 处代码修复 + 9 个新单元测试，165/165 离线测试通过 |
+| 2026-07-17 | P0-2 arm64 deadlock Round 2 PASS | **成功复现**：QEMU 找到 `blocked for more than`，1/1 验证 |
+| 2026-07-17 | P0-2 arm64 deadlock Round 3 PASS | **成功复现**：QEMU 找到 `blocked for more than`，1/1 验证 |
+| 2026-07-17 | P0-2 arm64 deadlock Round 4 FAIL | LLM 用 `create_initramfs` 但漏 `modules_dir` → /modules/ 空 → insmod 失败 → sysrq 手动 panic |
+| 2026-07-17 | 加强 test_expert prompt + 工具 schema docstring | modules_dir 标记为 MANDATORY，5 个新单元测试 |
+| 2026-07-17 | P0-2 arm64 deadlock Round 5 FAIL | LLM 用 `create_ext4_rootfs` → `CONFIG_VIRTIO_BLK=m` 非 built-in → `VFS: Cannot open root device /dev/vda` |
+| 2026-07-17 | 加强 test_expert prompt：arm64 优先 `create_initramfs` | 避开 `CONFIG_VIRTIO_BLK=m` 问题，新增 1 个测试 |
+| 2026-07-17 | P0-2 arm64 deadlock Round 6 PASS | **成功复现**：QEMU 找到 `blocked for more than`，2 次验证（第 1 次失败 + retry 成功），prompt 加强有效 |
+| 待办 | P0-2 arm64 deadlock Round 7+ 验证 | 目标 3 连续 PASS |
+| 待办 | P0-2 验证 arm64 deadlock E2E Round 3 | 资产已就绪，用 main.py 直接跑 |
+| 待办 | P0-3 跑全套 4 用例 E2E 验证 | - |
+
+## arm64 deadlock 修复（2026-07-17）
+
+**问题**：arm64 deadlock E2E Round 1 走到 knowledge_base 而非 test_expert，未复现。`contract诊断` 显示 `expected_signal=''` → `status=blocked` → `ready_for_test=False`。
+
+### 根因（共 3 个 bug，连锁触发）
+
+1. **Regex bug** — `_extract_kernel_contract` (`agents/kernel_expert.py:1235`) 的正则 `KERNEL_CONTRACT:\s*```...` 无法匹配 opencode CLI 输出的 `**KERNEL_CONTRACT:**` markdown-bold 格式（`\s*` 不能消费 `:` 后的 `**`）。
+2. **Regex bug** — `_extract_scalar_marker` (`agents/kernel_expert.py:1190`) 的正则 `^MARKER:...` 同样无法匹配 `**MARKER:**`（`^` 要求行首是 `M`，但行首是 `*`）。
+3. **Path bug** — disk contract recovery（line 658 + 736）查找 `paths_get_output_dir() / "kernel_contract.json"`，但实际 agent 写入路径是 `<workdir>/outputs/kernel_contract.json`（workdir=`sessions/<id>`），少了 `outputs/` 子目录，文件NotFoundError → 兜底失败。
+
+### 为什么 x86 案例没暴露
+
+- x86 `deadlock` test.sh 内含 `echo "Expected kernel log: 'blocked for more than'"` → `_infer_signal_from_test_sh` 扫到 → auto-fill `expected_signal='blocked for more than'` → status=ok → 进入 test_expert。
+- x86 `kvm-x86` test.sh 内含 `# Expected: pvqspinlock corruption WARNING` → auto-fill `expected_signal='WARNING'`（虽然不精确，但通过 has_handoff 校验）→ status=ok → 进入 test_expert。
+- arm64 test.sh 内**不含任何** `_KNOWN_SIGNAL_TOKENS` 中的字符串（只有 "Mutex ABBA Deadlock"），auto-fill 失败，`expected_signal=''` → status=blocked → 路由到 knowledge_base。
+
+### 修复方案
+
+| 修复点 | 文件:行 | 改动 |
+|--------|---------|------|
+| `_extract_scalar_marker` 支持 `**MARKER:**` | `agents/kernel_expert.py:1190-1199` | 正则改为 `^(?:\*\*)?MARKER:(?:\*\*)?[^\S\n]*(?!\*\*)(.+?)[^\S\n]*$`（negative lookahead 防止空 `**BINARIES_DIR:**` 误匹配 `**`） |
+| `_extract_kernel_contract` 支持 `**KERNEL_CONTRACT:**` | `agents/kernel_expert.py:1235-1240` | 正则改为 `\*{0,2}KERNEL_CONTRACT:\*{0,2}\s*```...``` |
+| 新增 `_resolve_agent_contract_file` 修复 disk path | `agents/kernel_expert.py:873-901` | 检查 `<workdir>/outputs/kernel_contract.json`（session 模式）和 `<workdir>/kernel_contract.json`（pre-session 模式），优先 nested |
+| Line 658 + 736 改用新 helper | `agents/kernel_expert.py:658, 736` | `outputs_dir / "kernel_contract.json"` → `_resolve_agent_contract_file(outputs_dir)` |
+
+### 测试覆盖（per 约束 #5）
+
+新增 9 个单元测试（`dev/tests/test_kernel_contract.py`）：
+- `test_extract_scalar_marker_handles_markdown_bold_format` — `**MARKER:**` 4 个 marker + 空 placeholder
+- `test_extract_scalar_marker_still_handles_plain_format` — 回归：`MARKER:` 普通格式不破
+- `test_extract_kernel_contract_handles_markdown_bold_marker` — `**KERNEL_CONTRACT:**` 完整 JSON 抽取
+- `test_extract_kernel_contract_plain_format_still_works` — 回归
+- `test_resolve_agent_contract_file_finds_nested_outputs_layout` — session 模式路径
+- `test_resolve_agent_contract_file_finds_flat_layout` — pre-session 路径
+- `test_resolve_agent_contract_file_prefers_nested_when_both_exist` — 双布局优先级
+- `test_resolve_agent_contract_file_returns_none_when_missing` — 文件不存在返回 None
+- `test_resolve_agent_contract_file_handles_empty_workdir` — 空 workdir 不崩溃
+
+### 回归风险（per 约束 #3）
+
+- 修复 1 + 2（regex）：新正则兼容老格式（plain + bold），无回归。所有 165 个离线测试通过，包括 12 个原有 `test_kernel_contract.py` 测试。
+- 修复 3（path）：disk recovery 之前因 path bug 兜底失败 → auto-fill 接管。修复后 disk recovery 成功 → 加载 agent 写入的 contract（更准确）。`_kernel_contract_has_handoff(file_contract)` 校验仍在（4 个必填字段），不完整契约仍会兜底，无风险。
+
+### 验证
+
+- 165 个离线测试全过（16 个 online 跳过）
+- arm64 Round 2 实测：`问题分析已完成（成功复现）`，QEMU `SUMMARY: Expected signal was found in QEMU boot log: blocked for more than`，`CODE: PASSED_REPRODUCED`
+
+## arm64 deadlock 后续 LLM flakiness 分析（2026-07-17）
+
+Round 1 修复后，Round 2/3 PASS，但 Round 4/5 仍 FAIL。根因不在工作流代码，而是 **LLM 工具选择 flaky**：
+
+### Round 4 失败：`create_initramfs` 漏 `modules_dir`
+
+- LLM 调用 `create_initramfs`（合理选择），但**漏传 `modules_dir`**
+- initramfs 内 `/modules/` 目录为空（无 .ko 文件）
+- test.sh 在 insmod 失败时 fallback 到 `echo c > /proc/sysrq-trigger` 手动 panic
+- QEMU boot log 出现 `sysrq triggered crash` 而非 `blocked for more than`
+- **已加强**：test_expert prompt 新增 "CRITICAL — MODULES_DIR IS MANDATORY WHEN A .ko EXISTS" 段落；`CreateInitramfsInput`/`CreateExt4RootfsInput` docstring 标记 modules_dir REQUIRED。5 个新单元测试。
+
+### Round 5 失败：`create_ext4_rootfs` + `CONFIG_VIRTIO_BLK=m`
+
+- LLM 改用 `create_ext4_rootfs`（不是 initramfs）
+- 工作流 QEMU 命令对 arm64 使用 `-device virtio-blk-device,drive=rootfs`
+- 但 OLK-6.6 arm64 内核 `CONFIG_VIRTIO_BLK=m`（模块形式，非 built-in）
+- 没有 initramfs 加载 virtio_blk 模块 → kernel 无法识别 /dev/vda → `VFS: Cannot open root device`
+- **未修复**：两个可选方案
+  1. **prompt 加强**：让 LLM 对 arm64 优先选 `create_initramfs`（避免 virtio_blk 依赖）
+  2. **kernel rebuild**：`CONFIG_VIRTIO_BLK=y`（built-in），需要重新编 arm64 kernel（~30-60 min）
+
+### LLM flakiness 总结
+
+| Round | 工具选择 | modules_dir | 结果 |
+|-------|---------|-------------|------|
+| 1 | create_initramfs | ✓ | FAIL (contract bug，已修) |
+| 2 | create_initramfs | ✓ | PASS |
+| 3 | create_initramfs | ✓ | PASS |
+| 4 | create_initramfs | ✗（漏传） | FAIL |
+| 5 | create_ext4_rootfs | ✓ | FAIL（virtio_blk 模块） |
+
+3/5 用 initramfs + 正确传 modules_dir 都 PASS；其他变体 FAIL。结论：**arm64 用 initramfs 是稳定路径**，需加强 prompt 让 LLM 永远走这条路。
+
+
+## 约束（已存入 memory，对应工作要遵守）
+
+- [[diagnosis-must-locate-commit]]：分析问题不仅要找原因，还要找引入问题的 commit/代码
+- [[fixes-must-check-regression-risk]]：修复方案要考虑是否会引入新问题，机制变更需工作流级影响分析
+- [[pre-commit-gate-required]]：每次提交前都要跑门禁，门禁全部通过才能提交
+- [[new-features-need-tests-in-gate]]：每新增功能都要增加单元测试 + 在线 LLM 测试，加入门禁
+
+## 不在当前主线范围内（但相关）
+
+- spec.md 前面的重构记录（Phase 1-5、UAF 形式化、长链路 Agent 可靠性设计）是历史背景，部分已完成（Phase 1 输入 artifact contract、contract 校验、prompt 一致性），部分仍在推进（Phase 2 结构化路径 contract、Phase 4 因果复现验证、长链路 R1-R5）。这些是 E2E 稳定性的底层支撑，不直接是 4 用例主线任务。
+
