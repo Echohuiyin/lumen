@@ -2025,7 +2025,7 @@ UAF 分析按以下可恢复阶段提交：
 | # | 用例 | 状态 | 备注 |
 |---|------|------|------|
 | 1 | x86_64 deadlock | 🟢 **稳定（3/3）** | 326s / 312s / 329s，连续 3 次 6/6 + QEMU 复现 |
-| 2 | arm64 deadlock | 🟡 **3/6 PASS**（LLM flakiness） | Round 2/3/6 PASS（成功复现）；Round 1 contract regex bug（已修）；Round 4 `create_initramfs` 漏 modules_dir；Round 5 `create_ext4_rootfs` + `CONFIG_VIRTIO_BLK=m` 失败。Prompt 已加强（modules_dir MANDATORY + arm64 优先 initramfs），Round 6 PASS 验证有效。 |
+| 2 | arm64 deadlock | 🟢 **稳定（3/3 后续）** | Round 1 失败（contract regex bug，已修）；Round 4/5 LLM 工具选择 flaky（已通过 prompt 加强修复）；**Round 6/7/8 连续 3 次 PASS**，QEMU 复现 `blocked for more than`。详情见下方"arm64 deadlock 修复"。 |
 | 3 | x86_64 uaf | 🟢 **稳定（3/3）** | 406s / 372s / 342s，连续 3 次 6/6 + QEMU 复现 |
 | 4 | x86_64 kvm-x86 | 🟢 **稳定（3/3）** | 650s / 701s / 542s，连续 3 次 6/6 + QEMU 复现 |
 
@@ -2122,7 +2122,11 @@ python dev/scripts/run_e2e_checks.py  # 4 个并行
 | 2026-07-17 | P0-2 arm64 deadlock Round 5 FAIL | LLM 用 `create_ext4_rootfs` → `CONFIG_VIRTIO_BLK=m` 非 built-in → `VFS: Cannot open root device /dev/vda` |
 | 2026-07-17 | 加强 test_expert prompt：arm64 优先 `create_initramfs` | 避开 `CONFIG_VIRTIO_BLK=m` 问题，新增 1 个测试 |
 | 2026-07-17 | P0-2 arm64 deadlock Round 6 PASS | **成功复现**：QEMU 找到 `blocked for more than`，2 次验证（第 1 次失败 + retry 成功），prompt 加强有效 |
-| 待办 | P0-2 arm64 deadlock Round 7+ 验证 | 目标 3 连续 PASS |
+| 2026-07-17 | P0-2 arm64 deadlock Round 7 PASS | **成功复现**：QEMU 找到 `blocked for more than`，1/1 验证 |
+| 2026-07-17 | P0-2 arm64 deadlock Round 8 PASS | **成功复现**：QEMU 找到 `blocked for more than`，2/2 验证（含 retry） |
+| 2026-07-17 | **P0-2 完成：arm64 deadlock 3 连续 PASS（Rounds 6/7/8）** | 状态从 🟡 → 🟢 |
+| 2026-07-17 | **P0-3 完成：4 用例并行 E2E 全 PASS** | deadlock 320s / uaf 296s / kvm-x86 499s / arm64 deadlock 成功复现，无跨用例干扰 |
+| 待办 | （全部完成） | P0-1/P0-2/P0-3 都已完成 |
 | 待办 | P0-2 验证 arm64 deadlock E2E Round 3 | 资产已就绪，用 main.py 直接跑 |
 | 待办 | P0-3 跑全套 4 用例 E2E 验证 | - |
 
