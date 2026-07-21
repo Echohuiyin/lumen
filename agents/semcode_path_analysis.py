@@ -95,6 +95,15 @@ def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_pat
         except Exception as exc:
             return json.dumps({"status": "blocked", "type": name, "error": str(exc)}, ensure_ascii=False)
 
+    def find_callchain(name: str) -> str:
+        try:
+            result = client._call("find_callchain", {"name": name})
+            if evidence_sink is not None:
+                evidence_sink.append({"kind": "semcode_callchain", "function": name, "result": result[:4000]})
+            return result
+        except Exception as exc:
+            return json.dumps({"status": "blocked", "function": name, "error": str(exc)}, ensure_ascii=False)
+
     return [
         StructuredTool.from_function(
             func=find_function, name="semcode_find_function",
@@ -114,6 +123,11 @@ def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_pat
         StructuredTool.from_function(
             func=find_type, name="semcode_find_type",
             description="Locate a kernel struct or type in the indexed source tree.",
+            args_schema=SemcodeFunctionInput,
+        ),
+        StructuredTool.from_function(
+            func=find_callchain, name="semcode_find_callchain",
+            description="Resolve a bounded call chain for a kernel function.",
             args_schema=SemcodeFunctionInput,
         ),
     ]

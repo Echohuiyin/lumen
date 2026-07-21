@@ -432,6 +432,7 @@ def _run_tool_calling_analysis(
                 "- semcode_find_callers: list callers from the indexed kernel source\n"
                 "- semcode_find_callees: list direct callees from the indexed kernel source\n"
                 "- semcode_find_type: locate a kernel struct or type\n"
+                "- semcode_find_callchain: resolve a bounded call chain\n"
             )
         context_info = f"""Crash analysis environment ready:
 - vmcore: {vmcore_path}

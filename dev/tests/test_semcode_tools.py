@@ -10,6 +10,7 @@ def test_semcode_tool_adapter_exposes_bounded_source_queries():
     assert [tool.name for tool in tools] == [
         "semcode_find_function", "semcode_find_callers",
         "semcode_find_callees", "semcode_find_type",
+        "semcode_find_callchain",
     ]
     for tool in tools:
         schema = tool.args_schema.model_json_schema()
