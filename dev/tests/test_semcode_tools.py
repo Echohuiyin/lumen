@@ -1,4 +1,6 @@
 from pathlib import Path
+import os
+import pytest
 
 from agents.semcode_path_analysis import create_semcode_tools
 
@@ -24,3 +26,20 @@ def test_semcode_tool_adapter_does_not_expose_shell_arguments():
     for tool in tools:
         assert "command" not in tool.args_schema.model_fields
         assert "args" not in tool.args_schema.model_fields
+
+
+@pytest.mark.online
+def test_real_semcode_adapter_query_when_index_is_deployed():
+    source = Path(os.environ.get("LUMEN_KERNEL_SOURCE", "/home/lmr/linux-next"))
+    binary = Path(os.environ.get(
+        "LUMEN_SEMCODE_MCP",
+        "Analysis-SKILL/tools/semcode/target/release/semcode-mcp",
+    ))
+    if not source.is_dir() or not (source / ".semcode.db").exists() or not binary.is_file():
+        pytest.skip("real Semcode index/binary is not deployed")
+    tools = create_semcode_tools(
+        command=str(binary), args=[], kernel_source_path=str(source),
+    )
+    result = tools[0].invoke({"name": "kfree"})
+    assert '"function": "kfree"' in result
+    assert '"location"' in result
