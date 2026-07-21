@@ -232,7 +232,7 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
             parts.append(f"- {f['name']} ({kind_label}): {f['path']}")
         parts.append("")
         parts.append("**决策树**：")
-        parts.append("1. 有 syzbot_repro_binary → 直接复用，binaries_dir 填该目录，test.sh 跑 `/bin/<repro>`")
+        parts.append("1. 有 syzbot_repro_binary → 直接复用，binaries_dir 填该目录，并用 execution_steps 声明 run_binary")
         parts.append("2. 有 syzbot_repro_source → 先尝试编译（gcc -static），失败则降级到自写 PoC")
         parts.append("3. 有 kernel_module → 直接复用，reproducer_module_path 填该 .ko")
         parts.append("4. 有 reproduction_notes → 必读，里面有 smp/numa/timeout 等关键配置")
