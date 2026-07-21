@@ -101,7 +101,11 @@ auto eth0
 iface eth0 inet dhcp
 EOF
     sudo chroot "$rootfs" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get update
-    guest_packages=(openssh-server kmod iproute2 ca-certificates coreutils)
+    guest_packages=(
+        openssh-server kmod iproute2 ca-certificates coreutils
+        curl tar time strace psmisc iputils-ping dnsutils
+        gcc libc6-dev make git gdb
+    )
     if [[ "$lumen_arch" == "arm64" ]]; then
         # arm64 TCG on an x86 host may have too little entropy for sshd to
         # create host keys promptly; this is the same issue called out by

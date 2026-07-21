@@ -120,7 +120,10 @@ Lumen selects `crash_x86_64` or `crash_arm64` from
 builds both from crash source, and also builds static BusyBox binaries for both
 architectures under `Analysis-SKILL/`. `deploy.sh` also creates ignored Debian
 SSH images under `runtime/qemu-ssh/` for x86_64 and arm64; QEMU remains alive
-across PoC iterations for the same immutable guest identity.
+across PoC iterations for the same immutable guest identity. The guest images
+include SSH, basic networking, common diagnostics, and the compiler/debugger
+runtime used by PoC validation (`curl`, `iproute2`, `strace`, `gcc`, `make`,
+`gdb`, and related base packages).
 
 ## Project Structure
 
