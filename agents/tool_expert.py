@@ -13,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from agents.contracts import ToolExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_display, set_session_dir, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.rag_integration import get_rag_context_for_query
+from agents.semcode_path_analysis import create_semcode_tools
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
 
@@ -410,10 +411,25 @@ def _run_tool_calling_analysis(
 
         evidence, artifacts, evidence_errors, evidence_context = _collect_crash_evidence(session, expert_type=expert_type)
 
-        # Create session-bound tools
+        # Create session-bound tools plus bounded Semcode source lookups.
         crash_tools = create_crash_tools(session)
+        artifacts = state.get("input_artifacts_contract") or {}
+        source_path = artifacts.get("kernel_source_path", "")
+        semcode_cfg = agent_config.get("semcode_mcp") or {}
+        if source_path and semcode_cfg.get("command"):
+            crash_tools.extend(create_semcode_tools(
+                command=str(semcode_cfg["command"]),
+                args=semcode_cfg.get("args", []) or [],
+                kernel_source_path=source_path,
+            ))
 
         # Build context info for LLM — emphasize data-driven analysis
+        semcode_tool_text = ""
+        if source_path and semcode_cfg.get("command"):
+            semcode_tool_text = (
+                "- semcode_find_function: locate a kernel function and direct callees\n"
+                "- semcode_find_callers: list callers from the indexed kernel source\n"
+            )
         context_info = f"""Crash analysis environment ready:
 - vmcore: {vmcore_path}
 - vmlinux: {vmlinux_path}
@@ -422,6 +438,7 @@ Available tools:
 - collect_baseline: collect sys + bt + log (call FIRST)
 - run_crash_command: execute a single crash command
 - run_crash_commands: batch execute multiple commands
+{semcode_tool_text}
 
 {evidence_context}
 
@@ -457,6 +474,9 @@ WORKFLOW:
    - Mutex owner decode: counter & ~0x7 yields task_struct pointer
 5. For hung_task/deadlock: identify the lock dependency chain (who holds what, who waits for what)
 6. For lock_analysis specifically: check mutex.wait_list to see blocked waiters
+7. When Semcode tools are available, use them to verify the key functions from
+   the crash stack. Include the returned source locations and caller/callee
+   edges as evidence; do not infer file names or line numbers.
 
 OUTPUT REQUIREMENTS:
 - State the crash type based on sys/log output

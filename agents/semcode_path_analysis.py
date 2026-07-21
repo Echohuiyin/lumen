@@ -17,6 +17,8 @@ import re
 import shlex
 import subprocess
 from typing import Any, Iterable
+from pydantic import BaseModel, Field
+from langchain_core.tools import StructuredTool
 
 from agents.contracts import (
     PathAnalysisScope,
@@ -47,6 +49,44 @@ _DIRECT_CALL_RE = re.compile(r"^\s*\d+\.\s+([A-Za-z_][A-Za-z0-9_]*)\s*$", re.MUL
 
 class SemcodePathAnalysisError(RuntimeError):
     """A semcode dependency/protocol failure that must block P2 analysis."""
+
+
+class SemcodeFunctionInput(BaseModel):
+    name: str = Field(description="Kernel function or symbol name")
+
+
+def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_path: str) -> list[StructuredTool]:
+    """Expose bounded Semcode lookups to tool experts without exposing MCP/shell."""
+    client = SemcodeMcpClient(command=command, args=args, kernel_source_path=kernel_source_path)
+
+    def find_function(name: str) -> str:
+        try:
+            function = client.find_function(name)
+            return json.dumps({
+                "function": function.name, "location": function.location,
+                "direct_callees": list(function.direct_calls), "body": function.body,
+            }, ensure_ascii=False)
+        except Exception as exc:
+            return json.dumps({"status": "blocked", "function": name, "error": str(exc)}, ensure_ascii=False)
+
+    def find_callers(name: str) -> str:
+        try:
+            return client._call("find_callers", {"name": name})
+        except Exception as exc:
+            return json.dumps({"status": "blocked", "function": name, "error": str(exc)}, ensure_ascii=False)
+
+    return [
+        StructuredTool.from_function(
+            func=find_function, name="semcode_find_function",
+            description="Locate a kernel function with source location, body, and direct callees.",
+            args_schema=SemcodeFunctionInput,
+        ),
+        StructuredTool.from_function(
+            func=find_callers, name="semcode_find_callers",
+            description="List callers of a kernel function from the indexed source tree.",
+            args_schema=SemcodeFunctionInput,
+        ),
+    ]
 
 
 @dataclass(frozen=True)

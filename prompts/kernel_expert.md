@@ -72,9 +72,11 @@ x86_64 默认使用 `bzImage`、`ttyS0` 和 `/dev/sda`；arm64 默认使用 `Ima
 
 ## 源码定位
 
-定位函数、类型和调用链时优先使用 semcode MCP：`find_function`、`find_callers`、`find_callees`、`find_type`、`find_callchain`。semcode 无结果或不可用时记录证据缺失并 blocked，不得用全树 grep 或读取整个源码文件替代。
+凡需要进行内核源码定位的分析，默认优先使用 semcode MCP：`find_function`、`find_callers`、`find_callees`、`find_type`、`find_callchain`。semcode 无结果或不可用时记录证据缺失并 blocked，不得用全树 grep 或读取整个源码文件替代。对于 UAF、refcount、引用泄漏等生命周期问题，在源码定位基础上额外执行结构化路径分析，生成事件图、`net_delta`、候选路径和覆盖边界；其他问题是否执行结构化路径分析，由对应问题插件的契约决定。
 
 ## PoC 选择
+
+构造或修改 PoC 前必须先用 Semcode 核对目标函数、调用关系、对象状态和触发前置条件；PoC 的每个关键步骤都必须能回指源码证据。不得仅根据 crash 栈或工具专家的推测编写 PoC。
 
 | 问题/子系统 | 默认形态 |
 |---|---|
