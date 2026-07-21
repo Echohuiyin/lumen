@@ -30,7 +30,7 @@ def test_semcode_tool_adapter_does_not_expose_shell_arguments():
 
 @pytest.mark.online
 def test_real_semcode_adapter_query_when_index_is_deployed():
-    source = Path(os.environ.get("LUMEN_KERNEL_SOURCE", "/home/lmr/linux-next"))
+    source = Path(os.path.expanduser(os.environ.get("LUMEN_KERNEL_SOURCE", "~/linux-next")))
     binary = Path(os.environ.get(
         "LUMEN_SEMCODE_MCP",
         "Analysis-SKILL/tools/semcode/target/release/semcode-mcp",
