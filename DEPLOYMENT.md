@@ -188,6 +188,72 @@ Get your API key from one of:
 - **OpenAI**: https://platform.openai.com/api-keys
 - **Anthropic**: https://console.anthropic.com/settings/keys
 
+### 4.4 Claude Code Settings File (kernel_expert Isolation)
+
+`kernel_expert` spawns `claude` CLI as a subprocess. By default, Claude Code CLI
+loads `~/.claude/settings.json` from the user's home directory and inherits
+whatever `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` it finds there (and from
+the shell environment). If you already use Claude Code CLI with another model
+(e.g. an internal GLM proxy), kernel_expert would silently call the wrong
+endpoint.
+
+To isolate kernel_expert's Claude Code invocation, `config.json.template` sets:
+
+```json
+"kernel_expert": {
+  ...
+  "settings_file": "${CLAUDE_SETTINGS_PATH:-${HOME}/.claude/settings-lumen-deepseek.json}"
+}
+```
+
+`ClaudeCodeBackend` passes this path to `claude --settings <path>`, which loads
+that settings file in place of the global one. Create the file with your
+DeepSeek (or other Anthropic-compatible) credentials:
+
+```bash
+mkdir -p ~/.claude
+cat > ~/.claude/settings-lumen-deepseek.json <<'EOF'
+{
+  "env": {
+    "DISABLE_TELEMETRY": "1",
+    "DISABLE_ERROR_REPORTING": "1",
+    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+    "ANTHROPIC_AUTH_TOKEN": "sk-your-deepseek-key",
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_MODEL": "deepseek-v4-flash",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash"
+  },
+  "skipDangerousModePermissionPrompt": true,
+  "model": "haiku"
+}
+EOF
+chmod 600 ~/.claude/settings-lumen-deepseek.json
+```
+
+> **Field name matters**: use `ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`.
+> Claude Code CLI prefers `ANTHROPIC_AUTH_TOKEN`; if the settings file only sets
+> `ANTHROPIC_API_KEY`, the CLI falls back to the global `~/.claude/settings.json`
+> token (or the shell's `ANTHROPIC_AUTH_TOKEN`), and kernel_expert will silently
+> call the wrong model — typically surfacing as `401 ****Qg3g is invalid`.
+
+Verify isolation:
+
+```bash
+# Should print deepseek-v4-flash, not whatever model your global settings use.
+claude --settings ~/.claude/settings-lumen-deepseek.json \
+  -p 'reply with only your model id, nothing else'
+```
+
+Override the path with `CLAUDE_SETTINGS_PATH` if you keep the settings file
+elsewhere:
+
+```bash
+export CLAUDE_SETTINGS_PATH=/opt/lumen/claude-deepseek.json
+```
+
 ---
 
 ## 5. Kernel Source & Crash Setup

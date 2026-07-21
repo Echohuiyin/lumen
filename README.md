@@ -80,9 +80,14 @@ Kernel Expert 必须使用 `claude_code` 或 `opencode`；普通 `anthropic` bac
 不支持其 `workdir`/`add_dirs` 文件操作接口。
 
 KernelExpert's Claude Code settings file is configurable through
-`agents.kernel_expert.settings_file` (default: `~/.claude/settings.json`). Set
-an independent settings file for a separate API-key/profile when running
-parallel analyses; the backend passes it to Claude Code with `--settings`.
+`agents.kernel_expert.settings_file` (default:
+`${CLAUDE_SETTINGS_PATH:-${HOME}/.claude/settings-lumen-deepseek.json}`). This
+isolates kernel_expert's Claude Code invocation from the user's global
+`~/.claude/settings.json` — without it, kernel_expert would inherit whatever
+`ANTHROPIC_AUTH_TOKEN` the shell or global settings provide and silently call
+the wrong model. Point the path at a settings file holding the DeepSeek (or
+other Anthropic-compatible) credentials for kernel analysis; the backend
+passes it to Claude Code with `--settings`. See DEPLOYMENT.md §4.4.
 KernelExpert must use the `claude_code` or `opencode` agent-loop backend:
 the workflow passes `workdir` and `add_dirs` to `invoke()` so the agent can
 construct and validate PoC artifacts. The plain `anthropic` backend is not
