@@ -68,6 +68,17 @@ historical-case search and Chroma import.
 backend is Anthropic-compatible; `kernel_expert` uses Claude Code. OpenAI,
 HTTP, and OpenCode backends are also configurable there.
 
+Backend 说明：
+
+| Backend | 作用与适用场景 |
+|---------|----------------|
+| `anthropic` | 普通 Anthropic-compatible 聊天 API，适合 validator、PM、工具专家和知识库总结；默认可连接 DeepSeek Anthropic 兼容接口。 |
+| `claude_code` | Claude Code CLI agent loop，提供文件读写、编译、Shell 和多轮工具调用；Kernel Expert 的默认 backend。 |
+| `opencode` | 可替代 Claude Code 的 CLI agent loop，适用于需要独立 provider 或 API 配置的 Kernel Expert 部署。 |
+
+Kernel Expert 必须使用 `claude_code` 或 `opencode`；普通 `anthropic` backend
+不支持其 `workdir`/`add_dirs` 文件操作接口。
+
 KernelExpert's Claude Code settings file is configurable through
 `agents.kernel_expert.settings_file` (default: `~/.claude/settings.json`). Set
 an independent settings file for a separate API-key/profile when running
