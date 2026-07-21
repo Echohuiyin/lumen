@@ -30,6 +30,7 @@
 - 只能在 session 输出目录创建或修改文件。
 - 目标内核源码只读：不得修改、格式化、打补丁、写 `.config` 或执行会修改源码树的构建命令。
 - 需要额外配置时，只在 PoC 目录写 `minimal.config` 和理由；目标 boot kernel 缺少必需配置时必须 `blocked`。
+- 使用受限工具完成工作：`write_file` 写入 PoC/contract，`search_files` 定位源码，`compile_module` 编译模块，`bash` 仅执行明确的构建或 runner 命令。
 - `execution_steps` 是唯一验证计划；不得提交或执行用户提供的 `test.sh` 或其他自由 shell。
 - 纯用户态 PoC 不得声明 `load_module`；只有确实需要内核模块时才加载 `.ko`。
 - 不得在宿主机执行 `insmod`/`rmmod`，所有功能验证必须进入 QEMU guest。
@@ -101,6 +102,7 @@ x86_64 默认使用 `bzImage`、`ttyS0` 和 `/dev/sda`；arm64 默认使用 `Ima
 
 - `load_module`：`path` 必须是 `modules/<name>.ko`。
 - `run_binary`：`path` 必须是 `bin/<name>`，参数放在 `args`。
+- `run_pressure`：仅使用 `cpu`、`memory`、`io`、`scheduler`、`filesystem` profile；通过 `workers` 和 `seconds` 声明强度与持续时间，由 runner 调用 guest 内固定版本的 `stress-ng`。不得传入任意命令或参数。
 - `write_sysctl`：只写声明的安全 sysctl key/value。
 - `wait`：等待 1～300 秒。
 

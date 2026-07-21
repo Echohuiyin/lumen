@@ -107,7 +107,7 @@ EOF
     guest_packages=(
         openssh-server kmod iproute2 ca-certificates coreutils
         curl tar time strace psmisc iputils-ping dnsutils net-tools
-        gcc libc6-dev make
+        gcc libc6-dev make stress-ng
     )
     if [[ "$lumen_arch" == "arm64" ]]; then
         # arm64 TCG on an x86 host may have too little entropy for sshd to

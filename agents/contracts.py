@@ -30,9 +30,9 @@ def model_to_dict(model: BaseModel) -> dict[str, Any]:
 class DetectionSignals(BaseModel):
     """How the persistent QEMU runner greps the host-side serial log to decide PASS/FAIL.
 
-    The host-side serial log is the ground truth — guest test.sh may never run
-    because panic_on_warn=1 escalates WARNINGs to panic + reboot before the
-    script's `dmesg | grep` fires. So detection must happen on the host side,
+    The host-side serial log is the ground truth — guest execution may never
+    complete because panic_on_warn=1 escalates WARNINGs to panic + reboot
+    before the requested steps finish. So detection must happen on the host side,
     against the serial log file written by QEMU's -serial file: option.
 
     Fields:
@@ -115,12 +115,14 @@ class ExecutionStep(BaseModel):
     module load or evaluates an agent-authored shell script.
     """
 
-    type: Literal["load_module", "run_binary", "write_sysctl", "wait"]
+    type: Literal["load_module", "run_binary", "run_pressure", "write_sysctl", "wait"]
     path: str = ""
     args: list[str] = Field(default_factory=list)
     key: str = ""
     value: str = ""
     seconds: int = 0
+    profile: Literal["cpu", "memory", "io", "scheduler", "filesystem"] = "cpu"
+    workers: int = 1
 
 
 class ErrorEnvelope(BaseModel):

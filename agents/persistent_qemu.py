@@ -31,6 +31,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_ROOT = PROJECT_ROOT / "runtime" / "qemu-ssh"
 _SAFE_PAYLOAD_PATH = re.compile(r"^(?:modules|bin)/[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
+                      "scheduler": "--switch", "filesystem": "--hdd"}
 
 
 @dataclass(frozen=True)
@@ -146,6 +148,13 @@ def _validate_execution_steps(plan: TestPlan) -> None:
                 raise ValueError(f"execution step {index} has invalid {step.type} path: {step.path!r}")
             if any("\x00" in arg or "\n" in arg for arg in step.args):
                 raise ValueError(f"execution step {index} has unsafe arguments")
+        elif step.type == "run_pressure":
+            if step.profile not in _PRESSURE_PROFILES:
+                raise ValueError(f"execution step {index} has invalid pressure profile: {step.profile!r}")
+            if not 1 <= step.workers <= 32:
+                raise ValueError(f"execution step {index} pressure workers must be in 1..32")
+            if not 1 <= step.seconds <= 300:
+                raise ValueError(f"execution step {index} pressure seconds must be in 1..300")
         elif step.type == "write_sysctl":
             if not _SAFE_SYSCTL_KEY.fullmatch(step.key) or ".." in step.key or not step.value:
                 raise ValueError(f"execution step {index} has invalid sysctl declaration")
@@ -157,7 +166,11 @@ def _validate_execution_steps(plan: TestPlan) -> None:
 def _render_execution_script(plan: TestPlan, marker: str) -> str:
     """Render runner-owned POSIX shell from allow-listed structured steps."""
     _validate_execution_steps(plan)
-    lines = ["#!/bin/sh", "set -eu", f"echo {shlex.quote(marker)} > /dev/console", "cd /tmp/lumen-poc"]
+    lines = [
+        "#!/bin/sh", "set -eu", "PRESSURE_PIDS=",
+        "trap '[ -z \"${PRESSURE_PIDS:-}\" ] || kill $PRESSURE_PIDS 2>/dev/null || true' EXIT",
+        f"echo {shlex.quote(marker)} > /dev/console", "cd /tmp/lumen-poc",
+    ]
     for step in plan.execution_steps:
         if step.type == "load_module":
             lines.append(f"test -f {shlex.quote('./' + step.path)}")
@@ -166,6 +179,16 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
             command = " ".join([shlex.quote("./" + step.path), *(shlex.quote(arg) for arg in step.args)])
             lines.append(f"test -x {shlex.quote('./' + step.path)}")
             lines.append(f"timeout --signal=KILL 300 {command}")
+        elif step.type == "run_pressure":
+            pressure_args = ["stress-ng", _PRESSURE_PROFILES[step.profile], str(step.workers)]
+            if step.profile == "memory":
+                pressure_args += ["--vm-bytes", "75%"]
+            elif step.profile == "filesystem":
+                pressure_args += ["--hdd-bytes", "64M"]
+            pressure_args += ["--timeout", f"{step.seconds}s", "--metrics-brief"]
+            command = " ".join(shlex.quote(arg) for arg in pressure_args)
+            lines.append(f"{command} >/dev/console 2>&1 &")
+            lines.append("PRESSURE_PIDS=\"${PRESSURE_PIDS:-} $!\"")
         elif step.type == "write_sysctl":
             sysctl_path = "/proc/sys/" + step.key.replace(".", "/")
             lines.append(f"printf '%s\\n' {shlex.quote(step.value)} > {shlex.quote(sysctl_path)}")

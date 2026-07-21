@@ -127,6 +127,30 @@ def test_runner_loads_module_only_when_the_plan_declares_it(tmp_path):
     assert "insmod ./modules/reproducer.ko" in script
 
 
+def test_runner_renders_allowlisted_pressure_profile_without_free_shell(tmp_path):
+    kernel = tmp_path / "bzImage"
+    kernel.write_bytes(b"MZ\x00\x00")
+    plan = _plan(kernel)
+    plan.execution_steps = [
+        ExecutionStep(type="run_pressure", profile="memory", workers=2, seconds=30),
+        ExecutionStep(type="run_binary", path="bin/trigger"),
+    ]
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+    assert "stress-ng --vm 2 --vm-bytes 75% --timeout 30s" in script
+    assert "PRESSURE_PIDS" in script
+    assert "eval" not in script
+
+
+def test_runner_rejects_pressure_duration_outside_allowlist(tmp_path):
+    kernel = tmp_path / "bzImage"
+    kernel.write_bytes(b"MZ\x00\x00")
+    plan = _plan(kernel)
+    plan.execution_steps = [ExecutionStep(type="run_pressure", seconds=301)]
+    result = run_persistent_qemu_test_plan(plan, attempt=1, runtime_root=tmp_path / "guests")
+    assert result.status == "blocked"
+    assert result.code == "BLOCKED_EXECUTION_PLAN"
+
+
 def test_contract_execution_steps_are_transferred_without_test_script():
     plan = build_plan({
         "target_arch": "x86_64",

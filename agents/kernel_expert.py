@@ -762,22 +762,10 @@ def _parse_kernel_expert_response(
     kernel_diagnosis = _extract_section(text, "KERNEL_DIAGNOSIS")
     all_possible_paths_text = _extract_section(text, "ALL_POSSIBLE_PATHS")
     max_likely_path = _extract_section(text, "MAX_LIKELY_PATH")
-    target_arch = _extract_scalar_marker(text, "TARGET_ARCH")
-    boot_kernel_path = _extract_scalar_marker(text, "BOOT_KERNEL_PATH")
-    reproducer_dir = _extract_scalar_marker(text, "REPRODUCER_DIR")
-    reproducer_module_path = _extract_scalar_marker(text, "REPRODUCER_MODULE_PATH")
-    expected_signal = _extract_scalar_marker(text, "EXPECTED_SIGNAL")
-    binaries_dir = _extract_scalar_marker(text, "BINARIES_DIR")
     kernel_contract = _extract_kernel_contract(text)
     if not _kernel_contract_has_handoff(kernel_contract):
         kernel_contract.status = "blocked"
         kernel_contract.blocked_reason = "missing explicit structured KERNEL_CONTRACT"
-
-    # If markers had binaries_dir but the JSON contract didn't, propagate it.
-    if binaries_dir and not kernel_contract.binaries_dir:
-        data = model_to_dict(kernel_contract)
-        data["binaries_dir"] = binaries_dir
-        kernel_contract = _model_validate(KernelExpertOutput, data)
 
     # Preserve path findings emitted as human-readable sections even when the
     # CLI returned a contract JSON without the additive fields.
@@ -1005,22 +993,6 @@ def _extract_section(text: str, marker: str) -> str:
     pattern = rf"{re.escape(marker)}:\s*\n?(.*?)(?:\n[A-Z_]+:|\Z)"
     match = re.search(pattern, text, re.DOTALL)
     return match.group(1).strip() if match else ""
-
-
-def _extract_scalar_marker(text: str, marker: str) -> str:
-    """Extract a one-line marker value and ignore empty placeholders.
-
-    Uses [^\\S\\n] for whitespace so the regex stays on a single line — \\s*
-    would consume the trailing newline and let (.+?) spill onto the next line
-    (e.g. matching 'KERNEL_CONTRACT:' as the value of an empty BINARIES_DIR:).
-    """
-    match = re.search(rf"^{re.escape(marker)}:[^\S\n]*(.+?)[^\S\n]*$", text, re.MULTILINE)
-    if not match:
-        return ""
-    value = match.group(1).strip().strip("`'\"")
-    if not value or value.startswith("<") or value.upper() in {"N/A", "NONE", "UNKNOWN"}:
-        return ""
-    return value
 
 
 def _model_validate(model_cls, data: dict):
@@ -1378,215 +1350,14 @@ def _validate_kernel_contract_artifacts(
     if not contract.expected_signal:
         errors.append("missing expected_signal")
 
-    # Legacy test.sh post-processing and causal-marker checks are disabled.
-    # The runner owns execution and accepts only structured execution_steps.
-    test_script = ""
-
-    data["path_analysis_required"] = bool(
-        data.get("path_analysis_required") or path_analysis_required
-    )
     path_errors, path_evidence = _validate_path_analysis_contract(
-        data,
-        path_analysis_required=data["path_analysis_required"],
+        data, path_analysis_required=path_analysis_required,
     )
     errors.extend(path_errors)
     evidence.extend(path_evidence)
     errors.extend(_validate_structured_uaf_analysis(
-        contract,
-        path_analysis_required=data["path_analysis_required"],
+        contract, path_analysis_required=path_analysis_required,
     ))
-    analysis = contract.uaf_analysis
-    if (
-        data["path_analysis_required"]
-        and analysis is not None
-        and not analysis.legacy_unstructured
-        and test_script
-        and Path(test_script).exists()
-    ):
-        marker = f"LUMEN_REPRO_START:{analysis.case_id}:{analysis.reproduction_target_path_id}"
-        end_marker = f"LUMEN_REPRO_END:{analysis.case_id}:{analysis.reproduction_target_path_id}:"
-        try:
-            script_content = Path(test_script).read_text(encoding="utf-8", errors="replace")
-            if marker not in script_content:
-                errors.append(f"test_script_path missing causal marker: {marker}")
-            if end_marker not in script_content:
-                errors.append(f"test_script_path missing causal marker: {end_marker}<status>")
-        except OSError as exc:
-            errors.append(f"test_script_path cannot read causal marker: {exc}")
-
-    # Post-process test.sh for memory-pressure-sensitive bugs (e.g. btrfs
-    # ordered extent WARNING that needs memory pressure to trigger). The
-    # LLM-generated script typically sleeps 300s waiting for the signal;
-    # inject memory pressure + longer sleep to increase trigger probability.
-    _MEMORY_PRESSURE_SIGNALS = [
-        "ordered_extent", "bytes_left", "can_finish_ordered",
-        "folio", "page reclaim", "memory pressure",
-    ]
-    expected = (contract.expected_signal or "").lower()
-    reproducer_dir_str = data.get("reproducer_dir", "") or ""
-    needs_memory_pressure_by_signal = any(s in expected for s in _MEMORY_PRESSURE_SIGNALS)
-    needs_memory_pressure_by_dir = "btrfs" in reproducer_dir_str.lower()
-    needs_memory_pressure = needs_memory_pressure_by_signal or needs_memory_pressure_by_dir
-    if needs_memory_pressure_by_signal:
-        print(f"  [contract诊断] expected_signal='{contract.expected_signal}' 匹配内存压力信号", flush=True)
-    elif needs_memory_pressure_by_dir:
-        print(f"  [contract诊断] reproducer_dir 包含 'btrfs' → 注入内存压力", flush=True)
-    else:
-        print(f"  [contract诊断] expected_signal='{contract.expected_signal}' 不匹配内存压力信号（跳过注入）", flush=True)
-    if needs_memory_pressure and test_script and Path(test_script).exists():
-        try:
-            script_text = Path(test_script).read_text(encoding="utf-8")
-
-            # 1) Extend sleep timeout: replace "sleep NNN" lines where
-            #    NNN < 600 with 600, so the reproducer gets more time.
-            script_text = re.sub(
-                r'^(sleep +)([1-9]?[0-9]|[1-5][0-9][0-9])\b',
-                r'\g<1>600',
-                script_text,
-                flags=re.MULTILINE,
-            )
-
-            # 2) Inject cyclical memory pressure before repro_c runs.
-            #    Two-phase approach matching syzbot repro_c's fork/kill
-            #    rhythm (RLIMIT_AS=200MB, 5s per child):
-            #
-            #    Phase A — pre-charge: run 3 pressure waves BEFORE starting
-            #    repro_c. This puts the system into page reclaim state so
-            #    that when btrfs operations begin, the race window between
-            #    I/O completion and ordered extent teardown is open from
-            #    the first operation, not after waiting for pressure to
-            #    build up.
-            #
-            #    Phase B — fork/kill cycle: instead of drop_caches (which
-            #    also flushes btrfs cache, potentially narrowing the race),
-            #    use async subprocess fork → kill → wait. Process exit
-            #    triggers kernel-side bulk page reclaim of that child's
-            #    file pages, matching how repro_c's child-exit reclaims
-            #    the 200MB RSS.
-            pressure_block = """echo "=== Memory pressure pre-charge ==="
-(
-  dd if=/dev/zero of=/tmp/charge bs=1M count=200 2>/dev/null
-  dd if=/tmp/charge of=/dev/null bs=1M count=200 2>/dev/null
-  sleep 2
-  dd if=/dev/zero of=/tmp/charge2 bs=1M count=200 2>/dev/null
-  dd if=/tmp/charge2 of=/dev/null bs=1M count=200 2>/dev/null
-  sleep 2
-  rm -f /tmp/charge /tmp/charge2
-) &
-sleep 6
-
-echo "=== Starting fork-kill pressure cycle ==="
-(
-  while true; do
-    (
-      dd if=/dev/zero of=/tmp/pressure_$$ bs=1M count=200 2>/dev/null
-      dd if=/tmp/pressure_$$ of=/dev/null bs=1M count=200 2>/dev/null
-      sleep 3
-    ) &
-    C=$!
-    sleep 5
-    kill $C 2>/dev/null
-    wait $C 2>/dev/null
-  done
-) &
-echo "Fork-kill pressure running (200MB per cycle, 5s rhythm)"
-"""
-            # Insert pressure before a known reproducer-start marker
-            marker_patterns = [
-                r'^(cd /tmp\n)',
-                r'^(cd /\n)',
-                r'^(# Run repro_c)',
-                r'^(# Run the syzbot reproducer)',
-                r'^(# Execute the trigger binary)',
-                r'^(\/bin\/repro_c)',
-                r'^(\/bin\/repro )',
-                r'^\s*(/bin/repro_c\b)',
-                r'^\s*(/bin/repro\b)',
-            ]
-            for pat in marker_patterns:
-                new_text, n = re.subn(pat, pressure_block + r'\1', script_text, count=1, flags=re.MULTILINE)
-                if n > 0:
-                    script_text = new_text
-                    break
-
-            # 2b) `expr` is now provided via busybox symlink in
-            #     create_initramfs.sh (expr/test/seq/chmod added to the
-            #     symlink list). No textual substitution needed — the
-            #     LLM-generated `expr "$i" + 1` works as-is when the
-            #     initramfs has the busybox `expr` applet available.
-
-            # 2c) The sleep extension (step 1) extended the memory pressure
-            #     stabilization sleep (the one right after "MEM_PID=$!") to
-            #     600s, but that's unnecessary — dd runs in background so
-            #     the reproducer can start after a short 2s pause. Shorten
-            #     it back so QEMU time is spent on the reproducer, not on
-            #     idle waiting.
-            script_text = re.sub(
-                r'(MEM_PID=\$\!)\s*\n\s*sleep\s+\d+\s*\n',
-                r'\1\nsleep 2\n',
-                script_text,
-            )
-
-            Path(test_script).write_text(script_text, encoding="utf-8")
-            evidence.append({
-                "kind": "artifact_check",
-                "field": "test_script_path",
-                "path": str(test_script),
-                "check": "memory pressure injected",
-            })
-
-            # 3) Set extra_cmdline to limit kernel-visible memory, creating
-            #    memory pressure without changing QEMU -m (KASAN needs >=2G).
-            #    qemu_recipe is a dict (model_to_dict converts nested objects),
-            #    so use dict access, not attribute access.
-            recipe = data.get("qemu_recipe")
-            if recipe and isinstance(recipe, dict) and not recipe.get("extra_cmdline", ""):
-                # Align with syzbot community configuration for reliable
-                # reproduction of memory-pressure-sensitive bugs:
-                #   - numa=fake=2: splits 2GB into 2 × ~1GB fake NUMA nodes,
-                #     creating memory fragmentation pressure that accelerates
-                #     page reclaim races (syzbot standard approach).
-                #   - mem=2G: constrains total memory to match syzbot's
-                #     typical VM size; leaves enough headroom for KASAN +
-                #     repro_c while keeping pressure effective.
-                #   - panic_on_warn=1: converts WARNING to panic (syzbot
-                #     standard), ensuring reliable signal detection.
-                # Note: must use smp=1 (QEMU default) to avoid
-                # set_cpu_sibling_map WARNING at smpboot.c:718 that fires
-                # when numa=fake=2 + smp>=2 on q35 (single physical node).
-                recipe["extra_cmdline"] = "numa=fake=2 mem=2G panic_on_warn=1"
-                warnings.append(
-                    f"injected extra_cmdline='numa=fake=2 mem=2G panic_on_warn=1' (syzbot config)"
-                )
-        except (OSError, ValueError) as exc:
-            warnings.append(f"memory pressure injection skipped: {exc}")
-
-    # 4) Auto-detect binaries_dir from reproducer_dir if the contract
-    #    didn't set it (LLM often omits this marker/field). The
-    #    reproducer_dir typically contains compiled trigger programs
-    #    (repro_c.bin, uaf_trigger, etc.) that must be injected into
-    #    /bin inside the QEMU guest rootfs/initramfs.
-    #    Without this, test.sh reports "trigger binary not found".
-    binaries_dir = data.get("binaries_dir", "") or ""
-    reproducer_dir = data.get("reproducer_dir", "") or ""
-    if not binaries_dir and reproducer_dir:
-        try:
-            rd_path = Path(reproducer_dir)
-            if rd_path.is_dir():
-                has_executable = any(
-                    p.is_file() and os.access(p, os.X_OK)
-                    for p in rd_path.iterdir()
-                    if p.name not in {"Makefile", "test.sh"}
-                )
-                if has_executable:
-                    data["binaries_dir"] = reproducer_dir
-                    warnings.append(
-                        f"auto-filled binaries_dir='{reproducer_dir}' "
-                        f"(reproducer_dir has executables, LLM omitted marker)"
-                    )
-                    print(f"  [contract诊断] auto-filled binaries_dir from reproducer_dir", flush=True)
-        except Exception as exc:
-            warnings.append(f"binaries_dir auto-detect skipped: {exc}")
 
     data["warnings"] = warnings
     data["evidence"] = evidence
