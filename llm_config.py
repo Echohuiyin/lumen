@@ -57,6 +57,12 @@ def validate_agent_backend(agent_name: str, backend: str) -> None:
             f"CLI backend requires interactive user input and will block the workflow. "
             f"Please use 'openai', 'http', 'claude_code', or 'opencode' backend instead."
         )
+    if agent_name == "kernel_expert" and backend not in {"claude_code", "opencode"}:
+        raise ValueError(
+            "Agent 'kernel_expert' requires a CLI agent-loop backend because its "
+            "invoke() call passes workdir= and add_dirs= for PoC construction. "
+            "Use 'claude_code' or 'opencode'; AnthropicBackend is not compatible."
+        )
     if (
         agent_name in AUTOMATION_AGENTS
         and backend in {"claude_code", "opencode"}

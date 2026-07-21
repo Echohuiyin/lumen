@@ -72,6 +72,10 @@ KernelExpert's Claude Code settings file is configurable through
 `agents.kernel_expert.settings_file` (default: `~/.claude/settings.json`). Set
 an independent settings file for a separate API-key/profile when running
 parallel analyses; the backend passes it to Claude Code with `--settings`.
+KernelExpert must use the `claude_code` or `opencode` agent-loop backend:
+the workflow passes `workdir` and `add_dirs` to `invoke()` so the agent can
+construct and validate PoC artifacts. The plain `anthropic` backend is not
+compatible with this interface.
 
 ## Input Format
 
