@@ -121,9 +121,11 @@ builds both from crash source, and also builds static BusyBox binaries for both
 architectures under `Analysis-SKILL/`. `deploy.sh` also creates ignored Debian
 SSH images under `runtime/qemu-ssh/` for x86_64 and arm64; QEMU remains alive
 across PoC iterations for the same immutable guest identity. The guest images
-include SSH, basic networking, common diagnostics, and the compiler/debugger
-runtime used by PoC validation (`curl`, `iproute2`, `strace`, `gcc`, `make`,
-`gdb`, and related base packages).
+include SSH, basic networking, common diagnostics, and the compiler runtime
+used by PoC validation (`curl`, `iproute2`, `net-tools`, `strace`, `gcc`,
+`libc6-dev`, `make`, and related base packages). Git and GDB are not installed
+in the guest by default: the runner does not clone sources or perform
+interactive debugging inside the VM.
 
 ## Project Structure
 
