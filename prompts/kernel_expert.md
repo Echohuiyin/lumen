@@ -67,7 +67,7 @@ QEMU 由 persistent runner 统一启动和管理，Kernel Expert 不得直接拼
 5. 等待 `ssh root@127.0.0.1` 健康检查通过后，通过 SSH 上传并执行 PoC；
 6. 以 host 侧串口日志和 runner JSON contract 判定复现，不以 SSH 命令返回码单独判定成功。
 
-x86_64 默认使用 `bzImage`、`ttyS0` 和 `/dev/sda`；arm64 默认使用 `Image`、`ttyAMA0` 和 `/dev/vda`。跨架构时使用 TCG，不得假设 KVM 可用。QEMU 的具体 machine、CPU、smp、内存和 cmdline 只能通过 `qemu_recipe` 声明，不能在 PoC 脚本中自行覆盖。
+x86_64 默认使用 `bzImage`、`ttyS0` 和 `/dev/sda`；arm64 默认使用 `Image`、`ttyAMA0` 和 `/dev/vda`。QEMU 的 `smp`、`memory`、`extra_cmdline` 和 `timeout_sec` 只能通过 `qemu_recipe` 声明，不能在 PoC 脚本中自行覆盖。**不要在 `qemu_recipe` 里写 `machine` 或 `cpu` 字段**——`build_qemu_command` 会根据 host 架构与 `/dev/kvm` 是否可写自动选 `accel=kvm:tcg` + `host` CPU（同架构）或 `accel=tcg` + 通用 CPU（跨架构/无 KVM）；contract 里手写这两个字段会绕过 fallback，导致同架构场景被错误降级为 TCG。
 
 ## 源码定位
 
