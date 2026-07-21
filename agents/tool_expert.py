@@ -421,6 +421,7 @@ def _run_tool_calling_analysis(
                 command=str(semcode_cfg["command"]),
                 args=semcode_cfg.get("args", []) or [],
                 kernel_source_path=source_path,
+                evidence_sink=evidence,
             ))
 
         # Build context info for LLM — emphasize data-driven analysis

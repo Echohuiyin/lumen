@@ -55,13 +55,18 @@ class SemcodeFunctionInput(BaseModel):
     name: str = Field(description="Kernel function or symbol name")
 
 
-def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_path: str) -> list[StructuredTool]:
+def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_path: str,
+                         evidence_sink: list[dict[str, Any]] | None = None) -> list[StructuredTool]:
     """Expose bounded Semcode lookups to tool experts without exposing MCP/shell."""
     client = SemcodeMcpClient(command=command, args=args, kernel_source_path=kernel_source_path)
 
     def find_function(name: str) -> str:
         try:
             function = client.find_function(name)
+            if evidence_sink is not None:
+                evidence_sink.append({"kind": "semcode_function", "function": function.name,
+                                      "location": function.location,
+                                      "direct_callees": list(function.direct_calls)})
             return json.dumps({
                 "function": function.name, "location": function.location,
                 "direct_callees": list(function.direct_calls), "body": function.body,
@@ -71,7 +76,10 @@ def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_pat
 
     def find_callers(name: str) -> str:
         try:
-            return client._call("find_callers", {"name": name})
+            result = client._call("find_callers", {"name": name})
+            if evidence_sink is not None:
+                evidence_sink.append({"kind": "semcode_callers", "function": name, "result": result[:4000]})
+            return result
         except Exception as exc:
             return json.dumps({"status": "blocked", "function": name, "error": str(exc)}, ensure_ascii=False)
 
@@ -80,7 +88,10 @@ def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_pat
 
     def find_type(name: str) -> str:
         try:
-            return client._call("find_type", {"name": name})
+            result = client._call("find_type", {"name": name})
+            if evidence_sink is not None:
+                evidence_sink.append({"kind": "semcode_type", "type": name, "result": result[:4000]})
+            return result
         except Exception as exc:
             return json.dumps({"status": "blocked", "type": name, "error": str(exc)}, ensure_ascii=False)
 
