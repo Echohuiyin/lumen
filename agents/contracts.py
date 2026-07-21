@@ -28,7 +28,7 @@ def model_to_dict(model: BaseModel) -> dict[str, Any]:
 
 
 class DetectionSignals(BaseModel):
-    """How Test Expert should grep the host-side serial log to decide PASS/FAIL.
+    """How the persistent QEMU runner greps the host-side serial log to decide PASS/FAIL.
 
     The host-side serial log is the ground truth — guest test.sh may never run
     because panic_on_warn=1 escalates WARNINGs to panic + reboot before the
@@ -82,7 +82,7 @@ class QemuRecipe(BaseModel):
       concurrent_instances: How many parallel QEMU VMs to launch with the same
         recipe — useful for race-condition bugs that need vCPU thread
         overcommitment across multiple VMs. 1 = single VM (default). The
-        test_expert runner loops this many times and merges serial logs.
+        persistent runner loops this many times and merges serial logs.
       timeout_sec: QEMU boot timeout. 0/empty → use runner default (900s).
     """
 
@@ -107,6 +107,22 @@ class ToolStepResult(BaseModel):
     error: str = ""
 
 
+class ExecutionStep(BaseModel):
+    """One allow-listed action for deterministic guest-side reproduction.
+
+    The Kernel Expert selects these actions from source/log evidence.  The
+    persistent runner validates and executes them in order; it never infers a
+    module load or evaluates an agent-authored shell script.
+    """
+
+    type: Literal["load_module", "run_binary", "write_sysctl", "wait"]
+    path: str = ""
+    args: list[str] = Field(default_factory=list)
+    key: str = ""
+    value: str = ""
+    seconds: int = 0
+
+
 class ErrorEnvelope(BaseModel):
     """Actionable, stable error data for node and external-tool failures."""
 
@@ -119,7 +135,7 @@ class ErrorEnvelope(BaseModel):
 
 
 class TestPlan(BaseModel):
-    """Machine-readable handoff from Kernel Expert to Test Expert."""
+    """Machine-readable plan executed by the persistent QEMU runner."""
 
     target_arch: str = ""
     boot_kernel_path: str = ""
@@ -128,7 +144,7 @@ class TestPlan(BaseModel):
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer_module_path: str = ""
-    test_script_path: str = ""
+    execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
     detection_signals: DetectionSignals = Field(default_factory=DetectionSignals)
@@ -178,6 +194,7 @@ class InputArtifactsContract(BaseModel):
     boot_kernel_path: str = ""
     target_arch: str = ""
     kernel_source_path: str = ""
+    log_path: str = ""
     reproducer_path: str = ""
     log_excerpt: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)
@@ -258,8 +275,7 @@ class UafAnalysisContract(BaseModel):
 class KernelExpertOutput(BaseModel):
     """Structured Kernel Expert output.
 
-    This is introduced as a forward-compatible contract. Current code can still
-    use marker parsing as a fallback until the prompt is fully JSON-first.
+    This contract is JSON-first; incomplete output is blocked.
     """
 
     status: WorkflowStatus = "degraded"
@@ -271,7 +287,7 @@ class KernelExpertOutput(BaseModel):
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer_module_path: str = ""
-    test_script_path: str = ""
+    execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
     build_status: str = ""

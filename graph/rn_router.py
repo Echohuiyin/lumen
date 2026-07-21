@@ -1,4 +1,3 @@
-from langgraph.graph import END
 from langgraph.types import Send
 import re
 
@@ -37,35 +36,14 @@ def route_after_pm(state: MaintenanceWorkflowState):
 
 
 def route_after_kernel(state: MaintenanceWorkflowState):
-    """Kernel Expert 后路由：结构化契约齐全时才进入 Test Expert。"""
-    contract = state.get("kernel_contract") or {}
-    if contract:
-        required = ("target_arch", "boot_kernel_path", "test_script_path", "expected_signal")
-        ok = contract.get("status") == "ok"
-        fields_ok = all(contract.get(field) for field in required)
-        path_contract_ok = _path_contract_ready_for_test(contract)
-        if ok and fields_ok and path_contract_ok:
-            return "test_expert"
-        # diagnostic logging
-        if ok is False:
-            print(f"  [路由诊断] kernel_contract.status={contract.get('status')!r}", flush=True)
-        missing = [f for f in required if not contract.get(f)]
-        if missing:
-            print(f"  [路由诊断] contract 缺少必填字段: {missing}", flush=True)
-        if not path_contract_ok:
-            print("  [路由诊断] UAF/refcount path contract 未通过，跳过 QEMU", flush=True)
-        return "knowledge_base"
+    """Archive every outcome after the single analysis/PoC/verification loop.
 
-    if state.get("kernel_ready_for_test") is False:
-        print("  [路由诊断] 无 kernel_contract 且 kernel_ready_for_test=False", flush=True)
-        return "knowledge_base"
-
-    if state.get("final_response") and not state.get("reproduce_case"):
-        print("  [路由诊断] 有 final_response 但无 reproduce_case → END", flush=True)
-        return END
-
-    print("  [路由诊断] 无 contract 但 fallthrough → test_expert", flush=True)
-    return "test_expert"
+    The QEMU runner is invoked inside ``kernel_expert`` and its JSON contract
+    is evidence, not a separate agent handoff.  Blocked and failed attempts
+    must be archived as well, so no route silently retries with a different
+    context or drops negative evidence.
+    """
+    return "knowledge_base"
 
 
 def _path_contract_ready_for_test(contract: dict) -> bool:
@@ -99,16 +77,3 @@ def _path_contract_ready_for_test(contract: dict) -> bool:
         and scope_complete
         and structured_ready
     )
-
-
-def route_after_test(state: MaintenanceWorkflowState):
-    """测试专家后路由：复现成功或超限失败均归档，否则回到内核专家重新分析。"""
-    max_attempts = state.get("config", {}).get("workflow", {}).get("max_test_attempts", 3)
-
-    if state.get("test_passed"):
-        return "knowledge_base"
-
-    if state.get("test_attempts", 0) >= max_attempts:
-        return "knowledge_base"
-
-    return "kernel_expert"

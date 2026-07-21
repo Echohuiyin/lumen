@@ -8,6 +8,9 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from agents.input_artifacts import parse_input_artifacts
+from agents.kernel_expert import _resolve_primary_log_path
+from agents.llm_display import set_session_dir
+from agents.tool_expert import _make_tool_result
 from agents.validator import _validate_input_by_rules, validator_node
 
 
@@ -55,9 +58,11 @@ def test_vague_input_blocks():
     assert "kernel_source" in result.missing_fields
 
 
-def test_validator_node_returns_contract_for_rule_pass():
+def test_validator_node_returns_contract_for_readable_log(tmp_path):
+    log_path = tmp_path / "kernel.log"
+    log_path.write_text("Kernel panic - not syncing\n", encoding="utf-8")
     state = {
-        "user_input": "kernel panic with vmcore and vmlinux, kernel_source: /tmp/linux",
+        "user_input": f"kernel panic\nlog: {log_path}\nkernel_source: {tmp_path}",
         "config_path": "config.json",
     }
     result = validator_node(state)
@@ -65,6 +70,36 @@ def test_validator_node_returns_contract_for_rule_pass():
     assert result["validation_contract"]["reason"] == "rule_detected_kernel_signals"
     assert "input_artifacts_contract" in result
     assert result["config"]
+
+
+def test_validator_blocks_when_vmcore_and_log_are_both_absent(tmp_path):
+    result = validator_node({
+        "user_input": f"kernel panic\nkernel_source: {tmp_path}",
+        "config_path": "config.json",
+    })
+    assert result["validation_passed"] is False
+    assert result["validation_contract"]["reason"] == "missing_vmcore_or_log"
+
+
+def test_validator_requires_vmlinux_when_log_must_come_from_vmcore(tmp_path):
+    vmcore = tmp_path / "vmcore"
+    vmcore.write_bytes(b"CORE")
+    result = validator_node({
+        "user_input": f"kernel panic\nvmcore: {vmcore}\nkernel_source: {tmp_path}",
+        "config_path": "config.json",
+    })
+    assert result["validation_passed"] is False
+    assert result["validation_contract"]["reason"] == "missing_vmlinux_for_vmcore_log_extraction"
+
+
+def test_kernel_expert_uses_vmcore_extracted_log_when_input_log_is_absent(tmp_path):
+    extracted = tmp_path / "kernel_log.raw.log"
+    extracted.write_text("from vmcore\n", encoding="utf-8")
+    selected = _resolve_primary_log_path(
+        {"log_path": ""},
+        [{"structured_output": {"artifacts": {"raw_log_file": str(extracted)}}}],
+    )
+    assert selected == str(extracted)
 
 
 def test_parse_input_artifacts_extracts_paths_and_arch():
@@ -78,6 +113,28 @@ def test_parse_input_artifacts_extracts_paths_and_arch():
     assert contract.vmlinux_path == "/tmp/vmlinux"
     assert contract.boot_kernel_path == "/linux/arch/arm64/boot/Image"
     assert contract.target_arch == "arm64"
+
+
+def test_parse_input_artifacts_keeps_original_log_as_a_path_not_excerpt():
+    contract = parse_input_artifacts(
+        "Bug Promote: panic\nlog: /tmp/original-kernel.log\nkernel_source: /tmp/linux",
+        validate_paths=False,
+    )
+    assert contract.log_path == "/tmp/original-kernel.log"
+    assert contract.log_excerpt == ""
+
+
+def test_tool_expert_result_is_materialized_as_a_readable_file(tmp_path):
+    set_session_dir(tmp_path)
+    try:
+        result = _make_tool_result(
+            expert_type="lock_analysis", expert_name="锁分析专家", analysis_output="raw expert result",
+        )
+        output_path = Path(result["structured_output"]["artifacts"]["expert_output_file"])
+        assert output_path.is_file()
+        assert output_path.read_text(encoding="utf-8") == "raw expert result\n"
+    finally:
+        set_session_dir(None)
 
 
 def test_parse_input_artifacts_validates_paths_and_kernel_types():
@@ -149,7 +206,6 @@ if __name__ == "__main__":
         test_deadlock_passes_without_llm,
         test_missing_kernel_source_blocks,
         test_vague_input_blocks,
-        test_validator_node_returns_contract_for_rule_pass,
         test_parse_input_artifacts_extracts_paths_and_arch,
         test_parse_input_artifacts_validates_paths_and_kernel_types,
         test_parse_input_artifacts_degrades_when_boot_kernel_is_elf,

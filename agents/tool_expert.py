@@ -7,6 +7,7 @@
 
 import os
 import re
+from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from agents.contracts import ToolExpertOutput, model_to_dict
@@ -108,6 +109,15 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
         f.write(footer)
 
 
+def _persist_extracted_kernel_log(output_file: Path, content: str) -> Path:
+    """Atomically retain the raw log extracted from a vmcore."""
+    log_file = output_file.with_name("kernel_log.raw.log")
+    temporary = log_file.with_suffix(".tmp")
+    temporary.write_text(content, encoding="utf-8", errors="replace")
+    temporary.replace(log_file)
+    return log_file.resolve()
+
+
 def _make_tool_result(
     *,
     expert_type: str,
@@ -118,14 +128,24 @@ def _make_tool_result(
     artifacts: dict | None = None,
     errors: list[str] | None = None,
 ) -> ToolExpertResult:
-    """Build a backward-compatible tool expert result with structured status."""
+    """Persist every expert result and pass its path as the inter-agent API."""
+    output_file = get_expert_output_file(expert_type)
+    # Most execution paths already write a rich transcript.  Early failures
+    # (missing configuration, unavailable input) do not, so materialize their
+    # result too.  This makes every tool expert independently reviewable and
+    # prevents the kernel loop from consuming an in-memory-only summary.
+    if not output_file.exists():
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(analysis_output + "\n", encoding="utf-8")
+    result_artifacts = dict(artifacts or {})
+    result_artifacts["expert_output_file"] = str(output_file.resolve())
     structured = ToolExpertOutput(
         expert_type=expert_type,
         expert_name=expert_name,
         status=status,
         summary=analysis_output[:1000],
         evidence=evidence or [],
-        artifacts=artifacts or {},
+        artifacts=result_artifacts,
         errors=errors or [],
     )
     return ToolExpertResult(
@@ -738,7 +758,29 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
 
                 # Execute log command to extract kernel log
                 log_result = session.run_command("log")
-                log_content = _result_output(log_result) if _result_success(log_result) else "Cannot extract kernel log"
+                if not _result_success(log_result):
+                    error_msg = "从 vmcore 提取日志失败: crash log command failed"
+                    _write_tool_call_output(output_file, error_msg, expert_name)
+                    return {
+                        "expert_results": [_make_tool_result(
+                            expert_type=expert_type,
+                            expert_name=expert_name,
+                            analysis_output=error_msg,
+                            status="failed",
+                            evidence=[_command_evidence({
+                                "command": "log", "success": False,
+                                "output": _result_output(log_result),
+                            })],
+                            artifacts={
+                                "vmcore_path": vmcore_path or "",
+                                "vmlinux_path": vmlinux_path or "",
+                                "output_file": str(output_file),
+                            },
+                            errors=[error_msg],
+                        )],
+                    }
+                log_content = _result_output(log_result)
+                raw_log_file = _persist_extracted_kernel_log(output_file, log_content)
                 evidence = [_command_evidence({
                     "command": "log",
                     "success": _result_success(log_result),
@@ -793,6 +835,7 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                             "vmcore_path": vmcore_path or "",
                             "vmlinux_path": vmlinux_path or "",
                             "output_file": str(output_file),
+                            "raw_log_file": str(raw_log_file),
                         },
                     )],
                 }

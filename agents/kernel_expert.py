@@ -4,10 +4,11 @@ import os
 import re
 import subprocess
 import hashlib
+import time
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from agents.contracts import KernelExpertOutput, RefcountPath, UafAnalysisContract, model_to_dict
+from agents.contracts import KernelExpertOutput, RefcountPath, TestResultContract, UafAnalysisContract, model_to_dict
 from agents.error_handling import classify_error, error_to_evidence
 from agents.semcode_path_analysis import (
     SemcodePathAnalysisResult,
@@ -250,6 +251,7 @@ def _run_kernel_expert_with_agent_loop(
     target_kernel_dir: str = "",
     boot_kernel_path: str = "",
     test_assets_dir: str = "",
+    max_reproduction_rounds: int = 9,
 ) -> AIMessage:
     """Execute kernel expert analysis via an agent-loop CLI backend.
 
@@ -282,6 +284,9 @@ def _run_kernel_expert_with_agent_loop(
 - Host kernel: {os.uname().release} / arch {os.uname().machine} (host kernel is for compile toolchain only, NOT for module compilation target)
 - Host kernel headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
 - Target kernel source for module compilation: {target_kernel_dir or '(not detected — ask user or use boot_kernel_path-derived dir)'}
+- Persistent QEMU runner: {PROJECT_ROOT}/tools/run_persistent_qemu_poc.py
+- Maximum complete analysis/PoC/verification rounds: {max_reproduction_rounds}
+- Per-round deterministic verification result: {paths_get_output_dir()}/persistent_test_contract.round-<NN>.json
 """
 
         # Preflight: extract kernel config + scan test_assets for existing
@@ -307,6 +312,22 @@ def _run_kernel_expert_with_agent_loop(
         )
 
         output_content = response.content or ""
+        # Retry once inside this same Kernel Expert loop when the final turn
+        # is empty or lacks the required structured contract.  No disk
+        # contract, marker, stale artifact, or alternate expert is consulted.
+        if not output_content.strip() or "KERNEL_CONTRACT" not in output_content:
+            retry_messages = messages + [HumanMessage(content=(
+                "当前最终输出缺少可解析的 KERNEL_CONTRACT。请在本次 loop 内补交完整结构化 JSON，"
+                "保留已完成的分析、PoC 和验证结果；不要引用旧文件或省略字段。"
+            ))]
+            retry_response = llm.invoke(
+                retry_messages,
+                workdir=str(paths_get_output_dir()),
+                add_dirs=add_dirs,
+            )
+            if retry_response.content and retry_response.content.strip():
+                response = retry_response
+                output_content = retry_response.content
         if not output_content.strip():
             output_content = f"（{backend_label} 未生成最终文本，请检查 {backend_label} CLI 输出）"
         _write_tool_call_output(output_file, output_content, expert_name)
@@ -328,6 +349,19 @@ def _run_kernel_expert_with_agent_loop(
         ):
             raise
         return AIMessage(content=error_msg)
+
+
+def _resolve_primary_log_path(input_artifacts: dict, expert_results: list[dict]) -> str:
+    """Prefer the supplied log; otherwise use the log artifact extracted from vmcore."""
+    supplied = str(input_artifacts.get("log_path", "") or "")
+    if supplied and Path(os.path.expanduser(supplied)).is_file():
+        return supplied
+    for result in expert_results:
+        artifacts = ((result.get("structured_output") or {}).get("artifacts") or {})
+        extracted = str(artifacts.get("raw_log_file", "") or "")
+        if extracted and Path(extracted).is_file():
+            return extracted
+    return ""
 
 
 def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
@@ -363,17 +397,34 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         agent_config.get("prompt_file", "prompts/kernel_expert.md")
     )
 
-    # 汇总所有工具专家的分析结果
+    # Tool expert transcripts are durable artifacts.  Pass paths (not large
+    # summaries) to the Claude loop so each expert can be iterated and audited
+    # independently without mixing its context into another expert's prose.
     expert_results = state.get("expert_results", [])
 
     # Only display expert outputs on first invocation (not on retries after test failures)
     if state.get("test_attempts", 0) == 0:
         display_expert_outputs(expert_results)
-    expert_summaries = []
+    expert_result_paths = []
     for result in expert_results:
-        expert_summaries.append(
-            f"### {result['expert_name']}（{result['expert_type']}）\n{result['analysis_output']}"
+        structured = result.get("structured_output") or {}
+        artifacts = structured.get("artifacts") or {}
+        output_path = artifacts.get("expert_output_file")
+        if not output_path:
+            # Direct node/unit callers may provide a tool result without
+            # going through tool_expert_node.  Materialize that supplied
+            # result once so the Claude boundary still receives a file path.
+            # Normal workflow execution always takes the persisted branch.
+            expert_type = str(result.get("expert_type", "unknown"))
+            materialized_file = get_expert_output_file(expert_type)
+            materialized_file.write_text(str(result.get("analysis_output", "")) + "\n", encoding="utf-8")
+            output_path = str(materialized_file.resolve())
+        expert_result_paths.append(
+            f"- {result.get('expert_name', result.get('expert_type', 'unknown'))}"
+            f" ({result.get('expert_type', 'unknown')}): {output_path}"
         )
+
+    original_log_path = _resolve_primary_log_path(input_artifacts, expert_results)
 
     # Extract evidence summary for LLM context
     evidence_summary = _extract_evidence_summary(expert_results)
@@ -397,12 +448,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             return _blocked_semcode_path_analysis(semcode_path_analysis)
 
     user_content = (
-        f"用户输入:\n{state['user_input']}\n\n"
+        f"## 用户问题与制品声明\n{state.get('user_input', '')}\n\n"
         f"## 输入文件路径\n"
         f"- vmcore_path: {input_artifacts.get('vmcore_path', 'N/A')}\n"
         f"- vmlinux_path: {input_artifacts.get('vmlinux_path', 'N/A')}\n"
         f"- boot_kernel_path: {input_artifacts.get('boot_kernel_path', input_artifacts.get('vmlinux_path', 'N/A'))}\n\n"
-        f"## 工具专家分析结果\n" + "\n\n".join(expert_summaries) + "\n\n"
+        f"- 原始日志路径（第一手证据，按需直接读取，禁止以专家摘要替代）: {original_log_path or 'N/A（vmcore 日志提取失败或未提供）'}\n\n"
+        f"## 工具专家结果文件（按需直接读取；不要以路径外的摘要替代原文）\n"
+        + "\n".join(expert_result_paths) + "\n\n"
         f"## 关键证据摘要\n{evidence_summary}"
     )
     if semcode_path_analysis is not None:
@@ -457,7 +510,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                         "boot_kernel_path": existing_contract.boot_kernel_path,
                         "reproducer_dir": existing_contract.reproducer_dir,
                         "reproducer_module_path": existing_contract.reproducer_module_path,
-                        "test_script_path": existing_contract.test_script_path,
                         "expected_signal": existing_contract.expected_signal,
                         "binaries_dir": existing_contract.binaries_dir,
                         "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
@@ -519,11 +571,12 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         if _bk.parent.is_dir() and (_bk.parent / "input.txt").exists():
             test_assets_dir = str(_bk.parent)
 
-    # 执行 agent-loop CLI 分析（claude_code 或 opencode backend）
-    # Snapshot the mtime of the newest reproducer dir BEFORE the CLI runs,
-    # so the max_turns recovery path can distinguish files the agent wrote
-    # during this invocation from stale dirs left over by a previous case.
-    cli_start_mtime = _newest_reproducer_mtime(paths_get_output_dir())
+    # Execute exactly one Claude agent loop.  A max-turns exhaustion is a
+    # terminal blocked outcome; partial files must not bypass SSH verification.
+    cli_started_at = time.time()
+    max_reproduction_rounds = int((config.get("workflow", {}) or {}).get("max_reproduction_rounds", 9))
+    if max_reproduction_rounds < 1:
+        raise ValueError("workflow.max_reproduction_rounds must be >= 1")
     try:
         response = _run_kernel_expert_with_agent_loop(
             llm=llm,
@@ -534,14 +587,12 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             target_kernel_dir=target_kernel_dir,
             boot_kernel_path=boot_kernel_path,
             test_assets_dir=test_assets_dir,
+            max_reproduction_rounds=max_reproduction_rounds,
         )
     except RuntimeError as e:
-        # CLI startup failure (MCP config missing, CLI crash), max_turns
-        # exhaustion, or timeout. Before blocking, check whether the agent
-        # actually wrote reproducer files before it ran out of turns — the
-        # btrfs case routinely writes a full reproducer.c + test.sh early
-        # then keeps analyzing and hits max_turns without emitting the
-        # KERNEL_CONTRACT. Discarding that work forces a full re-run.
+        # CLI startup failure, timeout, or turn-budget exhaustion ends this
+        # complete loop.  Do not recover partial POC files: they have not
+        # reached the mandatory persistent SSH-QEMU verification stage.
         err_str = str(e)
         is_max_turns = "[cli_max_turns]" in err_str or "Reached maximum number of turns" in err_str
         if "timed out" in err_str.lower():
@@ -550,39 +601,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             error_msg = f"kernel_expert CLI 达到 max_turns 上限: {err_str}"
         else:
             error_msg = f"kernel_expert CLI 启动失败: {err_str}"
-
-        # Attempt to recover reproducer files written before the CLI failed.
-        # Only do this for max_turns (the agent had time to write files but
-        # didn't finish the contract); startup failures and timeouts are
-        # unlikely to have produced files and should stay blocked.
-        recovered = (
-            _recover_reproducer_from_outputs(
-                input_artifacts, state, min_mtime=cli_start_mtime,
-            )
-            if is_max_turns
-            else None
-        )
-        if recovered is not None:
-            contract, analysis_text = recovered
-            if semcode_path_analysis is not None:
-                contract = _apply_semcode_path_analysis(contract, semcode_path_analysis)
-                contract = _validate_kernel_contract_artifacts(contract, path_analysis_required=True)
-            return {
-                "kernel_analysis": analysis_text,
-                "reproduce_case": analysis_text,
-                "kernel_diagnosis": "",
-                "kernel_ready_for_test": _kernel_contract_ready_for_test(contract),
-                "kernel_contract": model_to_dict(contract),
-                "target_arch": contract.target_arch,
-                "boot_kernel_path": contract.boot_kernel_path,
-                "reproducer_dir": contract.reproducer_dir,
-                "reproducer_module_path": contract.reproducer_module_path,
-                "test_script_path": contract.test_script_path,
-                "expected_signal": contract.expected_signal,
-                "binaries_dir": contract.binaries_dir,
-                "final_response": analysis_text,
-                "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
-            }
 
         blocked_contract = KernelExpertOutput(
             status="blocked",
@@ -603,13 +621,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     text = response.content.strip()
 
-    # 写人审阅包，检测是否有人注入关键思路
-    # 注入时机：跑完一轮后，路由 test_expert 前
-    # 不影响 retry：重跑只替换本轮 contract，不改 test_attempts
-    # wait_for_hint 给人一个有界窗口审阅 review pack 并决定是否注入：
-    #   - 写 kernel_expert.hint → 拾取并重跑
-    #   - touch kernel_expert.continue → 立即跳过等待
-    #   - 超时 → 正常路由 test_expert
+    # Keep the optional human review package, but do not reinvoke Claude here.
+    # Analysis, POC creation, and SSH-QEMU verification are one Claude loop;
+    # a second model call would split the evidence context again.
     try:
         write_hint_review_pack(
             user_input=state.get("user_input", ""),
@@ -619,39 +633,18 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     except Exception:
         pass  # review pack 写失败不应阻塞主流程
 
-    workflow_cfg = config.get("workflow", {}) or {}
-    hint_wait = int(workflow_cfg.get("hint_wait_seconds", 120))
-    hint = wait_for_hint(timeout_seconds=hint_wait)
-    if hint:
-        # 本轮单 shot：read_and_consume_hint 已删除 hint 文件
-        # 重跑时把 hint 追加到 user_content，标记为维护人员关键思路
-        hinted_user_content = (
-            user_content
-            + f"\n\n## 维护人员关键思路（优先参考，不强制）\n\n{hint}\n"
-        )
-        try:
-            response = _run_kernel_expert_with_agent_loop(
-                llm=llm,
-                system_prompt=system_prompt,
-                user_content=hinted_user_content,
-                expert_name="内核专家（hint 重跑）",
-                output_file=output_file,
-                target_kernel_dir=target_kernel_dir,
-                boot_kernel_path=boot_kernel_path,
-                test_assets_dir=test_assets_dir,
-            )
-            text = response.content.strip()
-        except RuntimeError:
-            # 重跑失败保留第 1 轮输出，不阻塞
-            pass
-
-    # 解析 contract + 构造返回 dict（hint 注入重跑后也复用此函数）
+    # The loop must have run the deterministic SSH-QEMU runner itself.  Its
+    # JSON result is attached below; final natural-language text cannot claim
+    # a reproduction result without that fresh artifact.
     parsed = _parse_kernel_expert_response(
         text=text,
         expert_results=expert_results,
         input_artifacts=input_artifacts,
         state=state,
         semcode_path_analysis=semcode_path_analysis,
+    )
+    parsed = _attach_persistent_test_result(
+        parsed, started_after=cli_started_at, max_rounds=max_reproduction_rounds,
     )
     if semcode_path_analysis is not None:
         parsed["semcode_path_analysis"] = semcode_path_analysis.as_dict()
@@ -789,87 +782,24 @@ def _parse_kernel_expert_response(
             "final_response": text,
         }
 
-    # Detect DSML/XML tool_use fragments (DeepSeek tool_use serialization
-    # mismatch with Claude Code CLI). When the LLM emits only closing tags
-    # like </tool_calls> or <tool_use>...</tool_use> without a proper text
-    # section, the text-extraction path returns garbage. Treat it as empty
-    # so the disk-contract fallback can recover the agent's artifacts.
+    # A missing or malformed final response is a hard failure.  The contract
+    # must be emitted explicitly by the Kernel Expert; stale files and legacy
+    # marker output are never consulted.
     if text and _looks_like_dsml_fragments(text):
         text = ""
-
-    # Fallback for empty response: auto-generate contract from state
     if not text:
-        text = _generate_fallback_analysis(expert_results, input_artifacts, state)
-        # Search for actual reproducer files
-        outputs_dir = paths_get_output_dir()
-        reproducer_dir, test_script_path, reproducer_module_path, _ = _find_actual_reproducer_path(outputs_dir)
-
-        # Prefer the agent-written kernel_contract.json when the text was
-        # empty — the agent may have written a complete contract via its
-        # tools even though the final text event was missing (model ended
-        # with tool calls only).
-        contract_file = outputs_dir / "kernel_contract.json"
-        if contract_file.exists():
-            try:
-                data = json.loads(contract_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    file_contract = _model_validate(KernelExpertOutput, data)
-                    if _kernel_contract_has_handoff(file_contract):
-                        kernel_contract = file_contract
-                        kernel_contract = _validate_kernel_contract_artifacts(
-                            kernel_contract,
-                            path_analysis_required=path_analysis_required,
-                        )
-                        contract_ready = _kernel_contract_ready_for_test(kernel_contract)
-                        return {
-                            "kernel_analysis": text,
-                            "reproduce_case": text,
-                            "kernel_diagnosis": "",
-                            "kernel_ready_for_test": contract_ready,
-                            "kernel_contract": model_to_dict(kernel_contract),
-                            "target_arch": kernel_contract.target_arch,
-                            "boot_kernel_path": kernel_contract.boot_kernel_path,
-                            "reproducer_dir": kernel_contract.reproducer_dir,
-                            "reproducer_module_path": kernel_contract.reproducer_module_path,
-                            "test_script_path": kernel_contract.test_script_path,
-                            "expected_signal": kernel_contract.expected_signal,
-                        }
-            except (OSError, json.JSONDecodeError, ValueError):
-                pass
-
-        fallback_arch = _resolve_target_arch_fallback(input_artifacts.get("vmlinux_path", ""))
-        fallback_boot = (
-            input_artifacts.get("boot_kernel_path")
-            or input_artifacts.get("vmlinux_path", "")
-        )
-        kernel_contract = KernelExpertOutput(
-            status="ok",
-            target_arch=fallback_arch,
-            boot_kernel_path=fallback_boot,
-            reproducer_dir=reproducer_dir or str(outputs_dir),
-            reproducer_module_path=reproducer_module_path,
-            test_script_path=test_script_path,
-            expected_signal="",
+        blocked_contract = KernelExpertOutput(
+            status="blocked",
             build_status="skipped",
-            warnings=["LLM did not produce structured output; contract auto-generated from state"],
+            blocked_reason="Kernel Expert did not emit an explicit structured response",
         )
-        kernel_contract = _validate_kernel_contract_artifacts(
-            kernel_contract,
-            path_analysis_required=path_analysis_required,
-        )
-        contract_ready = _kernel_contract_ready_for_test(kernel_contract)
         return {
-            "kernel_analysis": text,
-            "reproduce_case": text,
+            "kernel_analysis": "",
+            "reproduce_case": "",
             "kernel_diagnosis": "",
-            "kernel_ready_for_test": contract_ready,
-            "kernel_contract": model_to_dict(kernel_contract),
-            "target_arch": kernel_contract.target_arch,
-            "boot_kernel_path": kernel_contract.boot_kernel_path,
-            "reproducer_dir": kernel_contract.reproducer_dir,
-            "reproducer_module_path": kernel_contract.reproducer_module_path,
-            "test_script_path": kernel_contract.test_script_path,
-            "expected_signal": kernel_contract.expected_signal,
+            "kernel_ready_for_test": False,
+            "kernel_contract": model_to_dict(blocked_contract),
+            "final_response": "Kernel Expert 未输出结构化 contract，流程已阻断。",
         }
 
     # 解析必现用例和维测方案
@@ -881,37 +811,12 @@ def _parse_kernel_expert_response(
     boot_kernel_path = _extract_scalar_marker(text, "BOOT_KERNEL_PATH")
     reproducer_dir = _extract_scalar_marker(text, "REPRODUCER_DIR")
     reproducer_module_path = _extract_scalar_marker(text, "REPRODUCER_MODULE_PATH")
-    test_script_path = _extract_scalar_marker(text, "TEST_SCRIPT_PATH")
     expected_signal = _extract_scalar_marker(text, "EXPECTED_SIGNAL")
     binaries_dir = _extract_scalar_marker(text, "BINARIES_DIR")
     kernel_contract = _extract_kernel_contract(text)
-    # Workaround for `claude_code` backend: --output-format json only
-    # returns the final assistant turn, so KERNEL_CONTRACT written in
-    # an earlier turn may be missing from `text`. The prompt asks the
-    # agent to also write the contract JSON to outputs/kernel_contract.json;
-    # prefer that file when the text-extracted contract is incomplete.
     if not _kernel_contract_has_handoff(kernel_contract):
-        contract_file = paths_get_output_dir() / "kernel_contract.json"
-        if contract_file.exists():
-            try:
-                data = json.loads(contract_file.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    file_contract = _model_validate(KernelExpertOutput, data)
-                    if _kernel_contract_has_handoff(file_contract):
-                        kernel_contract = file_contract
-            except (OSError, json.JSONDecodeError, ValueError):
-                pass
-    if not _kernel_contract_has_handoff(kernel_contract):
-        fallback_contract = _kernel_contract_from_markers(
-            target_arch=target_arch,
-            boot_kernel_path=boot_kernel_path,
-            reproducer_dir=reproducer_dir,
-            reproducer_module_path=reproducer_module_path,
-            test_script_path=test_script_path,
-            expected_signal=expected_signal,
-            binaries_dir=binaries_dir,
-        )
-        kernel_contract = _merge_kernel_contract(kernel_contract, fallback_contract)
+        kernel_contract.status = "blocked"
+        kernel_contract.blocked_reason = "missing explicit structured KERNEL_CONTRACT"
 
     # If markers had binaries_dir but the JSON contract didn't, propagate it.
     if binaries_dir and not kernel_contract.binaries_dir:
@@ -964,17 +869,6 @@ def _parse_kernel_expert_response(
             except ValueError:
                 pass
 
-    # Final fallback: auto-fill from input_artifacts if contract still incomplete
-    if not _kernel_contract_has_handoff(kernel_contract):
-        auto_fields = _generate_auto_contract_fields(kernel_contract, input_artifacts)
-        if auto_fields:
-            data = model_to_dict(kernel_contract)
-            data.update(auto_fields)
-            data.setdefault("warnings", []).append(
-                f"contract auto-filled: {', '.join(auto_fields.keys())}"
-            )
-            kernel_contract = _model_validate(KernelExpertOutput, data)
-
     kernel_contract = _validate_kernel_contract_artifacts(
         kernel_contract,
         path_analysis_required=path_analysis_required,
@@ -982,7 +876,7 @@ def _parse_kernel_expert_response(
     contract_ready = _kernel_contract_ready_for_test(kernel_contract)
     print(f"  [contract诊断] status={kernel_contract.status} target_arch={kernel_contract.target_arch} "
           f"boot_kernel={kernel_contract.boot_kernel_path is not None} "
-          f"test_script={kernel_contract.test_script_path is not None} "
+          f"execution_steps={len(kernel_contract.execution_steps)} "
           f"expected_signal={kernel_contract.expected_signal is not None} "
           f"ready_for_test={contract_ready}", flush=True)
 
@@ -1009,10 +903,79 @@ def _parse_kernel_expert_response(
         "boot_kernel_path": kernel_contract.boot_kernel_path,
         "reproducer_dir": kernel_contract.reproducer_dir,
         "reproducer_module_path": kernel_contract.reproducer_module_path,
-        "test_script_path": kernel_contract.test_script_path,
         "expected_signal": kernel_contract.expected_signal,
         "binaries_dir": kernel_contract.binaries_dir,
     }
+
+
+def _attach_persistent_test_result(
+    parsed: dict, *, started_after: float, max_rounds: int,
+) -> dict:
+    """Attach only a fresh deterministic SSH-QEMU result to the workflow state.
+
+    Claude's prose is never used as a test verdict.  The loop must invoke the
+    project runner, which writes this independently parsed JSON contract.
+    """
+    contract = parsed.get("kernel_contract") or {}
+    if contract.get("status") != "ok" or not parsed.get("kernel_ready_for_test"):
+        return parsed
+    try:
+        def round_number(path: Path) -> int:
+            match = re.fullmatch(r"persistent_test_contract\.round-(\d+)\.json", path.name)
+            if match is None:
+                raise ValueError(f"invalid persistent QEMU round filename: {path.name}")
+            return int(match.group(1))
+
+        result_paths = sorted(
+            paths_get_output_dir().glob("persistent_test_contract.round-*.json"),
+            key=round_number,
+        )
+        if not result_paths:
+            raise OSError("no per-round persistent QEMU result was produced")
+        if len(result_paths) > max_rounds:
+            raise ValueError(f"reproduction rounds exceed configured limit: {len(result_paths)} > {max_rounds}")
+        round_contracts = []
+        for expected_round, result_path in enumerate(result_paths, start=1):
+            if result_path.stat().st_mtime < started_after:
+                raise OSError(f"round result predates this Claude invocation: {result_path}")
+            data = json.loads(result_path.read_text(encoding="utf-8"))
+            round_contract = _model_validate(TestResultContract, data)
+            if round_contract.attempts != expected_round:
+                raise ValueError(
+                    f"round sequence is invalid: expected {expected_round}, got {round_contract.attempts}"
+                )
+            round_contracts.append((result_path, round_contract))
+        result_path, test_contract = round_contracts[-1]
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parsed.update({
+            "test_passed": False,
+            "test_attempts": 1,
+            "test_result": "Persistent QEMU verification did not produce a fresh deterministic result.",
+            "test_rounds": [],
+            "test_contract": {
+                "status": "blocked",
+                "code": "BLOCKED_PERSISTENT_QEMU_RESULT_MISSING",
+                "test_passed": False,
+                "summary": str(exc),
+                "artifacts": {"expected_pattern": "persistent_test_contract.round-<NN>.json"},
+            },
+        })
+        return parsed
+    round_results = []
+    for path, round_contract in round_contracts:
+        round_data = model_to_dict(round_contract)
+        round_data["result_file"] = str(path)
+        round_results.append(round_data)
+    final_contract = model_to_dict(test_contract)
+    final_contract["round_result_file"] = str(result_path)
+    parsed.update({
+        "test_passed": test_contract.test_passed,
+        "test_attempts": test_contract.attempts,
+        "test_rounds": round_results,
+        "test_result": test_contract.summary,
+        "test_contract": final_contract,
+    })
+    return parsed
 
 
 def _generate_fallback_analysis(expert_results: list, input_artifacts: dict, state: dict) -> str:
@@ -1042,25 +1005,6 @@ def _generate_fallback_analysis(expert_results: list, input_artifacts: dict, sta
     parts.append("内核分析已完成，工具专家已收集完整 crash 数据。")
     parts.append("请查看知识库归档获取完整分析报告。")
     return "\n".join(parts)
-
-
-def _newest_reproducer_mtime(outputs_dir: Path) -> float | None:
-    """Return the mtime of the newest reproducer subdir, or None if none exist.
-
-    Used to snapshot state before a CLI invocation so the max_turns recovery
-    path can filter to dirs created during this invocation only.
-    """
-    if not outputs_dir.exists():
-        return None
-    try:
-        mtimes = [
-            d.stat().st_mtime
-            for d in outputs_dir.iterdir()
-            if d.is_dir() and (d / "test.sh").exists()
-        ]
-    except OSError:
-        return None
-    return max(mtimes) if mtimes else None
 
 
 def _find_actual_reproducer_path(
@@ -1157,82 +1101,6 @@ def _infer_signal_from_test_sh(test_sh_text: str) -> str:
         if token.lower() in test_sh_text.lower():
             return token
     return ""
-
-
-def _recover_reproducer_from_outputs(
-    input_artifacts: dict, state: dict, *, min_mtime: float | None = None,
-) -> tuple[KernelExpertOutput, str] | None:
-    """Recover a usable contract from reproducer files the agent already wrote.
-
-    Used when the CLI hit max_turns but the agent had already created a
-    reproducer directory with test.sh (and optionally reproducer.c/.ko).
-    Returns (contract, analysis_text) or None if no reproducer dir was found.
-
-    The contract is marked status="ok" with a warning noting it was recovered
-    from partial output, so test_expert can proceed. The analysis_text is a
-    short summary so knowledge_base has something to archive.
-
-    min_mtime: if set, only consider reproducer dirs created after this
-    timestamp (i.e. during the current CLI invocation) to avoid picking up
-    a stale dir from a previous case.
-    """
-    outputs_dir = paths_get_output_dir()
-    reproducer_dir, test_script_path, reproducer_module_path, expected_signal = (
-        _find_actual_reproducer_path(outputs_dir, min_mtime=min_mtime)
-    )
-    if not reproducer_dir or not test_script_path:
-        return None
-
-    fallback_arch = _resolve_target_arch_fallback(input_artifacts.get("vmlinux_path", ""))
-    fallback_boot = (
-        input_artifacts.get("boot_kernel_path")
-        or input_artifacts.get("vmlinux_path", "")
-    )
-    # binaries_dir: if reproducer dir has executables (user-space trigger),
-    # point binaries_dir at it so test_expert injects them into initramfs.
-    binaries_dir = ""
-    try:
-        rd_path = Path(reproducer_dir)
-        has_executable = any(
-            p.is_file() and os.access(p, os.X_OK)
-            for p in rd_path.iterdir()
-            if p.name not in {"Makefile", "test.sh"}
-        )
-        if has_executable:
-            binaries_dir = reproducer_dir
-    except Exception:
-        pass
-
-    contract = KernelExpertOutput(
-        status="ok",
-        target_arch=fallback_arch,
-        boot_kernel_path=fallback_boot,
-        reproducer_dir=reproducer_dir,
-        reproducer_module_path=reproducer_module_path,
-        test_script_path=test_script_path,
-        expected_signal=expected_signal,
-        binaries_dir=binaries_dir,
-        build_status="passed" if reproducer_module_path else "skipped",
-        warnings=[
-            "Contract recovered from partial output after CLI hit max_turns; "
-            "reproducer files were written but KERNEL_CONTRACT was not emitted."
-        ],
-    )
-    contract = _validate_kernel_contract_artifacts(
-        contract,
-        path_analysis_required=_requires_path_analysis(state.get("user_input", "")),
-    )
-
-    analysis_text = (
-        f"## kernel_expert 分析（max_turns 后从已生成文件恢复）\n\n"
-        f"CLI 达到 max_turns 上限，但已生成复现器文件。从 outputs/ 恢复 contract：\n"
-        f"- reproducer_dir: {reproducer_dir}\n"
-        f"- test_script_path: {test_script_path}\n"
-        f"- reproducer_module_path: {reproducer_module_path or '(none — user-space reproducer)'}\n"
-        f"- expected_signal: {contract.expected_signal}\n"
-        f"- binaries_dir: {binaries_dir or '(none)'}\n"
-    )
-    return contract, analysis_text
 
 
 def _generate_auto_contract_fields(
@@ -1460,7 +1328,7 @@ def _kernel_contract_has_handoff(contract: KernelExpertOutput) -> bool:
     return bool(
         contract.target_arch
         and contract.boot_kernel_path
-        and contract.test_script_path
+        and contract.execution_steps
         and contract.expected_signal
     )
 
@@ -1697,7 +1565,6 @@ def _validate_kernel_contract_artifacts(
         "boot_kernel_path": contract.boot_kernel_path,
     }
     optional_paths = {
-        "test_script_path": contract.test_script_path,
         "reproducer_dir": contract.reproducer_dir,
         "reproducer_module_path": contract.reproducer_module_path,
         "rootfs_path": contract.rootfs_path,
@@ -1724,33 +1591,6 @@ def _validate_kernel_contract_artifacts(
         data[field] = str(resolved)
         evidence.append({"kind": "artifact", "field": field, "path": str(resolved)})
 
-    # Syntax-check test.sh so a broken reproducer is caught before QEMU
-    # boots, not after. LLM-generated test.sh occasionally has unbalanced
-    # quotes, dangling redirects, or half-rewritten control flow that
-    # busybox sh rejects at runtime — surfacing it here lets the next
-    # kernel_expert retry fix it instead of wasting a QEMU boot.
-    test_script = data.get("test_script_path", "")
-    if test_script and Path(test_script).exists():
-        try:
-            check = subprocess.run(
-                ["bash", "-n", str(test_script)],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if check.returncode != 0:
-                msg = check.stderr.strip()[:200] or check.stdout.strip()[:200]
-                errors.append(f"test_script_path syntax error: {msg}")
-            else:
-                evidence.append({
-                    "kind": "artifact_check",
-                    "field": "test_script_path",
-                    "path": str(test_script),
-                    "check": "bash -n OK",
-                })
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            warnings.append(f"test_script_path syntax check skipped: {exc}")
-
     boot_kernel = data.get("boot_kernel_path", "")
     if boot_kernel and Path(boot_kernel).exists():
         kernel_type = detect_kernel_type(boot_kernel)
@@ -1765,6 +1605,10 @@ def _validate_kernel_contract_artifacts(
 
     if not contract.expected_signal:
         errors.append("missing expected_signal")
+
+    # Legacy test.sh post-processing and causal-marker checks are disabled.
+    # The runner owns execution and accepts only structured execution_steps.
+    test_script = ""
 
     data["path_analysis_required"] = bool(
         data.get("path_analysis_required") or path_analysis_required
@@ -1978,9 +1822,4 @@ echo "Fork-kill pressure running (200MB per cycle, 5s rhythm)"
         data["status"] = "blocked"
         data["blocked_reason"] = "; ".join(errors)
         print(f"  [contract诊断] 校验发现 {len(errors)} 个错误: {'; '.join(errors[:3])}", flush=True)
-    elif data.get("status") in {"blocked", "degraded"} and _kernel_contract_has_handoff(_model_validate(KernelExpertOutput, data)):
-        data["status"] = "ok"
-        data["blocked_reason"] = ""
-        print(f"  [contract诊断] 从 {data.get('status')} 升级为 ok（有 handoff 字段）", flush=True)
-
     return _model_validate(KernelExpertOutput, data)

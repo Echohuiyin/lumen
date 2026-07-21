@@ -34,6 +34,7 @@ sessions/
 # test / runtime artifacts
 _test_tmp.txt
 outputs/
+runtime/qemu-ssh/
 knowledge_base/
 self_test_reports/
 test_outputs/

@@ -15,12 +15,11 @@
     - config.json 配好可用的 GLM-5.2/DeepSeek API key
     - test_assets/<fault_type>/input.txt 存在（deadlock/uaf）
     - vmcore/vmlinux/boot_kernel 路径在 input.txt 中正确指向
-    - QEMU 已安装（test_expert 测试需要）
+    - 常驻 SSH QEMU 镜像已由 deploy.sh 创建（内核专家 loop 测试需要）
     - Claude Code CLI 已安装（kernel_expert 测试需要）
 """
 
 import os
-import shutil
 import sys
 from pathlib import Path
 
@@ -34,7 +33,6 @@ from agents.knowledge_base import knowledge_base_node
 from agents.kernel_expert import kernel_expert_node
 from agents.llm_display import ensure_output_dir, get_expert_output_file
 from agents.pm import pm_node
-from agents.test_expert import test_expert_node as run_test_expert_node
 from agents.tool_expert import tool_expert_node
 from agents.validator import validator_node
 from llm_config import load_config
@@ -389,14 +387,13 @@ def test_kernel_expert_capability(fault_type: str, fault_input: str, loaded_conf
 
 
 # ---------------------------------------------------------------------------
-# Test expert (QEMU)
+# KernelExpert persistent SSH-QEMU loop
 # ---------------------------------------------------------------------------
 
-def test_test_expert_capability(fault_type: str, fault_input: str, loaded_config: dict, vmcore_paths: dict):
-    """test_expert 应执行 QEMU 测试，复现 panic。"""
+def test_kernel_expert_persistent_loop_capability(fault_type: str, fault_input: str, loaded_config: dict, vmcore_paths: dict):
+    """One Claude loop must emit deterministic SSH-QEMU evidence, not prose."""
     _skip_if_asset_missing(fault_type, fault_input)
     expectations = FAULT_EXPECTATIONS[fault_type]
-    # 先跑 kernel_expert 拿到 contract（依赖 kernel_expert 能力）
     ke_state = {
         "user_input": fault_input,
         "config": loaded_config,
@@ -412,41 +409,17 @@ def test_test_expert_capability(fault_type: str, fault_input: str, loaded_config
         "test_attempts": 0,
         "test_result": "",
     }
-    ke_result = kernel_expert_node(ke_state)
-    contract = ke_result["kernel_contract"]
-
-    # 检查 QEMU 可用
-    if not shutil.which("qemu-system-x86_64"):
-        pytest.skip("qemu-system-x86_64 未安装，跳过 QEMU 测试")
-
-    # 调用 test_expert
-    te_state = {
-        "user_input": fault_input,
-        "config": loaded_config,
-        "input_artifacts_contract": vmcore_paths,
-        "kernel_contract": contract,
-        "test_attempts": 0,
-    }
-    result = run_test_expert_node(te_state)
-
-    assert result["test_passed"] is True, (
-        f"test_expert 应复现成功，但 test_passed=False。test_result:\n{result.get('test_result', '')[:1000]}"
+    result = kernel_expert_node(ke_state)
+    test_contract = result.get("test_contract") or {}
+    assert test_contract, "Claude loop must attach a persistent_test_contract.round-NN.json result"
+    assert test_contract.get("code") != "BLOCKED_PERSISTENT_QEMU_RESULT_MISSING", test_contract
+    assert not str(test_contract.get("code", "")).startswith("BLOCKED_PERSISTENT_QEMU"), (
+        "persistent guest is not deployed; run bash deploy.sh before --run-online: "
+        f"{test_contract}"
     )
-    te_contract = result["test_contract"]
-    # boot_log_path 在 artifacts 里（TestResultContract.artifacts）
-    artifacts = te_contract.get("artifacts", {}) or {}
-    assert artifacts.get("boot_log_path"), (
-        f"test_contract.artifacts 应包含 boot_log_path: {artifacts}"
-    )
-    assert Path(artifacts["boot_log_path"]).exists(), "boot_log 文件应存在"
-
-    # 输出文件
-    out_file = Path(get_expert_output_file("test_expert"))
-    assert out_file.exists(), "test_expert.txt 未生成"
-    content = out_file.read_text(encoding="utf-8", errors="replace")
-    assert "TEST PASSED: True" in content or "PASSED_REPRODUCED" in content, (
-        f"test_expert.txt 应显示 TEST PASSED: True: {content[:500]}"
-    )
+    artifacts = test_contract.get("artifacts", {}) or {}
+    assert artifacts.get("serial_log"), f"persistent runner must retain serial evidence: {artifacts}"
+    assert Path(artifacts["serial_log"]).exists(), "serial log must exist"
 
 
 # ---------------------------------------------------------------------------

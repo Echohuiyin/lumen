@@ -294,6 +294,7 @@ def test_kernel_contract_file_is_preferred_over_text_extraction(tmp_path, monkey
         "reproducer_dir": "/tmp/repro",
         "reproducer_module_path": "/tmp/repro/x.ko",
         "test_script_path": "/tmp/repro/test.sh",
+        "execution_steps": [{"type": "run_binary", "path": "bin/trigger"}],
         "expected_signal": "BUG: KASAN:",
         "binaries_dir": "",
         "build_status": "passed",
@@ -359,6 +360,7 @@ KERNEL_CONTRACT:
   "reproducer_dir": "{tmp_path}",
   "reproducer_module_path": "{tmp_path}/x.ko",
   "test_script_path": "{ts.name}",
+  "execution_steps": [{{"type": "run_binary", "path": "bin/trigger"}}],
   "expected_signal": "BUG: KASAN:",
   "build_status": "passed"
 }}

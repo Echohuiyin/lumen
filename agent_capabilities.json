@@ -56,13 +56,13 @@
       "downstream_consumers": ["kernel_expert", "knowledge_base"]
     },
     "kernel_expert": {
-      "role": "Synthesize tool expert findings, create reproducer artifacts, compile where possible, and emit kernel_contract.",
+      "role": "In one Claude Code loop, synthesize evidence, create and compile a POC, invoke persistent SSH-QEMU validation, and emit both contracts.",
       "prompt_file": "prompts/kernel_expert.md",
       "required_inputs": ["user_input", "expert_results", "config"],
       "optional_inputs": ["input_artifacts_contract", "test_result", "test_attempts"],
-      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract", "semcode_path_analysis"],
+      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract", "execution_steps", "test_result", "test_passed", "test_attempts", "test_rounds", "test_contract", "semcode_path_analysis"],
       "tools": ["create_directory", "write_file", "read_file", "compile_module", "check_file_exists", "list_directory", "search_files", "bash"],
-      "downstream_consumers": ["test_expert", "knowledge_base"],
+      "downstream_consumers": ["knowledge_base"],
       "bug_type_recipes": {
         "deadlock": {
           "reproducer_strategy": "kernel_module",
@@ -119,15 +119,6 @@
           "detection_panic_is_pass": true
         }
       }
-    },
-    "test_expert": {
-      "role": "Run deterministic QEMU validation from a validated kernel_contract and emit test_contract.",
-      "prompt_file": "prompts/test_expert.md",
-      "required_inputs": ["user_input", "kernel_contract", "config"],
-      "optional_inputs": ["input_artifacts_contract", "reproduce_case", "kernel_diagnosis", "test_attempts"],
-      "outputs": ["test_result", "test_passed", "test_attempts", "test_contract"],
-      "tools": ["check_qemu_available", "create_ext4_rootfs", "create_initramfs", "boot_kernel", "analyze_boot_log"],
-      "downstream_consumers": ["kernel_expert", "knowledge_base"]
     },
     "knowledge_base": {
       "role": "Archive the full analysis, structured contracts, evidence, reproducer artifacts, and test result.",

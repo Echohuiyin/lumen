@@ -19,7 +19,7 @@ AUTOMATION_AGENTS = [
     "validator",
     "pm",
     "kernel_expert",
-    "test_expert",
+    "test_expert",  # legacy standalone agent; not part of the main graph
     "knowledge_base",
     "evaluation",
     "improvement",

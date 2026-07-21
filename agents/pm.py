@@ -1,10 +1,5 @@
 import re
-from pathlib import Path
-
-from langchain_core.messages import HumanMessage, SystemMessage
-
-from agents.llm_display import call_llm_with_persistence, set_session_dir
-from llm_config import get_llm_with_config, load_prompt_from_file
+from agents.llm_display import set_session_dir
 from graph.rn_state import MaintenanceWorkflowState
 
 
@@ -22,57 +17,22 @@ def pm_node(state: MaintenanceWorkflowState) -> dict:
         state.get("user_input", ""),
         experts_config,
     )
-    if rule_experts:
-        issue_id, issue_url = _create_issue_stub(state["user_input"])
-        return {
-            "required_experts": rule_experts,
-            "pm_routing_reason": routing_reason,
-            "issue_id": issue_id,
-            "issue_url": issue_url,
-        }
-
-    agent_config = config.get("agents", {}).get("pm", {})
-    default_config = config.get("default", {})
-    llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="pm")
-    system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/pm.md")
-    )
-
-    # 构建可用专家列表信息
-    experts_desc = []
-    for exp in experts_config:
-        experts_desc.append(f"- {exp['type']}: {exp.get('name', exp['type'])} — {exp.get('description', '')}")
-
-    user_content = (
-        f"用户输入:\n{state['user_input']}\n\n"
-        f"可用工具专家:\n" + "\n".join(experts_desc)
-    )
-
-    # 使用持久化版本
-    response = call_llm_with_persistence(
-        "pm", "分析分类", llm,
-        [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
-        persist_dir=Path("outputs"),
-    )
-
-    text = response.content.strip()
-
-    # 解析需要的专家类型
-    required_experts = _parse_required_experts(text, experts_config)
-
-    # 创建 issue（打桩）
+    # Routing is deterministic.  Unknown wording still gets the baseline
+    # knowledge search, plus log analysis when a log is present; crash
+    # analysis is added only for vmcore/vmlinux or explicit crash evidence.
+    if not rule_experts:
+        raise ValueError("No tool experts are configured; PM routing is blocked")
     issue_id, issue_url = _create_issue_stub(state["user_input"])
-
     return {
-        "required_experts": required_experts,
-        "pm_routing_reason": "llm_fallback",
+        "required_experts": rule_experts,
+        "pm_routing_reason": routing_reason or "deterministic_default_by_available_evidence",
         "issue_id": issue_id,
         "issue_url": issue_url,
     }
 
 
 def _select_required_experts_by_rules(user_input: str, experts_config: list[dict]) -> tuple[list[str], str]:
-    """Select tool experts with deterministic rules before falling back to LLM."""
+    """Select tool experts with deterministic rules."""
     valid_types = {exp["type"] for exp in experts_config}
     if not valid_types:
         return [], "no_tool_experts_configured"
@@ -89,7 +49,12 @@ def _select_required_experts_by_rules(user_input: str, experts_config: list[dict
     has_vmcore = bool(re.search(r"\bvmcore\b|/proc/vmcore|kdump", text))
     has_vmlinux = "vmlinux" in text
     has_log = bool(re.search(r"\bdmesg\b|\bconsole\b|\blog\b|call trace|stack trace|oops", text))
-    lock_issue = bool(re.search(r"deadlock|hung task|blocked for more than|soft lockup|hard lockup|lockdep|mutex|spinlock|rwsem|semaphore|d state", text))
+    lock_issue = bool(re.search(
+        r"deadlock|hung task|hung_task|blocked for more than|soft lockup|soft_lockup|"
+        r"hard lockup|hard_lockup|rcu stalled|rcu_stall|rcu_sched|lockdep|mutex|"
+        r"spinlock|rwsem|semaphore|d state",
+        text,
+    ))
     crash_issue = bool(re.search(r"panic|oops|null pointer|unable to handle|kernel bug|bug:|crash|segfault|general protection fault", text))
     memory_issue = bool(re.search(r"oom|out of memory|page fault|slab|kmemleak|use-after-free|uaf|double free", text))
 
@@ -106,12 +71,6 @@ def _select_required_experts_by_rules(user_input: str, experts_config: list[dict
     if "crash_analysis" in selected and "lock_analysis" in selected:
         selected.remove("crash_analysis")
         reasons.append("dedupe_crash_when_lock_analysis_selected")
-
-    if not selected:
-        for fallback in ("knowledge_search", "kernel_log_analysis", "crash_analysis"):
-            if fallback in valid_types:
-                add(fallback, "conservative_default")
-                break
 
     return selected, ", ".join(reasons) if reasons else "no_rule_match"
 
@@ -139,11 +98,8 @@ def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:
             if e.strip().strip("-*[]`'\"").strip()
         ]
     else:
-        # 回退：根据关键词匹配
-        for exp in experts_config:
-            exp_type = exp["type"]
-            if exp_type in text:
-                experts.append(exp_type)
+        # Structured marker is mandatory; do not infer routing from prose.
+        return []
 
     # Deduplication: crash_analysis and lock_analysis both use crash sessions.
     # If both are selected, keep only lock_analysis (it produces better lock analysis).
@@ -155,7 +111,7 @@ def _parse_required_experts(text: str, experts_config: list[dict]) -> list[str]:
         if expert in valid_types and expert not in filtered:
             filtered.append(expert)
 
-    return filtered if filtered else [experts_config[0]["type"]] if experts_config else []
+    return filtered
 
 
 def _create_issue_stub(user_input: str) -> tuple[str, str]:

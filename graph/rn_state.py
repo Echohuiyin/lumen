@@ -51,18 +51,18 @@ class MaintenanceWorkflowState(TypedDict):
     max_likely_path: str               # 最大可能路径
     uaf_analysis_contract: dict        # P1 结构化 UAF/refcount 路径事实源
     semcode_path_analysis: dict        # P2 semcode 事件图、覆盖边界或明确 blocked 原因
-    kernel_ready_for_test: bool        # 内核专家是否产出了可交给测试专家验证的内容
-    kernel_contract: dict              # 结构化内核专家输出（测试交接契约）
+    kernel_ready_for_test: bool        # 内核专家是否产出了可由 loop 内 SSH-QEMU runner 验证的内容
+    kernel_contract: dict              # 结构化内核专家输出（PoC 执行契约）
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
     boot_kernel_path: str              # QEMU 可启动内核镜像路径（bzImage/Image）
     reproducer_dir: str                # 复现用例目录
     reproducer_module_path: str        # 编译出的 .ko 路径
-    test_script_path: str              # initramfs 中执行的测试脚本
     expected_signal: str               # 期望在 boot log 中观察到的复现信号
-    # 测试专家输出
+    # 同一内核专家 loop 的确定性 SSH-QEMU 输出
     test_result: str                  # 测试结果详情
     test_passed: bool                 # 是否成功复现
     test_attempts: int                # 测试尝试次数
+    test_rounds: list[dict]           # 每轮持久 SSH-QEMU 的确定性结果（按轮次保留）
     test_contract: dict               # 结构化测试结果（状态码、步骤、artifact）
     # 知识库生成输出
     knowledge_file: str               # 知识库文件路径
@@ -114,11 +114,11 @@ def make_initial_state(
         "boot_kernel_path": "",
         "reproducer_dir": "",
         "reproducer_module_path": "",
-        "test_script_path": "",
         "expected_signal": "",
         "test_result": "",
         "test_passed": False,
         "test_attempts": 0,
+        "test_rounds": [],
         "test_contract": {},
         "knowledge_file": "",
         "final_response": "",

@@ -22,9 +22,9 @@
       "backend": "claude_code",
       "cli_command": "claude",
       "model": "sonnet",
-      "cli_timeout": 3600,
+      "cli_timeout": 14400,
       "permission_mode": "bypassPermissions",
-      "max_turns": 100,
+      "max_turns": 900,
       "disable_skills": true,
       "semcode_mcp": {
         "command": "${LUMEN_SEMCODE_MCP:-${LUMEN_PROJECT_ROOT:-.}/Analysis-SKILL/tools/semcode/target/release/semcode-mcp}",
@@ -39,9 +39,6 @@
       "agent_name": "lumen_kernel_expert",
       "cli_timeout": 3600,
       "pure": false
-    },
-    "test_expert": {
-      "prompt_file": "prompts/test_expert.md"
     },
     "knowledge_base": {
       "prompt_file": "prompts/knowledge_base.md"
@@ -85,7 +82,7 @@
     "output_dir": "knowledge_base"
   },
   "workflow": {
-    "max_test_attempts": 3,
-    "hint_wait_seconds": 120
+    "max_reproduction_rounds": 9,
+    "hint_wait_seconds": 0
   }
 }

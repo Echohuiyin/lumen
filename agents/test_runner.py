@@ -193,7 +193,7 @@ def run_qemu_test_plan(
         else:
             rootfs_step = create_ext4_rootfs_result(
                 arch=plan.target_arch,
-                test_script_path=plan.test_script_path or None,
+                test_script_path=None,
                 modules_dir=modules_dir or None,
                 binaries_dir=plan.binaries_dir or None,
                 size_mb=plan.rootfs_size_mb or 128,
@@ -212,7 +212,7 @@ def run_qemu_test_plan(
     else:
         initramfs_step = create_initramfs_result(
             arch=plan.target_arch,
-            test_script_path=plan.test_script_path or None,
+            test_script_path=None,
             modules_dir=modules_dir or None,
             binaries_dir=plan.binaries_dir or None,
         )

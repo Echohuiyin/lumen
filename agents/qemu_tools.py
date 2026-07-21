@@ -1,7 +1,6 @@
 """QEMU testing tools for LangChain/LangGraph tool calling.
 
-Provides LangChain StructuredTool wrappers for QEMU kernel testing,
-enabling test_expert to execute real QEMU verification in real execution mode.
+Provides legacy LangChain StructuredTool wrappers for standalone QEMU testing.
 
 Uses scripts from Analysis-SKILL/skills/qemu-test/scripts/.
 """

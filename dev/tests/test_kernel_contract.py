@@ -1,8 +1,10 @@
 """Kernel Expert contract parsing and routing tests."""
 
 from pathlib import Path
+import json
 import sys
 import tempfile
+import time
 
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -10,11 +12,14 @@ sys.path.insert(0, str(project_root))
 from agents.kernel_expert import (
     _extract_section,
     _extract_kernel_contract,
+    _attach_persistent_test_result,
     _kernel_contract_from_markers,
     _kernel_contract_ready_for_test,
     _merge_kernel_contract,
     _validate_kernel_contract_artifacts,
 )
+from agents.contracts import TestResultContract, model_to_dict
+import paths
 from graph.rn_router import route_after_kernel
 
 
@@ -36,7 +41,8 @@ KERNEL_CONTRACT:
   "boot_kernel_path": "__KERNEL__",
   "reproducer_dir": "outputs/repro",
   "reproducer_module_path": "outputs/repro/repro.ko",
-  "test_script_path": "__SCRIPT__",
+      "test_script_path": "__SCRIPT__",
+      "execution_steps": [{"type": "run_binary", "path": "bin/trigger"}],
   "expected_signal": "Kernel panic",
   "build_status": "passed",
   "evidence": [{"kind": "file", "path": "outputs/repro/repro.c"}],
@@ -86,7 +92,56 @@ def test_marker_fallback_blocks_incomplete_handoff():
     assert _kernel_contract_ready_for_test(contract) is False
 
 
-def test_merge_fills_json_with_marker_fallback():
+def test_persistent_results_keep_every_completed_closure_and_use_last_round(tmp_path):
+    """A 9-round loop may retain each closure; only the final contract is verdict."""
+    started_after = time.time() - 1
+    for attempt in (1, 2):
+        result = TestResultContract(
+            status="failed",
+            code="FAILED_REPRODUCTION",
+            attempts=attempt,
+            summary=f"round {attempt}",
+        )
+        (tmp_path / f"persistent_test_contract.round-{attempt:02d}.json").write_text(
+            json.dumps(model_to_dict(result)), encoding="utf-8",
+        )
+    paths.set_session_dir(tmp_path)
+    try:
+        attached = _attach_persistent_test_result(
+            {"kernel_contract": {"status": "ok"}, "kernel_ready_for_test": True},
+            started_after=started_after,
+            max_rounds=9,
+        )
+    finally:
+        paths.set_session_dir(None)
+
+    assert [round_result["attempts"] for round_result in attached["test_rounds"]] == [1, 2]
+    assert attached["test_attempts"] == 2
+    assert attached["test_contract"]["round_result_file"].endswith("round-02.json")
+
+
+def test_persistent_results_reject_more_than_configured_closures(tmp_path):
+    started_after = time.time() - 1
+    for attempt in (1, 2):
+        result = TestResultContract(status="failed", code="FAILED_REPRODUCTION", attempts=attempt)
+        (tmp_path / f"persistent_test_contract.round-{attempt:02d}.json").write_text(
+            json.dumps(model_to_dict(result)), encoding="utf-8",
+        )
+    paths.set_session_dir(tmp_path)
+    try:
+        attached = _attach_persistent_test_result(
+            {"kernel_contract": {"status": "ok"}, "kernel_ready_for_test": True},
+            started_after=started_after,
+            max_rounds=1,
+        )
+    finally:
+        paths.set_session_dir(None)
+
+    assert attached["test_contract"]["code"] == "BLOCKED_PERSISTENT_QEMU_RESULT_MISSING"
+    assert "exceed configured limit" in attached["test_contract"]["summary"]
+
+
+def test_marker_contract_cannot_replace_structured_execution_plan():
     with tempfile.NamedTemporaryFile() as kernel_file, tempfile.NamedTemporaryFile() as test_script:
         kernel_file.write(b"MZ\x00\x00")
         kernel_file.flush()
@@ -105,7 +160,7 @@ def test_merge_fills_json_with_marker_fallback():
         merged = _validate_kernel_contract_artifacts(merged)
         assert merged.status == "ok"
         assert merged.boot_kernel_path == kernel_file.name
-        assert _kernel_contract_ready_for_test(merged) is True
+        assert _kernel_contract_ready_for_test(merged) is False
 
 
 def test_validate_kernel_contract_rejects_elf_vmlinux():
@@ -145,7 +200,7 @@ def test_validate_kernel_contract_rejects_missing_expected_signal():
         assert "expected_signal" in validated.blocked_reason
 
 
-def test_validate_kernel_contract_missing_script_generates_warning():
+def test_validate_kernel_contract_ignores_legacy_test_script_path():
     with tempfile.NamedTemporaryFile() as kernel_file:
         kernel_file.write(b"MZ\x00\x00")
         kernel_file.flush()
@@ -158,13 +213,13 @@ def test_validate_kernel_contract_missing_script_generates_warning():
             expected_signal="Kernel panic",
         )
         validated = _validate_kernel_contract_artifacts(contract)
-        # test_script_path is optional — missing script generates a warning
-        # but does not block the contract (supports max_turns recovery)
+        # The runner does not consume test.sh.  A legacy path neither enables
+        # nor changes the structured execution-plan validation.
         assert validated.status == "ok"
-        assert any("test_script_path" in w for w in validated.warnings)
+        assert not any("test_script_path" in w for w in validated.warnings)
 
 
-def test_validate_kernel_contract_rejects_syntactically_broken_test_script():
+def test_legacy_test_script_is_not_consumed_by_contract_validation():
     """test.sh with bash syntax error should block the contract before QEMU."""
     with tempfile.NamedTemporaryFile() as kernel_file, \
          tempfile.NamedTemporaryFile(suffix=".sh") as script_file:
@@ -182,12 +237,10 @@ def test_validate_kernel_contract_rejects_syntactically_broken_test_script():
             expected_signal="Kernel panic",
         )
         validated = _validate_kernel_contract_artifacts(contract)
-        assert validated.status == "blocked", \
-            "broken test.sh must block contract before QEMU boot"
-        assert any("syntax error" in e for e in [validated.blocked_reason or ""])
+        assert validated.status == "ok"
 
 
-def test_validate_kernel_contract_valid_test_script_adds_evidence():
+def test_legacy_test_script_does_not_add_contract_evidence():
     """test.sh that passes bash -n should record an artifact_check evidence."""
     with tempfile.NamedTemporaryFile() as kernel_file, \
          tempfile.NamedTemporaryFile(suffix=".sh") as script_file:
@@ -209,8 +262,7 @@ def test_validate_kernel_contract_valid_test_script_adds_evidence():
                   if isinstance(e, dict)
                   and e.get("kind") == "artifact_check"
                   and e.get("field") == "test_script_path"]
-        assert checks, "valid test.sh must produce bash -n OK evidence"
-        assert checks[0].get("check") == "bash -n OK"
+        assert not checks
 
 
 def test_uaf_path_contract_requires_scope_membership_and_reproducer_target():
@@ -279,7 +331,7 @@ def test_uaf_path_contract_blocks_mismatched_target_or_scope():
         assert "path analysis scope missing" in validated.blocked_reason
 
 
-def test_route_after_kernel_uses_contract():
+def test_route_after_kernel_archives_single_loop_outcomes():
     ready_state = {
         "kernel_contract": {
             "status": "ok",
@@ -298,7 +350,7 @@ def test_route_after_kernel_uses_contract():
             "expected_signal": "Kernel panic",
         }
     }
-    assert route_after_kernel(ready_state) == "test_expert"
+    assert route_after_kernel(ready_state) == "knowledge_base"
     assert route_after_kernel(blocked_state) == "knowledge_base"
 
 
@@ -319,11 +371,11 @@ if __name__ == "__main__":
     for test in [
         test_extract_kernel_contract_json_with_nested_evidence,
         test_marker_fallback_blocks_incomplete_handoff,
-        test_merge_fills_json_with_marker_fallback,
+        test_marker_contract_cannot_replace_structured_execution_plan,
         test_validate_kernel_contract_rejects_elf_vmlinux,
         test_validate_kernel_contract_rejects_missing_expected_signal,
-        test_validate_kernel_contract_missing_script_generates_warning,
-        test_route_after_kernel_uses_contract,
+        test_validate_kernel_contract_ignores_legacy_test_script_path,
+        test_route_after_kernel_archives_single_loop_outcomes,
     ]:
         test()
     print("kernel_contract OK")

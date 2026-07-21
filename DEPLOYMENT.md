@@ -73,8 +73,9 @@ sudo apt install -y \
   python3 python3-venv python3-pip \
   git curl wget
 
-# QEMU (x86_64 / arm64 kernel testing)
-sudo apt install -y qemu-system-x86 qemu-system-arm
+# QEMU (x86_64 / arm64 kernel testing) and persistent SSH guests
+sudo apt install -y qemu-system-x86 qemu-system-arm qemu-utils \
+  openssh-client debootstrap qemu-user-static binfmt-support
 
 # Initramfs creation
 sudo apt install -y cpio gzip
@@ -178,7 +179,7 @@ claude --output-format json --permission-mode bypassPermissions \
 
 ### 4.3 API Key for Chat Backend
 
-The chat agents (PM, validator, test_expert, knowledge_base, tool experts) use
+The chat agents (PM, validator, knowledge_base, tool experts) use
 an OpenAI-compatible or Anthropic API endpoint.
 
 Get your API key from one of:
@@ -289,9 +290,9 @@ ls -la /dev/kvm
 
 ### 6.2 Busybox
 
-BusyBox is used to build the QEMU guest userspace. Lumen builds static BusyBox
-binaries from the bundled source, then uses them for ext4 rootfs images by
-default. The older initramfs path remains available for compatibility.
+BusyBox remains available for the bundled one-shot QEMU skill. Lumen's workflow
+uses a separate Debian ext4 image with `sshd` for persistent SSH execution, so
+it does not alter the existing Analysis-SKILL rootfs scripts.
 
 ```bash
 bash Analysis-SKILL/tools/build_busybox.sh --arch x86_64 --clean
@@ -310,6 +311,23 @@ bash Analysis-SKILL/skills/qemu-test/scripts/create_ext4_rootfs.sh \
   --arch x86_64 \
   --output /tmp/rootfs_x86_64.ext4
 ```
+
+### 6.3 Persistent SSH guests
+
+`deploy.sh` creates ignored images and keys under `runtime/qemu-ssh/` for both
+architectures. The lifecycle is modeled on syzkaller: a Debian image, loopback
+SSH forwarding, and a per-boot kernel identity. To build only these artifacts:
+
+```bash
+bash scripts/provision_qemu_ssh_image.sh --arch all
+```
+
+The runner reuses a guest only when its architecture, boot-kernel digest,
+rootfs digest, and QEMU recipe match. It uploads each PoC to a fresh guest
+directory over SSH and keeps serial/SSH evidence in the session artifacts.
+For arm64 it follows syzkaller's `virt`/`ttyAMA0`/`root=/dev/vda` model, adds
+early serial output, and provisions `serial-getty@ttyAMA0` plus `haveged` for
+reliable SSH startup under x86 TCG emulation. See [syzkaller arm64 QEMU setup](https://github.com/google/syzkaller/blob/master/docs/linux/setup_linux-host_qemu-vm_arm64-kernel.md).
 
 ---
 
@@ -412,7 +430,8 @@ bash deploy.sh
 7. **Config**: generates `config.json` from `config.json.template` if not present
 8. **Directory init**: creates `knowledge_base/` and `outputs/`
 9. **Tool builds**: builds `crash_x86_64`, `crash_arm64`,
-   `busybox_x86_64`, `busybox_arm64`, and `semcode-mcp` when missing
+   `busybox_x86_64`, `busybox_arm64`, `semcode-mcp`, and the x86_64/arm64
+   persistent SSH guest images when missing
 10. **Verification**: imports langgraph, langchain, langchain_openai to confirm deps work
 
 ### Post-deploy: configure .env
@@ -506,8 +525,7 @@ Agents run in order:
 | PM | Analyzes input, selects experts | 5-15s |
 | ToolExpert (crash) | Runs crash commands on vmcore (uses `crash_x86_64` or `crash_arm64` based on vmlinux arch) | 10-60s |
 | ToolExpert (knowledge) | Searches knowledge base | 5-10s |
-| KernelExpert | Claude Code: writes reproducer | 2-10 min |
-| TestExpert | Boots kernel in QEMU, checks signal | 1-5 min |
+| KernelExpert | One Claude Code loop: analyzes raw logs + expert findings, writes a PoC, then verifies it through persistent SSH QEMU | 3-15 min |
 | KnowledgeBase | Writes final report | 10-30s |
 
 ### 10.4 Validation points
@@ -518,8 +536,8 @@ After a successful run, verify these outputs:
 # 1. Session directory was created
 ls -la sessions/*/
 
-# 2. Key agent outputs exist
-ls sessions/*/kernel_expert.txt sessions/*/test_expert.txt
+# 2. Key loop output and one or more per-round deterministic contracts exist
+ls sessions/*/kernel_expert.txt sessions/*/persistent_test_contract.round-*.json
 
 # 3. Final response was printed (look for "Final Response" in stdout)
 
@@ -801,7 +819,7 @@ pip install pysqlite3-binary
 
 This means the test script (PID 1) exited. Common causes:
 - Initramfs missing required binaries or device nodes
-- test.sh has a syntax error (check with `bash -n test.sh`)
+- the structured execution plan is invalid or references a missing PoC artifact
 - reproducer binary not found or crashed
 
 ---

@@ -39,20 +39,34 @@ def test_panic_with_vmcore_selects_crash_and_log():
     assert "knowledge_search" in experts
 
 
-def test_legacy_config_with_only_crash_still_routes():
+def test_unknown_input_does_not_guess_crash_expert():
     experts, reason = _select_required_experts_by_rules(
         "未知内核问题",
         [{"type": "crash_analysis"}],
     )
-    assert experts == ["crash_analysis"]
-    assert reason
+    assert experts == []
+
+
+def test_lockup_and_rcu_stall_route_to_lock_without_crash():
+    experts, _ = _select_required_experts_by_rules(
+        "kernel panic after RCU stalled and soft lockup; crash log attached",
+        [
+            {"type": "knowledge_search"},
+            {"type": "kernel_log_analysis"},
+            {"type": "lock_analysis"},
+            {"type": "crash_analysis"},
+        ],
+    )
+    assert "lock_analysis" in experts
+    assert "crash_analysis" not in experts
 
 
 if __name__ == "__main__":
     for test in [
         test_deadlock_prefers_lock_over_crash,
         test_panic_with_vmcore_selects_crash_and_log,
-        test_legacy_config_with_only_crash_still_routes,
+        test_unknown_input_does_not_guess_crash_expert,
+        test_lockup_and_rcu_stall_route_to_lock_without_crash,
     ]:
         test()
     print("pm_rules OK")

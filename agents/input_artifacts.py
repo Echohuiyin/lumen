@@ -146,6 +146,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         text,
         ["kernel_source", "kernel source", "linux source", "source tree"],
     )
+    log_path, log_label = _extract_labeled_path(text, ["log", "kernel log", "dmesg"])
     reproducer_path, reproducer_label = _extract_labeled_path(
         text,
         ["reproducer", "reproducer_path", "test_script", "test script"],
@@ -158,6 +159,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "vmlinux_path": (vmlinux_path, vmlinux_label),
         "boot_kernel_path": (boot_kernel_path, boot_label),
         "kernel_source_path": (kernel_source_path, source_label),
+        "log_path": (log_path, log_label),
         "reproducer_path": (reproducer_path, reproducer_label),
     }
     for field, (value, source) in fields.items():
@@ -177,6 +179,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "vmlinux_path": "file",
             "boot_kernel_path": "file",
             "kernel_source_path": "dir",
+            "log_path": "file",
             "reproducer_path": "file",
         }
         for field, (value, _) in fields.items():
@@ -203,6 +206,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         boot_kernel_path=boot_kernel_path,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
+        log_path=log_path,
         reproducer_path=reproducer_path,
         log_excerpt=log_excerpt,
         evidence=evidence,

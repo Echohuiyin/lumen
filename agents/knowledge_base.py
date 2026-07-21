@@ -32,6 +32,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     max_path = state.get("max_likely_path", "")
     kernel_contract = state.get("kernel_contract") or {}
     semcode_path_analysis = state.get("semcode_path_analysis") or {}
+    round_summary = _summarize_test_rounds(state.get("test_rounds", []))
     # State fields are maintained for compatibility, but kernel_contract is
     # the durable handoff and may be recovered directly from disk.
     if not all_paths:
@@ -68,9 +69,11 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"- Boot kernel: {state.get('boot_kernel_path', '')}\n"
         f"- Reproducer dir: {state.get('reproducer_dir', '')}\n"
         f"- Reproducer module: {state.get('reproducer_module_path', '')}\n"
-        f"- Test script: {state.get('test_script_path', '')}\n"
+        f"- Execution steps: {kernel_contract.get('execution_steps', [])}\n"
         f"- Expected signal: {state.get('expected_signal', '')}\n\n"
         f"## 测试验证结果\n{state.get('test_result', '')}\n\n"
+        f"## 各复现轮次（每轮仅一句话）\n{round_summary}\n\n"
+        f"未复现时，请在‘复现结果’下简要列出各轮已做的构造复现尝试及其确定性失败原因；不得新增建议。\n\n"
         f"## 结构化测试结果\n{state.get('test_contract', {})}\n\n"
         f"请将以上内容总结为知识库文档。"
     )
@@ -118,7 +121,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     issue_url = state.get("issue_url", "")
 
     test_passed = state.get("test_passed", False)
-    status_text = "成功复现" if test_passed else "未成功复现，已归档分析过程和改进建议"
+    status_text = "成功复现" if test_passed else "未成功复现"
 
     # 构建最终响应
     final_response = (
@@ -128,13 +131,30 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"Chroma 导入: {import_message}\n\n"
         f"{path_appendix}\n\n"
         f"共调用 {len(expert_results)} 个工具专家，"
-        f"测试验证 {state.get('test_attempts', 0)} 次。"
+        f"完成 {len(state.get('test_rounds', []) or [])} 个复现闭环，最终轮次为 {state.get('test_attempts', 0)}。"
     )
 
     return {
         "knowledge_file": knowledge_file,
         "final_response": final_response,
     }
+
+
+def _summarize_test_rounds(rounds) -> str:
+    """Render one compact, factual sentence per reproduction attempt."""
+    if not rounds:
+        return "无已执行的复现轮次。"
+    lines = []
+    for index, item in enumerate(rounds, 1):
+        if not isinstance(item, dict):
+            lines.append(f"第{index}轮：结果记录格式无效，未判定为成功。")
+            continue
+        status = item.get("status") or item.get("result") or item.get("code") or "未知"
+        summary = str(item.get("summary") or item.get("message") or "").replace("\n", " ").strip()
+        if len(summary) > 160:
+            summary = summary[:157] + "..."
+        lines.append(f"第{item.get('round', index)}轮：{status}；{summary or '无摘要'}。")
+    return "\n".join(lines)
 
 
 def _format_paths(paths) -> str:

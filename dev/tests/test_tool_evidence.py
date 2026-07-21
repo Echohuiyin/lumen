@@ -11,6 +11,7 @@ from agents.tool_expert import (
     _parse_bt_evidence,
     _parse_log_evidence,
     _parse_ps_evidence,
+    _persist_extracted_kernel_log,
 )
 
 
@@ -67,6 +68,13 @@ def test_make_tool_result_keeps_structured_evidence():
     structured = result["structured_output"]
     assert structured["status"] == "ok"
     assert structured["evidence"][0]["event_type"] == "kernel_panic"
+
+
+def test_vmcore_extracted_log_is_persisted_atomically(tmp_path):
+    output_file = tmp_path / "kernel_log_analysis.txt"
+    log_file = _persist_extracted_kernel_log(output_file, "raw vmcore kernel log\n")
+    assert log_file.name == "kernel_log.raw.log"
+    assert log_file.read_text(encoding="utf-8") == "raw vmcore kernel log\n"
 
 
 if __name__ == "__main__":

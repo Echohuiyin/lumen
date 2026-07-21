@@ -430,7 +430,7 @@ def wait_for_hint(timeout_seconds: int = DEFAULT_HINT_WAIT_SECONDS) -> str:
     Returns the hint text (and deletes the hint file) if the human writes one
     within the window. Returns "" if the human skips via the continue sidecar
     file or the window times out — either way the workflow proceeds normally
-    to test_expert.
+    to the persistent QEMU runner.
 
     The window is necessary because write_hint_review_pack and the hint check
     would otherwise run in the same tick, giving the human no time to read
@@ -561,7 +561,6 @@ AGENT_DIR_MAP = {
     "validator": "validation",
     "pm": "validation",
     "kernel_expert": "kernel_expert",
-    "test_expert": "test_expert",
 }
 
 

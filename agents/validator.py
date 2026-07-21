@@ -23,6 +23,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
     os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))
     config = load_config(state["config_path"])
     rule_result = _validate_input_by_rules(state.get("user_input", ""))
+    rule_result = _require_vmcore_or_log(rule_result, input_artifacts)
     if rule_result.status in {"ok", "blocked"}:
         # Compact rule-based validation result
         status_icon = _c(GREEN, "✓") if rule_result.validation_passed else _c(YELLOW, "⚠")
@@ -61,7 +62,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
         contract = ValidationResultContract(
             status="ok",
             validation_passed=True,
-            reason="llm_fallback_passed",
+            reason="llm_validation_passed",
             feedback="",
         )
         return {
@@ -83,7 +84,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
         contract = ValidationResultContract(
             status="blocked",
             validation_passed=False,
-            reason="llm_fallback_failed",
+            reason="llm_validation_failed",
             feedback=feedback,
         )
 
@@ -186,4 +187,36 @@ def _validate_input_by_rules(user_input: str) -> ValidationResultContract:
         validation_passed=False,
         reason="needs_llm_validation",
         feedback="",
+    )
+
+
+def _require_vmcore_or_log(
+    result: ValidationResultContract, input_artifacts,
+) -> ValidationResultContract:
+    """Require one readable first-hand diagnostic source without guessing."""
+    if result.reason in {"empty_input", "input_too_short", "missing_kernel_source", "invalid_kernel_source"}:
+        return result
+    vmcore = input_artifacts.vmcore_path
+    log_path = input_artifacts.log_path
+    vmcore_exists = bool(vmcore and Path(os.path.expanduser(vmcore)).is_file())
+    log_exists = bool(log_path and Path(os.path.expanduser(log_path)).is_file())
+    if log_exists:
+        return result
+    if vmcore_exists:
+        vmlinux = input_artifacts.vmlinux_path
+        if vmlinux and Path(os.path.expanduser(vmlinux)).is_file():
+            return result
+        return ValidationResultContract(
+            status="blocked",
+            validation_passed=False,
+            reason="missing_vmlinux_for_vmcore_log_extraction",
+            missing_fields=["vmlinux"],
+            feedback="未提供可读取的 log；vmcore 提取日志需要同时提供可读取的 vmlinux。",
+        )
+    return ValidationResultContract(
+        status="blocked",
+        validation_passed=False,
+        reason="missing_vmcore_or_log",
+        missing_fields=["vmcore_or_log"],
+        feedback="请至少提供一个可读取的 vmcore 或 log；没有 log 时将从 vmcore 提取并落盘日志文件。",
     )

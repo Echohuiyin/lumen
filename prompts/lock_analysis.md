@@ -328,7 +328,7 @@ bt <owner_pid>                     # 看持有者卡在哪
 
 - 使用 crash_analysis 的 direct crash tools 进行完整的 vmcore 分析工作流
 - 如果需要构造复现器，由 kernel_expert 负责生成和编译验证
-- 如果需要 QEMU 复现，由 test_expert 负责消费 `kernel_contract` 并执行确定性验证
+- 如果需要 QEMU 复现，由 kernel_expert loop 消费 `kernel_contract` 并执行确定性验证
 
 ### 输出文件结构
 
@@ -405,4 +405,3 @@ ANALYSIS:
 
 
 ## ABBA 死锁检测
-

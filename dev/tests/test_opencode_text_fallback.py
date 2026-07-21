@@ -238,6 +238,7 @@ def _parse_with_empty_text(monkeypatch, patch_session_dir, **contract_overrides)
             "reproducer_dir": str(reproducer),
             "reproducer_module_path": str(reproducer / "crash_uaf.ko"),
             "test_script_path": str(reproducer / "test.sh"),
+            "execution_steps": [{"type": "load_module", "path": "modules/crash_uaf.ko"}],
             "expected_signal": "BUG: KASAN: slab-use-after-free",
             "build_status": "passed",
             "blocked_reason": "",
@@ -269,14 +270,14 @@ def test_empty_text_fallback_picks_up_file_contract(monkeypatch, patch_session_d
     result = _parse_with_empty_text(monkeypatch, patch_session_dir)
     contract = result["kernel_contract"]
 
-    assert contract["status"] == "ok"
-    assert contract["expected_signal"] == "BUG: KASAN: slab-use-after-free"
-    assert contract["build_status"] == "passed"
-    assert contract["target_arch"] == "x86_64"
-    assert contract["reproducer_dir"].endswith("reproducer")
-    assert "/test.sh" in contract["test_script_path"]
-    assert "/crash_uaf.ko" in contract["reproducer_module_path"]
-    assert result["kernel_ready_for_test"] is True
+    assert contract["status"] == "blocked"
+    assert contract["expected_signal"] == ""
+    assert contract["build_status"] == "skipped"
+    assert contract["target_arch"] == ""
+    assert contract["reproducer_dir"] == ""
+    assert "test_script_path" not in contract
+    assert contract["reproducer_module_path"] == ""
+    assert result["kernel_ready_for_test"] is False
 
 
 def test_empty_text_fallback_auto_generates_when_no_file(monkeypatch, patch_session_dir):
@@ -287,7 +288,7 @@ def test_empty_text_fallback_auto_generates_when_no_file(monkeypatch, patch_sess
     contract = result["kernel_contract"]
 
     assert contract["status"] == "blocked"
-    assert "expected_signal" in contract.get("blocked_reason", "")
+    assert "structured response" in contract.get("blocked_reason", "")
     assert result["kernel_ready_for_test"] is False
 
 
@@ -302,7 +303,7 @@ def test_file_contract_fills_missing_fields_when_text_incomplete(
 
     # Contract on disk (written by _parse_with_empty_text) has all fields
     result = _parse_with_empty_text(monkeypatch, patch_session_dir)
-    assert result["kernel_contract"]["build_status"] == "passed"
+    assert result["kernel_contract"]["build_status"] == "skipped"
 
     # Second call: non-empty text with minimal contract → the file-based
     # recovery should fill in the missing fields from the on-disk contract.
@@ -329,21 +330,19 @@ def test_file_contract_fills_missing_fields_when_text_incomplete(
     contract2 = result2["kernel_contract"]
     # The file-based fallback at line 671 should fill in the missing fields
     # from the on-disk contract (expected_signal, build_status).
-    assert contract2.get("expected_signal") == "BUG: KASAN: slab-use-after-free"
-    assert contract2.get("build_status") == "passed"
+    assert contract2.get("expected_signal") == ""
+    assert contract2.get("build_status") == ""
 
 
-def test_empty_text_fallback_ignores_stale_file_contract(monkeypatch, patch_session_dir):
-    """When the on-disk contract has status='blocked' (stale from a previous
-    failed run), the fallback should NOT use it and should auto-generate."""
+def test_empty_text_with_blocked_file_contract_remains_blocked(monkeypatch, patch_session_dir):
+    """A blocked durable contract cannot be replaced by an inferred plan."""
     result = _parse_with_empty_text(
         monkeypatch, patch_session_dir,
         status="blocked",
         blocked_reason="stale from prev run",
     )
     contract = result["kernel_contract"]
-    # The auto-generated fallback should override with status='ok'
-    assert contract["status"] == "ok"
+    assert contract["status"] == "blocked"
 
 
 def test_blocked_contract_still_triggers_on_explicit_failure_text(monkeypatch):
@@ -368,8 +367,8 @@ def test_dsml_fragments_treated_as_empty(monkeypatch, patch_session_dir):
     result = _parse_with_empty_text(monkeypatch, patch_session_dir)
     contract = result["kernel_contract"]
     # Sanity: with empty text + disk contract, fallback picks up the file
-    assert contract["status"] == "ok"
-    assert contract["expected_signal"] == "BUG: KASAN: slab-use-after-free"
+    assert contract["status"] == "blocked"
+    assert contract["expected_signal"] == ""
 
 
 def test_dsml_fragment_detection_helper():
@@ -418,6 +417,7 @@ def integration_env(monkeypatch, tmp_path):
         "reproducer_dir": str(reproducer),
         "reproducer_module_path": str(reproducer / "crash_uaf.ko"),
         "test_script_path": str(reproducer / "test.sh"),
+        "execution_steps": [{"type": "load_module", "path": "modules/crash_uaf.ko"}],
         "expected_signal": "BUG: KASAN: slab-use-after-free",
         "build_status": "passed",
         "blocked_reason": "",

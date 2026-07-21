@@ -15,7 +15,8 @@ git submodule update --init --recursive
 # 2. Install system dependencies (Ubuntu/Debian)
 sudo apt install qemu-system-x86 qemu-system-arm gcc-aarch64-linux-gnu \
   build-essential bison flex patch texinfo file libncurses-dev zlib1g-dev liblzo2-dev \
-  libsnappy-dev libzstd-dev libgmp-dev libmpfr-dev cpio gzip git wget python3 python3-venv
+  libsnappy-dev libzstd-dev libgmp-dev libmpfr-dev cpio gzip git wget python3 python3-venv \
+  debootstrap qemu-user-static binfmt-support openssh-client
 
 # 3. Deploy (creates venv, installs deps, and generates config)
 bash deploy.sh
@@ -34,6 +35,7 @@ python3 main.py input.txt --config config.json
 |-----------|---------|---------|
 | Python 3.10+ | Runtime | `apt install python3 python3-venv` |
 | QEMU (x86_64 / arm64) | Kernel boot and reproduction testing | `apt install qemu-system-x86 qemu-system-arm` |
+| SSH / debootstrap / qemu-user-static | Build and access persistent Debian QEMU guests | `apt install openssh-client debootstrap qemu-user-static binfmt-support` |
 | gcc-aarch64-linux-gnu | Build arm64 BusyBox | `apt install gcc-aarch64-linux-gnu` |
 | Build tools | Build crash and BusyBox | `apt install build-essential bison flex patch texinfo file` |
 | e2fsprogs | Build ext4 QEMU rootfs images | `apt install e2fsprogs` |
@@ -72,50 +74,53 @@ historical-case search and Chroma import.
 Bug Promote: 内核发生 Mutex ABBA 死锁导致 hung_task panic。...
 vmcore: ./vmcore.elf
 vmlinux: ./vmlinux
+log: ./kernel.log
 boot_kernel: ./bzImage
 kernel_source: /path/to/linux
 ```
 
 `Bug Promote` and `kernel_source` are required. Add whichever other artifacts
-you have; `vmcore` and `vmlinux` enable crash analysis, while `boot_kernel`
-enables QEMU verification.
+you have; at least one readable `vmcore` or `log` is required. When `log` is
+absent, Lumen extracts it from `vmcore` plus `vmlinux` into the session and
+passes that generated log path to KernelExpert. `boot_kernel` enables QEMU
+verification.
 
 ## Workflow
 
 ```
-Input → Validator → PM → ToolExperts (fan-out) → KernelExpert → TestExpert
-                         │                                  ↑          │
-                         └──────── expert_results ──────────┘          │
-                                    └──── failed test (≤ 3) ───────────┘
-                                              ↓
-                                        KnowledgeBase → Result
+Input → Validator → PM → ToolExperts (fan-out) → KernelExpert Claude loop → KnowledgeBase → Result
+                         │                         (analyse → PoC → persistent SSH QEMU)
+                         └────────────────── expert results + raw user log ─────────────────────┘
 ```
 
 The LangGraph state carries the original input, parsed artifacts, expert
 results, reproduction contract, and test result through the workflow. PM selects
 the applicable tool experts; their results are accumulated in `expert_results`
-before KernelExpert receives them. A testable reproduction contract proceeds to
-TestExpert. Failed tests return to KernelExpert until `max_test_attempts`
-(default: 3); successful, exhausted, or non-testable cases are archived.
+before KernelExpert receives them. The original `log:` path and each tool
+expert's persisted result-file path are passed independently; the Claude loop
+reads the original evidence on demand rather than receiving copied summaries.
+One Claude Code loop then analyses, creates a PoC, and invokes the deterministic
+persistent-QEMU SSH runner. Every pass, failure, and blocked result is archived.
 
 | Node | Responsibility | Output to the next stage |
 |------|----------------|--------------------------|
 | Validator | Checks that the problem is actionable; parses artifact paths, logs, and target architecture. | Validation and input-artifact contracts. |
-| PM | Classifies the issue and chooses tool experts; always includes historical-case search. | Expert routing plan and issue ID. |
+| PM | Deterministically routes by available evidence: always searches historical cases; log evidence adds `kernel_log_analysis`; crash evidence adds `crash_analysis`; lockup/RCU/hung-task evidence uses `lock_analysis` instead of duplicate crash analysis. | Expert routing plan and issue ID. |
 | ToolExperts | Run independently: `lock_analysis` diagnoses lock/hung-task issues; `crash_analysis` inspects vmcore and stack evidence; `kernel_log_analysis` extracts a failure timeline; `knowledge_search` finds similar cases. | Structured evidence and analysis summaries. |
-| KernelExpert | Combines input and expert evidence, analyzes source code, and creates a reproducer and diagnosis. Claude Code is the default backend. | Reproduction contract: architecture, boot image, test script, and expected signal. |
-| TestExpert | Boots the target kernel with QEMU and executes the reproducer for x86_64 or arm64. | Test contract, logs, and pass/fail result. |
+| KernelExpert | In one Claude Code loop, combines raw logs and expert evidence, analyzes source, creates a PoC, then requests deterministic verification. If the final structured contract is empty or malformed, it retries once inside the same loop; otherwise it blocks. | PoC contract plus the runner-owned test contract. |
+| Persistent QEMU runner | Reuses only a guest with the same kernel/rootfs/architecture/recipe identity; uploads the PoC through loopback SSH and evaluates host serial evidence. | SSH output, serial log, and pass/fail/blocked evidence. |
 | KnowledgeBase | Summarizes the evidence, reproducer, and test outcome; archives the case and optionally imports it into Chroma. | Knowledge-base document and final response. |
 
 Each run creates `sessions/<session-id>/` with agent transcripts, metadata, and
-generated reproducer files. Use `--session-id` to supply your own ID.
+generated reproducer files. Verification uses structured `execution_steps`; no
+user-provided `test.sh` is executed. Use `--session-id` to supply your own ID.
 
 Lumen selects `crash_x86_64` or `crash_arm64` from
 `Analysis-SKILL/tools/crash/` according to the target `vmlinux`. `deploy.sh`
 builds both from crash source, and also builds static BusyBox binaries for both
-architectures under `Analysis-SKILL/`. QEMU tests use those BusyBox binaries to
-build an ext4 rootfs by default, with the older initramfs path kept for
-compatibility.
+architectures under `Analysis-SKILL/`. `deploy.sh` also creates ignored Debian
+SSH images under `runtime/qemu-ssh/` for x86_64 and arm64; QEMU remains alive
+across PoC iterations for the same immutable guest identity.
 
 ## Project Structure
 
@@ -125,9 +130,9 @@ compatibility.
 ├── config.json.template    # LLM/workflow config template
 ├── agents/                 # LangGraph agent nodes
 │   ├── backends.py         # LLM backend abstraction
-│   ├── kernel_expert.py    # Kernel analysis & reproduction plan
-│   ├── test_expert.py      # QEMU test execution
-│   ├── qemu_tools.py       # QEMU tool wrappers
+│   ├── kernel_expert.py    # Claude analysis → PoC → verification loop
+│   ├── persistent_qemu.py  # Persistent QEMU lifecycle and SSH execution
+│   ├── qemu_tools.py       # Legacy one-shot QEMU wrappers
 │   └── ...
 ├── graph/                  # LangGraph workflow graph
 ├── prompts/                # Agent system prompts

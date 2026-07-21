@@ -20,6 +20,7 @@ BUSYBOX_BUILDER="Analysis-SKILL/tools/build_busybox.sh"
 SEMCODE_SOURCE_DIR="Analysis-SKILL/tools/semcode"
 SEMCODE_REPO="${SEMCODE_REPO:-https://github.com/facebookexperimental/semcode.git}"
 SEMCODE_MCP_BIN="${SEMCODE_SOURCE_DIR}/target/release/semcode-mcp"
+PERSISTENT_QEMU_PROVISIONER="scripts/provision_qemu_ssh_image.sh"
 
 # ── Pre-flight: check required external binaries ──────────────────────────────
 check_cmd() {
@@ -42,6 +43,11 @@ preflight_check() {
     check_cmd python3 "python3 (>= 3.10)" || ((fail_count++))
     check_cmd qemu-system-x86_64 "apt install qemu-system-x86" || ((fail_count++))
     check_cmd qemu-system-aarch64 "apt install qemu-system-arm" || ((fail_count++))
+    check_cmd qemu-img "apt install qemu-utils" || ((fail_count++))
+    check_cmd ssh "apt install openssh-client" || ((fail_count++))
+    check_cmd scp "apt install openssh-client" || ((fail_count++))
+    check_cmd ssh-keygen "apt install openssh-client" || ((fail_count++))
+    check_cmd debootstrap "apt install debootstrap" || ((fail_count++))
     check_cmd cpio "apt install cpio" || ((fail_count++))
     check_cmd gzip "apt install gzip (usually pre-installed)" || ((fail_count++))
     check_cmd claude "npm install -g @anthropic-ai/claude-code" || ((fail_count++))
@@ -285,6 +291,21 @@ build_dual_arch_tools() {
     fi
 }
 
+# ── Persistent SSH QEMU guests ───────────────────────────────────────────────
+provision_persistent_qemu_images() {
+    echo ""
+    info "=== 构建常驻 SSH QEMU 镜像 (x86_64 / arm64) ==="
+    if [ ! -f "$PERSISTENT_QEMU_PROVISIONER" ]; then
+        fail "缺失常驻 QEMU 镜像构建脚本: $PERSISTENT_QEMU_PROVISIONER"
+        exit 1
+    fi
+    # The provisioner is intentionally source-controlled while its Debian
+    # images and SSH keys live in runtime/ and are ignored by Git.  It uses
+    # sudo/debootstrap only when an image is absent.
+    bash "$PERSISTENT_QEMU_PROVISIONER" --arch all
+    ok "常驻 SSH QEMU 镜像已就绪"
+}
+
 # ── semcode MCP ───────────────────────────────────────────────────────────────
 build_semcode_mcp() {
     echo ""
@@ -329,8 +350,8 @@ verify() {
     if [ "$USE_VENV" = true ]; then
         "$venv_python" -c "
 try:
-    import langgraph; import langchain; import langchain_openai
-    print('  核心模块: langgraph/langchain/langchain-openai — OK')
+    import langgraph; import langchain; import langchain_core; import langchain_openai; import pytest
+    print('  核心模块: langgraph/langchain/langchain-core/langchain-openai/pytest — OK')
 except ImportError as e:
     print(f'  导入失败: {e}')
     exit(1)
@@ -377,6 +398,7 @@ main() {
     setup_env
     init_dirs
     build_dual_arch_tools
+    provision_persistent_qemu_images
     build_semcode_mcp
     verify
     usage
