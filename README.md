@@ -65,8 +65,13 @@ retrieval/import. If it is unavailable, the workflow continues with degraded
 historical-case search and Chroma import.
 
 2. `config.json` is generated from `config.json.template`. The default chat
-   backend is Anthropic-compatible; `kernel_expert` uses Claude Code. OpenAI,
-   HTTP, and OpenCode backends are also configurable there.
+backend is Anthropic-compatible; `kernel_expert` uses Claude Code. OpenAI,
+HTTP, and OpenCode backends are also configurable there.
+
+KernelExpert's Claude Code settings file is configurable through
+`agents.kernel_expert.settings_file` (default: `~/.claude/settings.json`). Set
+an independent settings file for a separate API-key/profile when running
+parallel analyses; the backend passes it to Claude Code with `--settings`.
 
 ## Input Format
 

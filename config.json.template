@@ -24,6 +24,7 @@
       "model": "sonnet",
       "cli_timeout": 14400,
       "permission_mode": "bypassPermissions",
+      "settings_file": "~/.claude/settings.json",
       "max_turns": 900,
       "disable_skills": true,
       "semcode_mcp": {
