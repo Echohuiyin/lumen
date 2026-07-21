@@ -8,7 +8,7 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE_ROOT="${PROJECT_ROOT}/runtime/qemu-ssh"
 DISTRIBUTION="bookworm"
 ARCH="all"
-MIRROR="http://deb.debian.org/debian"
+MIRROR="${LUMEN_DEBIAN_MIRROR:-https://mirrors.aliyun.com/debian}"
 
 usage() {
     cat <<'EOF'
@@ -80,7 +80,10 @@ build_one() {
     fi
 
     if [[ ! -f "$key" ]]; then
-        mkdir -p "$(dirname "$key")"
+        # debootstrap runs under sudo, so runtime/qemu-ssh/<arch>/ is owned
+        # by root. chown the key directory back to the invoking user before
+        # ssh-keygen writes the keypair (without sudo).
+        sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" "$(dirname "$key")"
         ssh-keygen -q -t ed25519 -N '' -f "$key"
         chmod 600 "$key"
     fi
