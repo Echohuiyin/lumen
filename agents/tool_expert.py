@@ -429,6 +429,8 @@ def _run_tool_calling_analysis(
             semcode_tool_text = (
                 "- semcode_find_function: locate a kernel function and direct callees\n"
                 "- semcode_find_callers: list callers from the indexed kernel source\n"
+                "- semcode_find_callees: list direct callees from the indexed kernel source\n"
+                "- semcode_find_type: locate a kernel struct or type\n"
             )
         context_info = f"""Crash analysis environment ready:
 - vmcore: {vmcore_path}
@@ -475,7 +477,7 @@ WORKFLOW:
 5. For hung_task/deadlock: identify the lock dependency chain (who holds what, who waits for what)
 6. For lock_analysis specifically: check mutex.wait_list to see blocked waiters
 7. When Semcode tools are available, use them to verify the key functions from
-   the crash stack. Include the returned source locations and caller/callee
+   the crash stack. Include the returned source locations, types and caller/callee
    edges as evidence; do not infer file names or line numbers.
 
 OUTPUT REQUIREMENTS:

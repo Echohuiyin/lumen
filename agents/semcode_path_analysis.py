@@ -75,6 +75,15 @@ def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_pat
         except Exception as exc:
             return json.dumps({"status": "blocked", "function": name, "error": str(exc)}, ensure_ascii=False)
 
+    def find_callees(name: str) -> str:
+        return find_function(name)
+
+    def find_type(name: str) -> str:
+        try:
+            return client._call("find_type", {"name": name})
+        except Exception as exc:
+            return json.dumps({"status": "blocked", "type": name, "error": str(exc)}, ensure_ascii=False)
+
     return [
         StructuredTool.from_function(
             func=find_function, name="semcode_find_function",
@@ -84,6 +93,16 @@ def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_pat
         StructuredTool.from_function(
             func=find_callers, name="semcode_find_callers",
             description="List callers of a kernel function from the indexed source tree.",
+            args_schema=SemcodeFunctionInput,
+        ),
+        StructuredTool.from_function(
+            func=find_callees, name="semcode_find_callees",
+            description="List direct callees of a kernel function from the indexed source tree.",
+            args_schema=SemcodeFunctionInput,
+        ),
+        StructuredTool.from_function(
+            func=find_type, name="semcode_find_type",
+            description="Locate a kernel struct or type in the indexed source tree.",
             args_schema=SemcodeFunctionInput,
         ),
     ]
