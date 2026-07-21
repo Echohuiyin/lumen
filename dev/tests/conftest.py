@@ -23,6 +23,7 @@ ONLINE_TEST_NODEIDS = (
     "dev/tests/test_tool_expert_mcp.py::test_tool_calling_loop",
     "dev/tests/test_tool_experts.py::test_expert_direct",
     "dev/tests/test_tool_experts.py::test_all_experts",
+    "dev/tests/test_claude_code_online.py::test_kernel_expert_claude_code_workdir_contract",
 )
 
 

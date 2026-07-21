@@ -88,6 +88,17 @@ the workflow passes `workdir` and `add_dirs` to `invoke()` so the agent can
 construct and validate PoC artifacts. The plain `anthropic` backend is not
 compatible with this interface.
 
+With a local Claude Code installation, run the online backend smoke test with:
+
+```bash
+venv/bin/pytest -m online --run-online dev/tests/test_claude_code_online.py
+```
+
+The test uses `LUMEN_CLAUDE_SETTINGS_FILE` (default:
+`~/.claude/settings.json`) and `LUMEN_KERNEL_SOURCE` (default:
+`~/linux-next`), checks the local `workdir`/`add_dirs` agent-loop contract, and
+does not run a kernel or QEMU case.
+
 ## Input Format
 
 ```text
