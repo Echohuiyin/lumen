@@ -34,51 +34,6 @@ from paths import PROJECT_ROOT, get_output_dir as paths_get_output_dir
 import paths as _paths  # for set_session_dir
 
 
-# ELF e_machine values (bytes 18-19, little-endian uint16) used to sniff arch
-# from a vmlinux/vmcore file when the LLM omits target_arch.
-_ELF_MACHINE_TO_ARCH = {
-    62:  "x86_64",  # EM_X86_64
-    3:   "x86_64",  # EM_386 (treat as x86_64)
-    183: "arm64",   # EM_AARCH64
-    40:  "arm32",   # EM_ARM
-}
-
-
-def _sniff_arch_from_elf(path: str) -> str:
-    """Read e_machine from ELF header to detect target arch.
-
-    Returns normalized arch ('x86_64'/'arm64'/'arm32') or '' if not detectable.
-    Used as a fallback when the LLM omits target_arch and the host machine's
-    uname would give the wrong answer (e.g. analyzing an arm64 vmcore from
-    an x86_64 host).
-    """
-    try:
-        with open(path, "rb") as f:
-            magic = f.read(6)
-            if magic[:4] != b"\x7fELF":
-                return ""
-            ei_class = magic[4]  # 1=32-bit, 2=64-bit
-            ei_data = magic[5]   # 1=LSB (LE), 2=MSB (BE)
-            f.seek(18)
-            e_machine_bytes = f.read(2)
-            if len(e_machine_bytes) != 2:
-                return ""
-            byteorder = "little" if ei_data == 1 else "big"
-            e_machine = int.from_bytes(e_machine_bytes, byteorder)
-        return _ELF_MACHINE_TO_ARCH.get(e_machine, "")
-    except (OSError, IOError):
-        return ""
-
-
-def _resolve_target_arch_fallback(vmlinux_path: str) -> str:
-    """Determine target_arch via ELF sniff, falling back to host uname."""
-    if vmlinux_path:
-        sniffed = _sniff_arch_from_elf(vmlinux_path)
-        if sniffed:
-            return sniffed
-    return normalize_target_arch(os.uname().machine)
-
-
 def _write_tool_call_output(output_file: str, content: str, expert_name: str):
     """Write final tool-calling output to file, preserving tool call logs."""
     footer = _format_agent_footer_text(expert_name)
@@ -978,171 +933,8 @@ def _attach_persistent_test_result(
     return parsed
 
 
-def _generate_fallback_analysis(expert_results: list, input_artifacts: dict, state: dict) -> str:
-    """Generate fallback analysis text when LLM response is empty."""
-    parts = ["## 内核分析结果（自动生成）\n"]
-    parts.append(f"### 输入文件")
-    parts.append(f"- vmcore: {input_artifacts.get('vmcore_path', 'N/A')}")
-    parts.append(f"- vmlinux: {input_artifacts.get('vmlinux_path', 'N/A')}")
-    parts.append(f"- boot_kernel: {input_artifacts.get('boot_kernel_path', input_artifacts.get('vmlinux_path', 'N/A'))}")
-    parts.append("")
-
-    # Summarize tool expert findings
-    for result in expert_results:
-        name = result.get("expert_name", "unknown")
-        etype = result.get("expert_type", "")
-        evidence = result.get("evidence") or (result.get("structured_output") or {}).get("evidence") or []
-        analysis = result.get("analysis_output", "")
-        parts.append(f"### {name} ({etype})")
-        if analysis:
-            parts.append(analysis[:500])
-        for ev in evidence[:3]:
-            raw = ev.get("output_full", "") or ev.get("message", "")
-            parts.append(f"- Evidence: {ev.get('kind', '')}: {ev.get('command', '') or raw[:100]}")
-        parts.append("")
-
-    parts.append("### 总结")
-    parts.append("内核分析已完成，工具专家已收集完整 crash 数据。")
-    parts.append("请查看知识库归档获取完整分析报告。")
-    return "\n".join(parts)
 
 
-def _find_actual_reproducer_path(
-    outputs_dir: Path,
-    min_mtime: float | None = None,
-) -> tuple[str, str, str, str]:
-    """Search outputs directory for actual reproducer files.
-
-    Args:
-        outputs_dir: Directory containing reproducer subdirectories.
-        min_mtime: If set, only consider subdirectories whose mtime is
-            strictly greater than this timestamp. Used by the max_turns
-            recovery path to avoid picking up a stale reproducer dir from
-            a previous E2E case (the original P0-2 bug).
-
-    Returns: (reproducer_dir, test_script_path, reproducer_module_path, expected_signal)"""
-    if not outputs_dir.exists():
-        return "", "", "", ""
-
-    # Find the most recently modified subdirectory with test.sh
-    candidates = [
-        d for d in outputs_dir.iterdir()
-        if d.is_dir() and (d / "test.sh").exists()
-        and (min_mtime is None or d.stat().st_mtime > min_mtime)
-    ]
-    reproducer_dirs = sorted(
-        candidates,
-        key=lambda d: d.stat().st_mtime,
-        reverse=True,
-    )
-
-    if not reproducer_dirs:
-        return "", "", "", ""
-
-    reproducer_dir = str(reproducer_dirs[0])
-    test_script_path = str(reproducer_dirs[0] / "test.sh")
-
-    # Find .ko file in reproducer dir
-    ko_files = list(reproducer_dirs[0].glob("*.ko"))
-    reproducer_module_path = str(ko_files[0]) if ko_files else ""
-
-    # Parse expected_signal from test.sh. The agent is instructed to emit a
-    # `REPRODUCER_SIGNAL:` line, but in practice it often writes the signal
-    # only in a comment (e.g. "# Expected serial output: WARNING: ... can_finish_ordered_extent").
-    # Fall back to scanning comment lines for known kernel-error tokens so
-    # the contract carries a useful signal instead of empty.
-    expected_signal = ""
-    try:
-        test_sh_text = (reproducer_dirs[0] / "test.sh").read_text()
-        import re
-        signal_match = re.search(r'REPRODUCER_SIGNAL:\s*(\S.+)', test_sh_text)
-        if signal_match:
-            expected_signal = signal_match.group(1).strip()
-        if not expected_signal:
-            expected_signal = _infer_signal_from_test_sh(test_sh_text)
-    except Exception:
-        pass
-
-    return reproducer_dir, test_script_path, reproducer_module_path, expected_signal
-
-
-# Known kernel-error tokens that appear in test.sh comments when the agent
-# documents the expected serial output. Order matters: more-specific signals
-# (KASAN subtypes) come before generic ones (Kernel panic) so we don't grab
-# "Kernel panic" when the real signal is a KASAN report.
-_KNOWN_SIGNAL_TOKENS: list[str] = [
-    "BUG: KASAN: slab-use-after-free",
-    "BUG: KASAN: slab-out-of-bounds",
-    "BUG: KASAN:",
-    "blocked for more than",
-    "hung_task: blocked tasks",
-    "BUG: soft lockup",
-    "unable to handle kernel NULL pointer",
-    "kernel BUG at",
-    "Out of memory",
-    "WARNING: CPU:",
-    "WARNING: at ",
-    "Kernel panic",
-    # Generic fallback — must be last so more-specific tokens match first.
-    "WARNING",
-]
-
-
-def _infer_signal_from_test_sh(test_sh_text: str) -> str:
-    """Scan test.sh comments/text for known kernel-error tokens.
-
-    The agent's test.sh typically has a comment like:
-        # Expected serial output (the signal test_expert greps for):
-        #   WARNING: ... at fs/btrfs/ordered-data.c:390 can_finish_ordered_extent
-        #   Kernel panic - not syncing: kernel: panic_on_warn set ...
-    We pick the most specific token that appears in the file.
-    """
-    for token in _KNOWN_SIGNAL_TOKENS:
-        if token.lower() in test_sh_text.lower():
-            return token
-    return ""
-
-
-def _generate_auto_contract_fields(
-    contract, input_artifacts: dict,
-) -> dict:
-    """Auto-fill missing contract fields from state and file system."""
-    fields = {}
-
-    # target_arch: prefer ELF sniff on vmlinux (cross-arch analysis),
-    # fall back to host uname only if vmlinux is unavailable.
-    if not contract.target_arch:
-        vmlinux_for_sniff = input_artifacts.get("vmlinux_path", "")
-        fields["target_arch"] = _resolve_target_arch_fallback(vmlinux_for_sniff)
-
-    # boot_kernel_path from input_artifacts
-    if not contract.boot_kernel_path:
-        boot = (
-            input_artifacts.get("boot_kernel_path")
-            or input_artifacts.get("vmlinux_path", "")
-        )
-        if boot:
-            fields["boot_kernel_path"] = boot
-
-    # Search for actual reproducer files
-    outputs_dir = paths_get_output_dir()
-    reproducer_dir, test_script_path, reproducer_module_path, test_signal = _find_actual_reproducer_path(outputs_dir)
-
-    if reproducer_dir and not contract.reproducer_dir:
-        fields["reproducer_dir"] = reproducer_dir
-    if test_script_path and not contract.test_script_path:
-        fields["test_script_path"] = test_script_path
-    if reproducer_module_path and not contract.reproducer_module_path:
-        fields["reproducer_module_path"] = reproducer_module_path
-
-    # expected_signal: prefer signal from test.sh; do NOT fall back to a
-    # hung_task-specific signal (it would mismatch KASAN/UAF and other bugs).
-    # Empty string lets test_expert's detection fall through to a broad set
-    # of kernel-error patterns instead of failing on an unrelated signal.
-    if not contract.expected_signal:
-        fields["expected_signal"] = test_signal or ""
-
-    return fields
 
 
 def _extract_evidence_summary(expert_results: list) -> str:
@@ -1270,55 +1062,35 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
     )
 
 
+
+
 def _kernel_contract_from_markers(
-    *,
-    target_arch: str,
-    boot_kernel_path: str,
-    reproducer_dir: str,
-    reproducer_module_path: str,
-    test_script_path: str,
-    expected_signal: str,
+    *, target_arch: str, boot_kernel_path: str, reproducer_dir: str,
+    reproducer_module_path: str, test_script_path: str, expected_signal: str,
     binaries_dir: str = "",
 ) -> KernelExpertOutput:
-    missing = [
-        name for name, value in {
-            "target_arch": target_arch,
-            "boot_kernel_path": boot_kernel_path,
-            "test_script_path": test_script_path,
-            "expected_signal": expected_signal,
-        }.items()
-        if not value
-    ]
+    """Legacy parser retained for archived contract fixtures only; never routed."""
+    missing = [name for name, value in {
+        "target_arch": target_arch, "boot_kernel_path": boot_kernel_path,
+        "test_script_path": test_script_path, "expected_signal": expected_signal,
+    }.items() if not value]
     return KernelExpertOutput(
         status="ok" if not missing else "blocked",
-        target_arch=target_arch,
-        boot_kernel_path=boot_kernel_path,
-        reproducer_dir=reproducer_dir,
-        reproducer_module_path=reproducer_module_path,
-        test_script_path=test_script_path,
-        expected_signal=expected_signal,
-        binaries_dir=binaries_dir,
-        build_status="unknown",
-        warnings=["parsed from legacy marker lines"],
-        blocked_reason=f"missing test handoff fields: {', '.join(missing)}" if missing else "",
+        target_arch=target_arch, boot_kernel_path=boot_kernel_path,
+        reproducer_dir=reproducer_dir, reproducer_module_path=reproducer_module_path,
+        expected_signal=expected_signal, binaries_dir=binaries_dir,
+        build_status="unknown", warnings=["legacy test fixture only"],
+        blocked_reason=f"missing legacy fields: {', '.join(missing)}" if missing else "",
     )
 
 
-def _merge_kernel_contract(primary: KernelExpertOutput, fallback: KernelExpertOutput) -> KernelExpertOutput:
-    """Fill missing JSON contract fields from legacy marker parsing."""
+def _merge_kernel_contract(primary: KernelExpertOutput, legacy: KernelExpertOutput) -> KernelExpertOutput:
+    """Legacy test-only merge; production parsing never invokes it."""
     data = model_to_dict(primary)
-    fallback_data = model_to_dict(fallback)
-    for key, value in fallback_data.items():
+    legacy_data = model_to_dict(legacy)
+    for key, value in legacy_data.items():
         if key in {"warnings", "evidence"}:
             data[key] = (data.get(key) or []) + (value or [])
-        elif key == "status":
-            if data.get("status") in {"degraded", "blocked"} and value == "ok":
-                data[key] = value
-        elif key == "blocked_reason":
-            if fallback.status == "ok":
-                data[key] = ""
-            else:
-                data[key] = data.get(key) or value
         elif not data.get(key) and value:
             data[key] = value
     return _model_validate(KernelExpertOutput, data)

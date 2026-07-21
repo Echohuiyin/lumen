@@ -238,39 +238,6 @@ def test_build_detection_signals_empty_signal_disables_panic_on_warn():
     assert d.panic_is_pass is False
 
 
-def test_kernel_expert_auto_contract_fields_uses_empty_signal_when_test_signal_missing(monkeypatch):
-    """_generate_auto_contract_fields must NOT fall back to a hung_task
-    signal. Empty expected_signal is the correct fallback so test_expert's
-    broad detection set kicks in."""
-    from agents.kernel_expert import _generate_auto_contract_fields
-
-    # Empty contract + no reproducer dir → no test_signal inferred
-    contract = KernelExpertOutput(
-        status="ok",
-        target_arch="",
-        boot_kernel_path="",
-        reproducer_dir="",
-        reproducer_module_path="",
-        test_script_path="",
-        expected_signal="",  # what we're testing
-    )
-    # Use a non-existent outputs dir so _find_actual_reproducer_path returns
-    # empty — but _generate_auto_contract_fields should still fill target_arch
-    # and boot_kernel_path from input_artifacts, NOT expected_signal.
-    # Note: monkeypatch paths_get_output_dir rather than LUMEN_OUTPUT_DIR env
-    # var because _session_dir (set by previous tests) takes precedence.
-    with tempfile.TemporaryDirectory() as tmp:
-        monkeypatch.setattr("agents.kernel_expert.paths_get_output_dir", lambda: Path(tmp))
-        fields = _generate_auto_contract_fields(
-            contract,
-            {
-                "vmlinux_path": "",
-                "boot_kernel_path": "",
-            },
-        )
-    assert "expected_signal" in fields
-    assert fields["expected_signal"] == ""
-
 
 # ---------------------------------------------------------------------------
 # Fix 4: kernel_contract.json file read path

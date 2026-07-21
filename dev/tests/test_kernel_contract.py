@@ -158,7 +158,7 @@ def test_marker_contract_cannot_replace_structured_execution_plan():
         )
         merged = _merge_kernel_contract(primary, fallback)
         merged = _validate_kernel_contract_artifacts(merged)
-        assert merged.status == "ok"
+        assert merged.status in {"blocked", "degraded"}
         assert merged.boot_kernel_path == kernel_file.name
         assert _kernel_contract_ready_for_test(merged) is False
 
