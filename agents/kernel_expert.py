@@ -616,6 +616,7 @@ def _blocked_semcode_path_analysis(result: SemcodePathAnalysisResult) -> dict:
         blocked_reason=reason,
         warnings=["UAF/refcount analysis cannot use an LLM/source-text fallback."],
         evidence=result.evidence,
+        path_analysis_scope={"analysis_status": "blocked"},
     )
     return {
         "kernel_analysis": reason,

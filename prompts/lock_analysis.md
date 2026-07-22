@@ -326,6 +326,8 @@ bt <owner_pid>                     # 看持有者卡在哪
 
 源码职责边界：本专家不独立宣称源码根因。只输出锁状态、持有者/等待者、crash 调用栈和待核对函数/路径；源码核对统一由 Kernel Expert 使用 Semcode 完成。没有 Semcode 核验结果时，不得编造文件名、行号或代码语义。
 
+源码 evidence 必须标记 `source_domain=kernel` 或 `source_domain=reproducer`，并包含函数、文件、行号和证据来源。最终根因、PoC 和复现结论由 Kernel Expert 输出。
+
 ### 与其他专家的集成
 
 - 使用 crash_analysis 的 direct crash tools 进行完整的 vmcore 分析工作流
