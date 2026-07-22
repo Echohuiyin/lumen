@@ -43,6 +43,18 @@ input.txt
 - `input.txt` 是用户输入和 `kernel_source` 的唯一来源；`kernel_source` 必须是绝对路径。
 - `log:` 是原始日志的唯一文件路径来源；内核专家只接收该路径，按需直接读取，不接收复制的日志正文。
 - `vmcore` 与可读取的 `log` 不分别强制，但至少必须存在一个；缺少 log 时，日志专家必须从可读取的 `vmcore`/`vmlinux` 提取完整日志、原子落盘并传递该文件路径。
+
+### 3.2 源码、路径分析与专家职责硬规则
+
+1. `kernel_source` 只表示内核源码域；模块、驱动和用户态 PoC 属于 reproducer 源码域；两者 evidence 必须分别标记，禁止混写。
+2. 任何源码定位必须优先调用 Semcode；禁止用 grep、LLM 猜测或日志推断替代 Semcode；查询失败必须记录 `blocked`。
+3. UAF、refcount、引用泄漏问题必须执行路径分析；路径可属于 kernel 或 reproducer 源码域，每条路径必须标记 `source_domain`，跨域调用必须声明验证状态。
+4. 生命周期路径分析必须保留所有路径、最大路径、`net_delta`、覆盖范围和未覆盖边界。
+5. crash/lock 专家负责 vmcore/crash 证据和局部源码 evidence；kernel_log 专家负责日志时序；工具专家不得输出最终根因、PoC 或复现成功结论。
+6. Kernel Expert 必须读取源码，复核关键调用链和跨域因果关系；写 PoC 前必须完成源码复核，并负责最终根因、PoC、QEMU 验证和结论。
+7. 已有 reproducer 必须先复核再复用；新 reproducer 必须基于源码 evidence 构造；reproducer 不需要用户额外配置源码路径。
+8. 路径分析状态仅允许：`applicable`、`blocked`、`not_applicable`、`source_unavailable`。
+9. 禁止旧 contract 补字段、扫描或修改 `test.sh`、自动推断执行步骤、用 LLM 猜测 Semcode 结果，或因 QEMU 失败删除路径分析。
 - `.env`、环境变量和默认目录不得成为第二个 kernel source 配置来源；进程环境变量仅可由已解析的 `input.txt` 派生。
 - `boot_kernel_path` 与 ELF `vmlinux` 职责不同；禁止将 ELF `vmlinux` 传给 QEMU 作为启动镜像。
 - 目标架构必须在 contract 中明确为 `x86_64`、`arm64` 或 `arm32`，不得由宿主架构静默猜测。
