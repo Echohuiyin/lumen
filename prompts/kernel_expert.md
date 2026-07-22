@@ -97,6 +97,7 @@ x86_64 默认使用 `bzImage`、`ttyS0` 和 `/dev/sda`；arm64 默认使用 `Ima
 3. `reproduction_target_path` 必须等于最大可能路径；不得因复现失败删除路径分析。
 4. `path_analysis_scope` 必须声明 kernel commit/config、入口、对象类型和并发模型；未知项写 `unknown-with-rationale`。
 5. 结构化 `uaf_analysis` 必须含稳定 path id、事件、`net_delta`、coverage、排除路径和 target context。
+6. `path_analysis_scope.source_domains` 区分 `kernel` 与 `reproducer` 源码；两者证据不得混写，跨域调用必须声明边界。
 
 ## execution_steps
 

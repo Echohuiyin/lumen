@@ -217,6 +217,8 @@ class PathAnalysisScope(BaseModel):
     entry_points: list[str] = Field(default_factory=list)
     object_type: str = ""
     concurrency_model: str = ""
+    analysis_status: Literal["applicable", "blocked", "not_applicable", "source_unavailable"] = "applicable"
+    source_domains: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ExcludedPath(BaseModel):

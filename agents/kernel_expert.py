@@ -1252,6 +1252,14 @@ def _validate_path_analysis_contract(
         elif max_path and _normalise_path_for_comparison(reproduction_target) != _normalise_path_for_comparison(max_path):
             errors.append("reproduction_target_path must match max_likely_path")
 
+    for domain in scope.get("source_domains") or []:
+        if not isinstance(domain, dict) or domain.get("kind") not in {"kernel", "reproducer"}:
+            errors.append("each source_domains item requires kind=kernel or reproducer")
+            break
+        if not domain.get("analysis"):
+            errors.append("each source_domains item requires analysis method")
+            break
+
     required_scope = ("kernel_commit", "kernel_config", "entry_points", "object_type", "concurrency_model")
     missing_scope = [
         field for field in required_scope
