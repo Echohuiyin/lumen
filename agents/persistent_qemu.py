@@ -402,7 +402,28 @@ class PersistentQemuManager:
         )
         if upload.returncode != 0:
             return ToolStepResult(name="run_poc_over_ssh", status="failed", message="Failed to upload POC over SSH.", error=upload.stderr[-1000:])
-        executed = subprocess.run([*self._ssh_base(port), "sh /tmp/lumen-poc/run.sh"], capture_output=True, text=True, timeout=330)
+        executed_proc = subprocess.Popen(
+            [*self._ssh_base(port), "sh /tmp/lumen-poc/run.sh"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        deadline = time.monotonic() + 330
+        signal_seen = False
+        while executed_proc.poll() is None and time.monotonic() < deadline:
+            if self.paths.serial_log.exists():
+                serial_text = self.paths.serial_log.read_text(encoding="utf-8", errors="replace")
+                signal_seen = bool(_match_serial_signals(
+                    log_content=serial_text[serial_offset:],
+                    detection=self.plan.detection_signals,
+                    expected_signal=self.plan.expected_signal,
+                ))
+                if signal_seen:
+                    executed_proc.terminate()
+                    break
+            time.sleep(1)
+        if executed_proc.poll() is None:
+            executed_proc.kill()
+        stdout, stderr = executed_proc.communicate()
+        executed = subprocess.CompletedProcess(executed_proc.args, executed_proc.returncode or 0, stdout, stderr)
         output_file = stage / "ssh-command.log"
         output_file.write_text(executed.stdout + "\n--- stderr ---\n" + executed.stderr, encoding="utf-8")
         state["serial_offset"] = serial_offset
