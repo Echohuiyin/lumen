@@ -357,6 +357,7 @@ def extract_semcode_entry_points(*texts: str, expert_results: Iterable[dict[str,
         candidates.extend(_extract_identifiers(text))
     for result in expert_results:
         candidates.extend(_extract_identifiers(str(result.get("analysis_output", ""))))
+        candidates.extend(_extract_identifiers(json.dumps(result, ensure_ascii=False, default=str)))
         structured = result.get("structured_output") or {}
         all_evidence = [*(result.get("evidence", []) or []), *(structured.get("evidence", []) or [])]
         for evidence in all_evidence:

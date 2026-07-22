@@ -2,7 +2,7 @@ from pathlib import Path
 import os
 import pytest
 
-from agents.semcode_path_analysis import create_semcode_tools
+from agents.semcode_path_analysis import create_semcode_tools, extract_semcode_entry_points
 
 
 def test_semcode_tool_adapter_exposes_bounded_source_queries():
@@ -26,6 +26,13 @@ def test_semcode_tool_adapter_does_not_expose_shell_arguments():
     for tool in tools:
         assert "command" not in tool.args_schema.model_fields
         assert "args" not in tool.args_schema.model_fields
+
+
+def test_entry_point_extraction_reads_nested_expert_result_text():
+    points = extract_semcode_entry_points(expert_results=[{
+        "structured_output": {"summary": "KASAN in uaf_ioctl+0x139/0x280"},
+    }])
+    assert points == ["uaf_ioctl"]
 
 
 @pytest.mark.online
