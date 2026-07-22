@@ -174,7 +174,7 @@ class SemcodeMcpClient:
         command: str,
         args: Iterable[str],
         kernel_source_path: str,
-        timeout_sec: int = 30,
+        timeout_sec: int = 120,
     ) -> None:
         self.command = command
         self.args = tuple(args)
