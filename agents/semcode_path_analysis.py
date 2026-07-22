@@ -299,6 +299,9 @@ def analyze_uaf_paths(
         entry_points=[function.name for function in functions],
         object_type=object_type,
         concurrency_model=concurrency_model,
+        source_domains=[{
+            "kind": "kernel", "root": normalized_source, "analysis": "semcode",
+        }],
     )
     paths: list[RefcountPath] = []
     unresolved: list[str] = []
