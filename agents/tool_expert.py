@@ -386,6 +386,8 @@ def _run_tool_calling_analysis(
     vmlinux_path: str,
     expert_name: str,
     output_file: str,
+    kernel_source_path: str = "",
+    semcode_config: dict | None = None,
     max_iterations: int = 15,
 ) -> tuple[AIMessage, list[dict], dict, list[str]]:
     """Execute crash analysis with tool calling.
@@ -413,9 +415,8 @@ def _run_tool_calling_analysis(
 
         # Create session-bound tools plus bounded Semcode source lookups.
         crash_tools = create_crash_tools(session)
-        artifacts = state.get("input_artifacts_contract") or {}
-        source_path = artifacts.get("kernel_source_path", "")
-        semcode_cfg = agent_config.get("semcode_mcp") or {}
+        source_path = kernel_source_path
+        semcode_cfg = semcode_config or {}
         if source_path and semcode_cfg.get("command"):
             crash_tools.extend(create_semcode_tools(
                 command=str(semcode_cfg["command"]),
@@ -739,6 +740,8 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
             vmlinux_path=vmlinux_path,  # 使用展开后的路径
             expert_name=expert_name,
             output_file=output_file,
+            kernel_source_path=(state.get("input_artifacts_contract") or {}).get("kernel_source_path", ""),
+            semcode_config=expert_config.get("agent", {}).get("semcode_mcp") or {},
             max_iterations=15,
         )
 
