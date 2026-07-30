@@ -270,6 +270,7 @@ init_dirs() {
 build_crash_binary() {
     local target="$1" output="$2"
     local make_target host_triplet target_marker previous_target
+    local gdb_target_marker gdb_previous_target
     if [ -x "$output" ]; then
         ok "crash_${target} 已存在: $output"
         return
@@ -304,7 +305,18 @@ build_crash_binary() {
     host_triplet="$(gcc -dumpmachine)"
     target_marker="$CRASH_SOURCE_DIR/.lumen-crash-target"
     previous_target="$(cat "$target_marker" 2>/dev/null || true)"
-    if [ -n "$previous_target" ] && [ "$previous_target" != "$make_target" ]; then
+    # The sidecar marker was added after the first dual-target deployments and
+    # may be absent or stale in an existing checkout.  crash itself records
+    # the target used to configure GDB in gdb-16.2/crash.target; use that
+    # marker as the source of truth whenever a generated GDB tree exists.
+    gdb_target_marker="$CRASH_SOURCE_DIR/gdb-16.2/crash.target"
+    gdb_previous_target="$(cat "$gdb_target_marker" 2>/dev/null || true)"
+    if [ -d "$CRASH_SOURCE_DIR/gdb-16.2" ] && {
+        [ -z "$gdb_previous_target" ] || [ "$gdb_previous_target" != "$make_target" ] ||
+        { [ -n "$previous_target" ] && [ "$previous_target" != "$make_target" ] &&
+          [ "$gdb_previous_target" != "$make_target" ]; };
+    }; then
+        info "清理不匹配的 crash GDB 构建目录 (已有: ${gdb_previous_target:-未知}, 需要: $make_target)"
         find "$CRASH_SOURCE_DIR" -maxdepth 1 -type d -name 'gdb-[0-9]*' -exec rm -rf {} +
     fi
 
@@ -312,7 +324,12 @@ build_crash_binary() {
     (
         cd "$CRASH_SOURCE_DIR"
         make clean || true
-        make TARGET="$make_target" GDB_CONF_FLAGS="--host=$host_triplet" -j"$(nproc)"
+        # crash's configure wrapper reads the lower-case `target` make
+        # variable and rewrites TARGET/GDB settings accordingly.  Passing only
+        # TARGET leaves the wrapper on its host-default (usually X86_64), so a
+        # subsequent ARM64 build can reuse an X86_64 GDB tree and fail at the
+        # final link.  Keep the explicit host triplet for native GDB builds.
+        make target="$make_target" GDB_CONF_FLAGS="--host=$host_triplet" -j"$(nproc)"
         install -Dm 0755 crash "$OLDPWD/$output"
     )
     printf '%s\n' "$make_target" > "$target_marker"
