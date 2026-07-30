@@ -252,15 +252,15 @@ init_dirs() {
 # ── Dual-architecture tools ──────────────────────────────────────────────────
 build_crash_binary() {
     local target="$1" output="$2"
-    local make_target cross_compile
+    local make_target host_triplet
     if [ -x "$output" ]; then
         ok "crash_${target} 已存在: $output"
         return
     fi
 
     case "$target" in
-        x86_64) make_target="X86_64"; cross_compile="x86_64-linux-gnu-" ;;
-        arm64) make_target="ARM64"; cross_compile="aarch64-linux-gnu-" ;;
+        x86_64) make_target="X86_64" ;;
+        arm64) make_target="ARM64" ;;
         *) fail "不支持的 crash 目标架构: $target"; exit 1 ;;
     esac
     if [ ! -f "$CRASH_SOURCE_DIR/Makefile" ]; then
@@ -276,12 +276,13 @@ build_crash_binary() {
         git clone --depth 1 --branch "$CRASH_REF" "$CRASH_REPO" "$CRASH_SOURCE_DIR"
     fi
     sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
+    host_triplet="$(gcc -dumpmachine)"
 
     info "从固定源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
     (
         cd "$CRASH_SOURCE_DIR"
         make clean || true
-        make TARGET="$make_target" CROSS_COMPILE="$cross_compile" -j"$(nproc)"
+        make TARGET="$make_target" GDB_CONF_FLAGS="--host=$host_triplet" -j"$(nproc)"
         install -Dm 0755 crash "$OLDPWD/$output"
     )
     ok "crash_${target} 构建完成: $output"
