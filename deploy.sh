@@ -276,6 +276,11 @@ build_crash_binary() {
         git clone --depth 1 --branch "$CRASH_REF" "$CRASH_REPO" "$CRASH_SOURCE_DIR"
     fi
     sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
+    # crash's release tarball build expects this generated exclusion list,
+    # but it is not tracked by the upstream repository.
+    if [ ! -f "$CRASH_SOURCE_DIR/gdb.files" ]; then
+        printf 'dummy\n' > "$CRASH_SOURCE_DIR/gdb.files"
+    fi
     host_triplet="$(gcc -dumpmachine)"
     target_marker="$CRASH_SOURCE_DIR/.lumen-crash-target"
     previous_target="$(cat "$target_marker" 2>/dev/null || true)"
