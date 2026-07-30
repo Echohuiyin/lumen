@@ -252,7 +252,7 @@ init_dirs() {
 # ── Dual-architecture tools ──────────────────────────────────────────────────
 build_crash_binary() {
     local target="$1" output="$2"
-    local make_target host_triplet
+    local make_target host_triplet target_marker previous_target
     if [ -x "$output" ]; then
         ok "crash_${target} 已存在: $output"
         return
@@ -277,6 +277,11 @@ build_crash_binary() {
     fi
     sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
     host_triplet="$(gcc -dumpmachine)"
+    target_marker="$CRASH_SOURCE_DIR/.lumen-crash-target"
+    previous_target="$(cat "$target_marker" 2>/dev/null || true)"
+    if [ -n "$previous_target" ] && [ "$previous_target" != "$make_target" ]; then
+        rm -rf "$CRASH_SOURCE_DIR"/gdb-[0-9]*
+    fi
 
     info "从固定源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
     (
@@ -285,6 +290,7 @@ build_crash_binary() {
         make TARGET="$make_target" GDB_CONF_FLAGS="--host=$host_triplet" -j"$(nproc)"
         install -Dm 0755 crash "$OLDPWD/$output"
     )
+    printf '%s\n' "$make_target" > "$target_marker"
     ok "crash_${target} 构建完成: $output"
 }
 
