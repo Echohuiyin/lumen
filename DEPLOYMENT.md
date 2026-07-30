@@ -409,9 +409,22 @@ bash scripts/provision_qemu_ssh_image.sh --arch all
 The runner reuses a guest only when its architecture, boot-kernel digest,
 rootfs digest, and QEMU recipe match. It uploads each PoC to a fresh guest
 directory over SSH and keeps serial/SSH evidence in the session artifacts.
-For arm64 it follows syzkaller's `virt`/`ttyAMA0`/`root=/dev/vda` model, adds
-early serial output, and provisions `serial-getty@ttyAMA0` plus `haveged` for
-reliable SSH startup under x86 TCG emulation. See [syzkaller arm64 QEMU setup](https://github.com/google/syzkaller/blob/master/docs/linux/setup_linux-host_qemu-vm_arm64-kernel.md).
+For arm64 it follows syzkaller's `virt`/`ttyAMA0`/`root=/dev/vda` model, uses
+PCI virtio (`virtio-blk-pci` and `virtio-net-pci`), adds early serial output,
+and provisions `serial-getty@ttyAMA0` plus `haveged` for reliable SSH startup
+under x86 TCG emulation. See [syzkaller arm64 QEMU setup](https://github.com/google/syzkaller/blob/master/docs/linux/setup_linux-host_qemu-vm_arm64-kernel.md).
+
+**Kernel/rootfs compatibility (important)**: the generated ext4 image is a
+Debian userspace rootfs; it does not contain the arbitrary kernel's modules,
+initramfs, or a replacement kernel. The boot kernel must therefore have the
+root filesystem and virtio storage/network drivers built in (`=y`), including
+`CONFIG_EXT4_FS`, `CONFIG_VIRTIO_BLK`, and `CONFIG_VIRTIO_PCI` (plus the
+architecture's virtio-net driver). If any of these are modules (`=m`), provide
+an initramfs and matching `/lib/modules/<kernel-release>` tree and pass them
+with the kernel. A panic such as `VFS: Cannot open root device` or
+`unknown-block(0,0)` indicates this kernel/image contract is missing; it does
+not by itself indicate that image packaging failed. Normal Debian boot mounts
+`/proc` and `/sys` inside the guest once the kernel reaches userspace.
 
 ---
 
