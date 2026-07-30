@@ -71,6 +71,7 @@ preflight_check() {
     check_cmd makeinfo "apt install texinfo" || ((fail_count++))
     check_cmd file "apt install file" || ((fail_count++))
     check_cmd mke2fs "apt install e2fsprogs" || ((fail_count++))
+    check_cmd x86_64-linux-gnu-gcc "apt install gcc-x86-64-linux-gnu" || ((fail_count++))
     check_cmd aarch64-linux-gnu-gcc "apt install gcc-aarch64-linux-gnu" || ((fail_count++))
     check_cmd cargo "安装 Rust/cargo（国内网络可使用 rsproxy）" || ((fail_count++))
     check_cmd rustc "安装 Rust/rustc（国内网络可使用 rsproxy）" || ((fail_count++))
@@ -328,15 +329,32 @@ build_dual_arch_tools() {
     build_crash_binary "arm64" "${CRASH_SOURCE_DIR}/crash_arm64"
 
     local busybox_dir="Analysis-SKILL/tools/busybox/prebuilt"
+    local x86_toolchain_dir="runtime/toolchains/x86_64-linux-gnu/bin"
+    if [[ "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ]]; then
+        mkdir -p "$x86_toolchain_dir"
+        for tool in gcc g++ ld as ar nm objcopy objdump ranlib strip readelf; do
+            if command -v "x86_64-linux-gnu-$tool" >/dev/null 2>&1; then
+                ln -sf "$(command -v "x86_64-linux-gnu-$tool")" "$x86_toolchain_dir/$tool"
+            fi
+        done
+    fi
+    build_busybox() {
+        local target="$1"
+        if [[ "$target" == "x86_64" && ( "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ) ]]; then
+            PATH="$(cd "$x86_toolchain_dir" && pwd):$PATH" bash "$BUSYBOX_BUILDER" --arch "$target" --clean
+        else
+            bash "$BUSYBOX_BUILDER" --arch "$target" --clean
+        fi
+    }
     if [ ! -x "${busybox_dir}/busybox_x86_64" ]; then
         info "从源码构建 BusyBox x86_64"
-        bash "$BUSYBOX_BUILDER" --arch x86_64 --clean
+        build_busybox x86_64
     else
         ok "BusyBox x86_64 已存在: ${busybox_dir}/busybox_x86_64"
     fi
     if [ ! -x "${busybox_dir}/busybox_arm64" ]; then
         info "从源码构建 BusyBox arm64"
-        bash "$BUSYBOX_BUILDER" --arch arm64 --clean
+        build_busybox arm64
     else
         ok "BusyBox arm64 已存在: ${busybox_dir}/busybox_arm64"
     fi

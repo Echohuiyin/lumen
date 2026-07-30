@@ -91,7 +91,7 @@ sudo apt install -y cpio gzip
 
 # Build crash and BusyBox from bundled/project-managed source
 sudo apt install -y \
-  build-essential gcc g++ gcc-aarch64-linux-gnu \
+  build-essential gcc g++ gcc-x86-64-linux-gnu gcc-aarch64-linux-gnu \
   bison flex patch texinfo file e2fsprogs \
   libncurses-dev zlib1g-dev liblzo2-dev libsnappy-dev \
   libzstd-dev libgmp-dev libmpfr-dev util-linux
@@ -111,6 +111,7 @@ sudo apt install -y ripgrep
 command -v python3       && python3 --version
 command -v qemu-system-x86_64 && qemu-system-x86_64 --version | head -1
 command -v qemu-system-aarch64 && qemu-system-aarch64 --version | head -1
+command -v x86_64-linux-gnu-gcc && x86_64-linux-gnu-gcc --version | head -1
 command -v aarch64-linux-gnu-gcc && aarch64-linux-gnu-gcc --version | head -1
 command -v cargo && cargo --version
 command -v rustc && rustc --version
