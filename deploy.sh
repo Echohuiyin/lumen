@@ -276,6 +276,9 @@ build_crash_binary() {
         git clone --depth 1 --branch "$CRASH_REF" "$CRASH_REPO" "$CRASH_SOURCE_DIR"
     fi
     sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
+    if [ ! -f "$CRASH_SOURCE_DIR/gdb-16.2.patch" ]; then
+        git show HEAD:gdb-16.2.patch > "$CRASH_SOURCE_DIR/gdb-16.2.patch"
+    fi
     # crash's release tarball build expects this generated exclusion list,
     # but it is not tracked by the upstream repository.
     if [ ! -f "$CRASH_SOURCE_DIR/gdb.files" ]; then
@@ -285,7 +288,7 @@ build_crash_binary() {
     target_marker="$CRASH_SOURCE_DIR/.lumen-crash-target"
     previous_target="$(cat "$target_marker" 2>/dev/null || true)"
     if [ -n "$previous_target" ] && [ "$previous_target" != "$make_target" ]; then
-        rm -rf "$CRASH_SOURCE_DIR"/gdb-[0-9]*
+        find "$CRASH_SOURCE_DIR" -maxdepth 1 -type d -name 'gdb-[0-9]*' -exec rm -rf {} +
     fi
 
     info "从固定源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
