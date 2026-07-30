@@ -136,20 +136,47 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     warnings: list[str] = []
     errors: list[str] = []
 
-    vmcore_path, vmcore_label = _extract_labeled_path(text, ["vmcore", "/proc/vmcore", "kdump"])
-    vmlinux_path, vmlinux_label = _extract_labeled_path(text, ["vmlinux"])
+    vmcore_path, vmcore_label = _extract_labeled_path(
+        text,
+        ["vmcore_path", "vmcore", "/proc/vmcore", "kdump"],
+    )
+    vmlinux_path, vmlinux_label = _extract_labeled_path(
+        text,
+        ["vmlinux_path", "vmlinux"],
+    )
     boot_kernel_path, boot_label = _extract_labeled_path(
         text,
-        ["boot_kernel", "boot kernel", "bzImage", "kernel image", "Image"],
+        [
+            "boot_kernel_path",
+            "boot_kernel",
+            "boot kernel",
+            "bzImage",
+            "kernel image",
+            "Image",
+        ],
     )
     kernel_source_path, source_label = _extract_labeled_path(
         text,
-        ["kernel_source", "kernel source", "linux source", "source tree"],
+        [
+            "kernel_source_path",
+            "kernel_source",
+            "kernel source",
+            "linux source",
+            "source tree",
+        ],
     )
-    log_path, log_label = _extract_labeled_path(text, ["log", "kernel log", "dmesg"])
+    log_path, log_label = _extract_labeled_path(
+        text,
+        ["log_path", "log", "kernel log", "dmesg"],
+    )
     reproducer_path, reproducer_label = _extract_labeled_path(
         text,
-        ["reproducer", "reproducer_path", "test_script", "test script"],
+        [
+            "reproducer_path",
+            "reproducer",
+            "test_script",
+            "test script",
+        ],
     )
     target_arch, arch_pattern = _extract_target_arch(text)
     log_excerpt = _extract_log_excerpt(text)
