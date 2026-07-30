@@ -374,16 +374,6 @@ def create_kernel_tools() -> list:
             description="Read file content",
         ),
         StructuredTool.from_function(
-            name="compile_module",
-            func=compile_module,
-            description=(
-                "Compile kernel module using make. Args: module_dir, kernel_dir (optional), "
-                "arch (default 'x86_64'; use 'arm64' or 'arm32' for cross-compile), "
-                "cross_compile (optional prefix like 'aarch64-linux-gnu-'; auto-derived from arch). "
-                "For arm64/arm32, ARCH= and CROSS_COMPILE= are passed to make automatically."
-            ),
-        ),
-        StructuredTool.from_function(
             name="check_file_exists",
             func=check_file_exists,
             description="Check if file exists",
@@ -403,7 +393,7 @@ def create_kernel_tools() -> list:
             func=bash,
             description=(
                 "Run a controlled shell command for inspection or build operations. "
-                "Prefer dedicated tools for file writes and module compilation. "
+                "Prefer dedicated tools for file writes. Userspace C reproducers are compiled only by Test Expert inside the guest. "
                 "Dangerous commands such as sudo, rm -rf, mount, reboot, mkfs, and system-path writes are blocked."
             ),
         ),

@@ -326,13 +326,13 @@ bt <owner_pid>                     # 看持有者卡在哪
 
 源码职责边界：本专家不独立宣称源码根因。只输出锁状态、持有者/等待者、crash 调用栈和待核对函数/路径；源码核对统一由 Kernel Expert 使用 Semcode 完成。没有 Semcode 核验结果时，不得编造文件名、行号或代码语义。
 
-源码 evidence 必须标记 `source_domain=kernel` 或 `source_domain=reproducer`，并包含函数、文件、行号和证据来源。最终根因、PoC 和复现结论由 Kernel Expert 输出。
+源码 evidence 必须标记 `source_domain=kernel` 或 `source_domain=reproducer`，并包含函数、文件、行号和证据来源。Kernel Expert 输出根因和仅限用户态 C 的复现器方案；Test Expert 在隔离 QEMU 中执行并依据调用链一致性给出最终复现结论。这是 Linux 内核维护诊断流程，不是漏洞利用或挖掘流程。
 
 ### 与其他专家的集成
 
 - 使用 crash_analysis 的 direct crash tools 进行完整的 vmcore 分析工作流
-- 如果需要构造复现器，由 kernel_expert 负责生成和编译验证
-- 如果需要 QEMU 复现，由 kernel_expert loop 消费 `kernel_contract` 并执行确定性验证
+- 如果需要构造复现器，由 Kernel Expert 生成仅限用户态 C 的源码和调用链 oracle；不得创建内核模块
+- 如果需要 QEMU 复现，由 Test Expert 为每次 try-out 复制镜像、在 guest 内编译执行 C 源码，并返回确定性的调用链一致性结果
 
 ### 输出文件结构
 

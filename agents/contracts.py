@@ -115,14 +115,50 @@ class ExecutionStep(BaseModel):
     module load or evaluates an agent-authored shell script.
     """
 
-    type: Literal["load_module", "run_binary", "run_pressure", "write_sysctl", "wait"]
+    type: Literal["run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
     path: str = ""
     args: list[str] = Field(default_factory=list)
     key: str = ""
     value: str = ""
     seconds: int = 0
-    profile: Literal["cpu", "memory", "io", "scheduler", "filesystem"] = "cpu"
+    profile: Literal[
+        "cpu", "memory", "io", "scheduler", "filesystem", "network",
+        "failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request",
+    ] = "cpu"
     workers: int = 1
+    probability: int = 0
+    interval: int = 1
+    times: int = 1
+    space: int = 0
+    target: str = ""
+    rationale: str = ""
+
+
+class CallChainOracle(BaseModel):
+    """Evidence-backed criteria for matching a maintenance incident call chain."""
+
+    fault_signatures: list[str] = Field(default_factory=list)
+    required_frames: list[str] = Field(default_factory=list)
+    required_frame_order: list[list[str]] = Field(default_factory=list)
+    target_subsystems: list[str] = Field(default_factory=list)
+    target_objects: list[str] = Field(default_factory=list)
+    allowed_wrapper_frames: list[str] = Field(default_factory=list)
+
+
+class UserspaceReproducer(BaseModel):
+    """A diagnostic C program which is compiled only inside the QEMU guest."""
+
+    language: Literal["c"] = "c"
+    artifact_type: Literal["userspace"] = "userspace"
+    source_dir: str = ""
+    source_files: list[str] = Field(default_factory=list)
+    entry_source: str = ""
+    output_binary: str = "lumen-repro"
+    compiler: Literal["gcc", "cc"] = "gcc"
+    compiler_args: list[str] = Field(default_factory=list)
+    link_libraries: list[str] = Field(default_factory=list)
+    run_args: list[str] = Field(default_factory=list)
+    runtime_timeout_sec: int = 60
 
 
 class ErrorEnvelope(BaseModel):
@@ -145,6 +181,7 @@ class TestPlan(BaseModel):
     rootfs_path: str = ""
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
+    reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
     reproducer_module_path: str = ""
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
@@ -155,6 +192,8 @@ class TestPlan(BaseModel):
     target_path_id: str = ""
     target_contexts: list[str] = Field(default_factory=list)
     require_causal_reproduction: bool = False
+    call_chain_oracle: CallChainOracle = Field(default_factory=CallChainOracle)
+    root_cause: str = ""
 
 
 class TestResultContract(BaseModel):
@@ -174,6 +213,13 @@ class TestResultContract(BaseModel):
     target_context_matched: bool = False
     matched_stack_frames: list[str] = Field(default_factory=list)
     false_positive_checks: list[str] = Field(default_factory=list)
+    required_frames_found: list[str] = Field(default_factory=list)
+    missing_frames: list[str] = Field(default_factory=list)
+    frame_order_matched: bool = False
+    call_chain_consistent: bool = False
+    principle_consistent: bool = False
+    semantic_review_reason: str = ""
+    kernel_feedback: str = ""
 
 
 class ValidationResultContract(BaseModel):
@@ -284,6 +330,15 @@ class KernelExpertOutput(BaseModel):
 
     status: WorkflowStatus = "degraded"
     target_arch: str = ""
+    tryout: int = 1
+    root_cause: str = ""
+    root_cause_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    original_call_chain: list[str] = Field(default_factory=list)
+    call_chain_oracle: CallChainOracle = Field(default_factory=CallChainOracle)
+    reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
+    pressure_requirements: list[ExecutionStep] = Field(default_factory=list)
+    fault_injection_requirements: list[ExecutionStep] = Field(default_factory=list)
+    change_from_previous_tryout: str = ""
     vmlinux_path: str = ""
     boot_kernel_path: str = ""
     rootfs_mode: Literal["initramfs", "ext4"] = "ext4"

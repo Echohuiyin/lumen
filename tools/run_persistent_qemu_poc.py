@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Run a validated kernel contract in Lumen's persistent SSH QEMU guest.
+"""Run a validated userspace-C reproduction contract in Lumen's QEMU guest.
 
-This is the only supported POC execution entry point for the Claude loop.  It
-writes a machine-readable result that the workflow later consumes as evidence;
-the model cannot turn a claimed result into a passing verdict by prose alone.
+This compatibility entry point is for Linux kernel maintenance diagnostics. It
+accepts the same C-only contract consumed by Test Expert and writes a
+machine-readable call-chain verdict. Kernel modules are intentionally rejected.
 """
 
 from __future__ import annotations
@@ -17,7 +17,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.contracts import DetectionSignals, ExecutionStep, QemuRecipe, TestPlan, model_to_dict
+from agents.contracts import (
+    CallChainOracle,
+    DetectionSignals,
+    ExecutionStep,
+    QemuRecipe,
+    TestPlan,
+    UserspaceReproducer,
+    model_to_dict,
+)
 from agents.persistent_qemu import run_persistent_qemu_test_plan
 
 
@@ -28,13 +36,19 @@ def _model_validate(model, value: dict):
 
 
 def build_plan(contract: dict) -> TestPlan:
-    """Translate the explicit kernel contract without defaulting missing fields."""
+    """Translate a Kernel Expert C-only handoff without module fallbacks."""
+    if any(contract.get(key) for key in ("reproducer_module_path", "module_path")):
+        raise ValueError("kernel modules are not supported; provide reproducer.source_files instead")
+    reproducer = contract.get("reproducer") or {}
+    if not isinstance(reproducer, dict):
+        raise ValueError("reproducer must be an object describing userspace C sources")
     return TestPlan(
         target_arch=str(contract.get("target_arch", "")),
         boot_kernel_path=str(contract.get("boot_kernel_path", "")),
         rootfs_mode="ext4",
-        reproducer_dir=str(contract.get("reproducer_dir", "")),
-        reproducer_module_path=str(contract.get("reproducer_module_path", "")),
+        reproducer_dir=str(reproducer.get("source_dir", contract.get("reproducer_dir", ""))),
+        reproducer=_model_validate(UserspaceReproducer, reproducer),
+        call_chain_oracle=_model_validate(CallChainOracle, contract.get("call_chain_oracle") or {}),
         execution_steps=[_model_validate(ExecutionStep, step) for step in (contract.get("execution_steps") or [])],
         expected_signal=str(contract.get("expected_signal", "")),
         binaries_dir=str(contract.get("binaries_dir", "")),

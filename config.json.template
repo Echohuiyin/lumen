@@ -32,6 +32,9 @@
         "args": []
       }
     },
+    "test_expert": {
+      "prompt_file": "prompts/test_expert.md"
+    },
     "_kernel_expert_settings_file_note": {
       "_comment": "settings_file isolates the Claude Code CLI invocation that kernel_expert spawns from the user's global ~/.claude/settings.json. Without this, Claude Code CLI inherits whatever ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL the shell or global settings provide, so kernel_expert would silently call the wrong model. The settings file MUST set ANTHROPIC_AUTH_TOKEN (NOT ANTHROPIC_API_KEY) — Claude Code CLI prefers the former and falls back to global settings.json if only the latter is set. A working DeepSeek settings file lives at ~/.claude/settings-lumen-deepseek.json by default; override the path with the CLAUDE_SETTINGS_PATH env var. See DEPLOYMENT.md §4.4."
     },
@@ -94,7 +97,7 @@
     "output_dir": "knowledge_base"
   },
   "workflow": {
-    "max_reproduction_rounds": 9,
+    "max_tryouts": 10,
     "hint_wait_seconds": 0
   }
 }

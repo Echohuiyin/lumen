@@ -56,14 +56,19 @@ class MaintenanceWorkflowState(TypedDict):
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
     boot_kernel_path: str              # QEMU 可启动内核镜像路径（bzImage/Image）
     reproducer_dir: str                # 复现用例目录
-    reproducer_module_path: str        # 编译出的 .ko 路径
+    reproducer_module_path: str        # 旧字段；新流程必须保持为空
     expected_signal: str               # 期望在 boot log 中观察到的复现信号
-    # 同一内核专家 loop 的确定性 SSH-QEMU 输出
+    # Kernel Expert ↔ Test Expert loop output
     test_result: str                  # 测试结果详情
     test_passed: bool                 # 是否成功复现
     test_attempts: int                # 测试尝试次数
     test_rounds: list[dict]           # 每轮持久 SSH-QEMU 的确定性结果（按轮次保留）
     test_contract: dict               # 结构化测试结果（状态码、步骤、artifact）
+    test_attempt_contract: dict       # 当前 Test Expert 尝试的事实源
+    tryout_count: int                 # 已开始的有效 try-out 数
+    max_tryouts: int                  # 固定上限，默认 10
+    call_chain_consistent: bool       # 测试调用链是否与原始日志一致
+    test_feedback: str                # 下一轮 Kernel Expert 的结构化反馈摘要
     # 知识库生成输出
     knowledge_file: str               # 知识库文件路径
     final_response: str
@@ -120,6 +125,11 @@ def make_initial_state(
         "test_attempts": 0,
         "test_rounds": [],
         "test_contract": {},
+        "test_attempt_contract": {},
+        "tryout_count": 0,
+        "max_tryouts": 10,
+        "call_chain_consistent": False,
+        "test_feedback": "",
         "knowledge_file": "",
         "final_response": "",
     }

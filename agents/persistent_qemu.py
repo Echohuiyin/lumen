@@ -29,10 +29,11 @@ from agents.test_runner import _check_causal_reproduction, _match_serial_signals
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_ROOT = PROJECT_ROOT / "runtime" / "qemu-ssh"
-_SAFE_PAYLOAD_PATH = re.compile(r"^(?:modules|bin)/[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_SAFE_PAYLOAD_PATH = re.compile(r"^bin/[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
-                      "scheduler": "--switch", "filesystem": "--hdd"}
+                      "scheduler": "--switch", "filesystem": "--hdd", "network": "--netdev"}
+_FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request"}
 
 
 @dataclass(frozen=True)
@@ -142,10 +143,9 @@ def _validate_execution_steps(plan: TestPlan) -> None:
     if not plan.execution_steps:
         raise ValueError("execution_steps must not be empty")
     for index, step in enumerate(plan.execution_steps, start=1):
-        if step.type in {"load_module", "run_binary"}:
-            expected_root = "modules" if step.type == "load_module" else "bin"
-            if not _SAFE_PAYLOAD_PATH.fullmatch(step.path) or not step.path.startswith(expected_root + "/"):
-                raise ValueError(f"execution step {index} has invalid {step.type} path: {step.path!r}")
+        if step.type == "run_binary":
+            if not _SAFE_PAYLOAD_PATH.fullmatch(step.path):
+                raise ValueError(f"execution step {index} has invalid userspace binary path: {step.path!r}")
             if any("\x00" in arg or "\n" in arg for arg in step.args):
                 raise ValueError(f"execution step {index} has unsafe arguments")
         elif step.type == "run_pressure":
@@ -161,6 +161,13 @@ def _validate_execution_steps(plan: TestPlan) -> None:
         elif step.type == "wait":
             if not 1 <= step.seconds <= 300:
                 raise ValueError(f"execution step {index} wait seconds must be in 1..300")
+        elif step.type == "fault_injection":
+            if step.profile not in _FAULT_PROFILES:
+                raise ValueError(f"execution step {index} has invalid fault-injection profile: {step.profile!r}")
+            if not 0 <= step.probability <= 100:
+                raise ValueError(f"execution step {index} fault probability must be in 0..100")
+            if not 1 <= step.interval <= 100000 or not 1 <= step.times <= 100000:
+                raise ValueError(f"execution step {index} fault interval/times are out of range")
 
 
 def _render_execution_script(plan: TestPlan, marker: str) -> str:
@@ -169,13 +176,35 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
     lines = [
         "#!/bin/sh", "set -eu", "PRESSURE_PIDS=",
         "trap '[ -z \"${PRESSURE_PIDS:-}\" ] || kill $PRESSURE_PIDS 2>/dev/null || true' EXIT",
-        f"echo {shlex.quote(marker)} > /dev/console", "cd /tmp/lumen-poc",
+        "mkdir -p /tmp/lumen-poc/bin", "cd /tmp/lumen-poc/reproducer",
     ]
+    reproducer = plan.reproducer
+    if reproducer.language != "c" or reproducer.artifact_type != "userspace":
+        raise ValueError("only userspace C reproducers may be compiled in the guest")
+    if not reproducer.source_files or reproducer.entry_source not in reproducer.source_files:
+        raise ValueError("userspace reproducer requires declared source files and entry source")
+    for source in reproducer.source_files:
+        if not source or Path(source).is_absolute() or ".." in Path(source).parts or Path(source).suffix not in {".c", ".h"}:
+            raise ValueError(f"invalid userspace C source: {source!r}")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", reproducer.output_binary):
+        raise ValueError("invalid userspace output binary name")
+    compiler_args = [arg for arg in reproducer.compiler_args if "\n" not in arg and "\x00" not in arg]
+    if len(compiler_args) != len(reproducer.compiler_args):
+        raise ValueError("unsafe compiler argument")
+    libraries = [lib if lib.startswith("-l") else f"-l{lib}" for lib in reproducer.link_libraries]
+    compile_command = " ".join([
+        shlex.quote(reproducer.compiler), *(shlex.quote(source) for source in reproducer.source_files
+        if source.endswith(".c")), *(shlex.quote(arg) for arg in compiler_args),
+        *(shlex.quote(lib) for lib in libraries), "-o", shlex.quote("../bin/" + reproducer.output_binary),
+    ])
+    lines.extend([
+        f"test -x /usr/bin/{shlex.quote(reproducer.compiler)} || command -v {shlex.quote(reproducer.compiler)} >/dev/null",
+        compile_command,
+        "cd /tmp/lumen-poc",
+        f"echo {shlex.quote(marker)} > /dev/console",
+    ])
     for step in plan.execution_steps:
-        if step.type == "load_module":
-            lines.append(f"test -f {shlex.quote('./' + step.path)}")
-            lines.append(f"insmod {shlex.quote('./' + step.path)}")
-        elif step.type == "run_binary":
+        if step.type == "run_binary":
             command = " ".join([shlex.quote("./" + step.path), *(shlex.quote(arg) for arg in step.args)])
             lines.append(f"test -x {shlex.quote('./' + step.path)}")
             lines.append(f"timeout --signal=KILL 300 {command}")
@@ -192,6 +221,18 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         elif step.type == "write_sysctl":
             sysctl_path = "/proc/sys/" + step.key.replace(".", "/")
             lines.append(f"printf '%s\\n' {shlex.quote(step.value)} > {shlex.quote(sysctl_path)}")
+        elif step.type == "fault_injection":
+            fault_dir = "/sys/kernel/debug/" + step.profile
+            lines.extend([
+                f"test -d {shlex.quote(fault_dir)}",
+                f"printf '%s\\n' {step.probability} > {shlex.quote(fault_dir + '/probability')}",
+                f"printf '%s\\n' {step.interval} > {shlex.quote(fault_dir + '/interval')}",
+                f"printf '%s\\n' {step.times} > {shlex.quote(fault_dir + '/times')}",
+            ])
+            if step.space:
+                lines.append(f"printf '%s\\n' {step.space} > {shlex.quote(fault_dir + '/space')}")
+            if step.target:
+                lines.append(f"printf '%s\\n' {shlex.quote(step.target)} > {shlex.quote(fault_dir + '/filter')}")
         else:  # validated Literal leaves only wait
             lines.append(f"sleep {step.seconds}")
     return "\n".join(lines) + "\n"
@@ -436,8 +477,39 @@ class PersistentQemuManager:
         )
 
 
+def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
+    """Match original-log frames in the post-marker serial window only."""
+    oracle = plan.call_chain_oracle
+    result = {
+        "required_frames_found": [], "missing_frames": [],
+        "frame_order_matched": False,
+    }
+    marker = f"LUMEN_REPRO_START:{plan.reproduction_case_id}:{plan.target_path_id}"
+    lines = log_content.splitlines()
+    start = next((index for index, line in enumerate(lines) if marker in line), -1)
+    if start < 0:
+        result["missing_frames"] = list(oracle.required_frames)
+        return result
+    window = lines[start + 1:]
+    lower_window = "\n".join(window).lower()
+    for frame in oracle.required_frames:
+        if frame.lower() in lower_window:
+            result["required_frames_found"].append(frame)
+        else:
+            result["missing_frames"].append(frame)
+    positions = {
+        frame: next((index for index, line in enumerate(window) if frame.lower() in line.lower()), -1)
+        for frame in oracle.required_frames
+    }
+    result["frame_order_matched"] = not result["missing_frames"] and all(
+        positions.get(pair[0], -1) < positions.get(pair[1], -1)
+        for pair in oracle.required_frame_order if len(pair) == 2
+    )
+    return result
+
+
 def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root: Path | None = None) -> TestResultContract:
-    """Run one POC against a reusable SSH QEMU guest and evaluate host serial evidence."""
+    """Run one isolated userspace-C try-out and evaluate its serial call chain."""
     try:
         _validate_execution_steps(plan)
     except ValueError as exc:
@@ -461,10 +533,19 @@ def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root:
     offset = int(state.get("serial_offset", 0))
     content = content[offset:] if offset > 0 else content
     matched = _match_serial_signals(log_content=content, detection=plan.detection_signals, expected_signal=plan.expected_signal)
+    chain = _check_call_chain_match(content, plan)
+    shutdown = manager.shutdown()
+    steps.append(shutdown)
     artifacts = {artifact_key: artifact_path for step in steps for artifact_key, artifact_path in step.artifacts.items()}
     causal = _check_causal_reproduction(content, plan, matched) if matched else {}
-    if matched and (not plan.require_causal_reproduction or all(causal.get(field) for field in ("reproducer_started", "signal_after_start", "target_context_matched"))):
-        return TestResultContract(status="ok", code="PASSED_REPRODUCED", test_passed=True, attempts=attempt, summary=f"Expected signal observed after SSH POC start: {matched}", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, **causal)
+    consistent = bool(
+        matched
+        and all(causal.get(field) for field in ("reproducer_started", "signal_after_start", "target_context_matched"))
+        and not chain["missing_frames"]
+        and chain["frame_order_matched"]
+    )
+    if consistent:
+        return TestResultContract(status="ok", code="PASSED_CALL_CHAIN_CONSISTENT", test_passed=True, attempts=attempt, summary=f"Original call-chain oracle matched after SSH POC start: {matched}", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, call_chain_consistent=True, **causal, **chain)
     if matched:
-        return TestResultContract(status="failed", code="FAILED_CAUSAL_REPRODUCTION", attempts=attempt, summary="Signal was observed but its causal POC proof is incomplete.", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, **causal)
-    return TestResultContract(status="failed", code="FAILED_SIGNAL_NOT_FOUND", attempts=attempt, summary="No expected signal was observed in the serial log after the SSH POC started.", plan=plan, steps=steps, artifacts=artifacts)
+        return TestResultContract(status="failed", code="FAILED_CALL_CHAIN_MISMATCH", attempts=attempt, summary="A target signal was observed but the post-start call chain did not satisfy the original-log oracle.", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, **causal, **chain)
+    return TestResultContract(status="failed", code="FAILED_SIGNAL_NOT_FOUND", attempts=attempt, summary="No target fault signature was observed after the userspace reproducer started.", plan=plan, steps=steps, artifacts=artifacts, **chain)

@@ -56,16 +56,16 @@
       "downstream_consumers": ["kernel_expert", "knowledge_base"]
     },
     "kernel_expert": {
-      "role": "In one Claude Code loop, synthesize evidence, create and compile a POC, invoke persistent SSH-QEMU validation, and emit both contracts.",
+      "role": "Synthesize maintenance evidence, analyze read-only kernel source, and emit a userspace-C reproducer plus call-chain oracle for Test Expert.",
       "prompt_file": "prompts/kernel_expert.md",
       "required_inputs": ["user_input", "expert_results", "config"],
-      "optional_inputs": ["input_artifacts_contract", "test_result", "test_attempts"],
-      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract", "execution_steps", "test_result", "test_passed", "test_attempts", "test_rounds", "test_contract", "semcode_path_analysis"],
-      "tools": ["create_directory", "write_file", "read_file", "compile_module", "check_file_exists", "list_directory", "search_files", "bash"],
-      "downstream_consumers": ["knowledge_base"],
+      "optional_inputs": ["input_artifacts_contract", "test_attempt_contract", "test_feedback", "tryout_count"],
+      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract", "semcode_path_analysis"],
+      "tools": ["create_directory", "write_file", "read_file", "check_file_exists", "list_directory", "search_files", "bash"],
+      "downstream_consumers": ["test_expert", "knowledge_base"],
       "bug_type_recipes": {
         "deadlock": {
-          "reproducer_strategy": "kernel_module",
+          "reproducer_strategy": "userspace_c",
           "concurrent_instances": 1,
           "timeout_sec": 120,
           "extra_cmdline": "",
@@ -74,7 +74,7 @@
           "detection_panic_is_pass": false
         },
         "uaf": {
-          "reproducer_strategy": "kernel_module_plus_userspace_trigger",
+          "reproducer_strategy": "userspace_c",
           "concurrent_instances": 1,
           "timeout_sec": 120,
           "extra_cmdline": "",
@@ -83,7 +83,7 @@
           "detection_panic_is_pass": false
         },
         "race": {
-          "reproducer_strategy": "userspace_or_module",
+          "reproducer_strategy": "userspace_c",
           "concurrent_instances": 4,
           "timeout_sec": 300,
           "extra_cmdline": "",
@@ -101,7 +101,7 @@
           "detection_panic_is_pass": false
         },
         "null_ptr_deref": {
-          "reproducer_strategy": "kernel_module",
+          "reproducer_strategy": "userspace_c",
           "concurrent_instances": 1,
           "timeout_sec": 120,
           "extra_cmdline": "",
@@ -119,6 +119,15 @@
           "detection_panic_is_pass": true
         }
       }
+    },
+    "test_expert": {
+      "role": "Run one isolated QEMU try-out: copy the base image, compile the userspace C reproducer inside the guest, apply structured injection, and verify the original call-chain oracle.",
+      "prompt_file": "prompts/test_expert.md",
+      "required_inputs": ["kernel_contract", "session_dir", "tryout_count"],
+      "optional_inputs": ["input_artifacts_contract", "kernel_analysis", "test_feedback"],
+      "outputs": ["test_result", "test_passed", "test_attempt_contract", "test_contract", "tryout_count", "call_chain_consistent", "test_feedback"],
+      "tools": [],
+      "downstream_consumers": ["kernel_expert", "knowledge_base"]
     },
     "knowledge_base": {
       "role": "Archive the full analysis, structured contracts, evidence, reproducer artifacts, and test result.",

@@ -130,15 +130,16 @@ def test_kernel_expert():
     """测试 kernel_expert 的文件操作和编译能力。"""
     print_header("[Kernel Expert] 测试工具调用能力")
 
-    from agents.kernel_tools import create_kernel_tools, create_directory, write_file, read_file, compile_module, check_file_exists
+    from agents.kernel_tools import create_kernel_tools, create_directory, write_file, read_file, check_file_exists
 
     config = load_config(CONFIG_PATH)
 
     # 测试 1: 工具创建
     tools = create_kernel_tools()
     tool_names = [t.name for t in tools]
-    has_required = all(n in tool_names for n in ["create_directory", "write_file", "compile_module"])
-    print_result("工具创建", has_required, f"tools={tool_names}")
+    has_required = all(n in tool_names for n in ["create_directory", "write_file", "search_files"])
+    has_no_module_compiler = "compile_module" not in tool_names
+    print_result("工具创建", has_required and has_no_module_compiler, f"tools={tool_names}")
 
     # 测试 2: 基本文件操作
     test_dir = "/tmp/test_kernel_expert_tools"

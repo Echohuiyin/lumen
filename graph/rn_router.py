@@ -1,3 +1,4 @@
+from langgraph.graph import END
 from langgraph.types import Send
 import re
 
@@ -36,14 +37,24 @@ def route_after_pm(state: MaintenanceWorkflowState):
 
 
 def route_after_kernel(state: MaintenanceWorkflowState):
-    """Archive every outcome after the single analysis/PoC/verification loop.
+    """Send a validated userspace C contract to Test Expert."""
+    contract = state.get("kernel_contract") or {}
+    if contract.get("status") != "ok" or not state.get("kernel_ready_for_test"):
+        return "knowledge_base"
+    return "test_expert"
 
-    The QEMU runner is invoked inside ``kernel_expert`` and its JSON contract
-    is evidence, not a separate agent handoff.  Blocked and failed attempts
-    must be archived as well, so no route silently retries with a different
-    context or drops negative evidence.
-    """
-    return "knowledge_base"
+
+def route_after_test(state: MaintenanceWorkflowState):
+    """Close, retry, or block the ten-try-out Kernel/Test Expert loop."""
+    contract = state.get("test_attempt_contract") or state.get("test_contract") or {}
+    if state.get("call_chain_consistent") or contract.get("call_chain_consistent"):
+        return "knowledge_base"
+    if contract.get("status") in {"blocked", "skipped"}:
+        return "knowledge_base"
+    maximum = int(state.get("max_tryouts", 10) or 10)
+    if int(state.get("tryout_count", state.get("test_attempts", 0)) or 0) >= maximum:
+        return "knowledge_base"
+    return "kernel_expert"
 
 
 def _path_contract_ready_for_test(contract: dict) -> bool:

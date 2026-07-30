@@ -228,20 +228,15 @@ def _run_kernel_expert_with_agent_loop(
         f.write(f"执行模式: real ({backend_label} CLI agent)\n\n")
 
     try:
-        kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
-        kernel_headers_exist = os.path.exists(kernel_headers_path)
-
         home_dir = os.path.expanduser("~")
         context_info = f"""Kernel expert runtime environment:
 
 - Home directory: {home_dir} (use this in paths, NOT /root)
 - Output directory (your current workdir): {paths_get_output_dir()} — ALL reproducer files MUST be created under this directory
-- Host kernel: {os.uname().release} / arch {os.uname().machine} (host kernel is for compile toolchain only, NOT for module compilation target)
-- Host kernel headers: {kernel_headers_path} ({'available' if kernel_headers_exist else 'unavailable'})
-- Target kernel source for module compilation: {target_kernel_dir or '(not detected — ask user or use boot_kernel_path-derived dir)'}
-- Persistent QEMU runner: {PROJECT_ROOT}/tools/run_persistent_qemu_poc.py
-- Maximum complete analysis/PoC/verification rounds: {max_reproduction_rounds}
-- Per-round deterministic verification result: {paths_get_output_dir()}/persistent_test_contract.round-<NN>.json
+- Target kernel source for read-only Semcode analysis: {target_kernel_dir or '(declared by input contract)'}
+- Write only diagnostic userspace C sources and KERNEL_CONTRACT here.
+- Test Expert owns QEMU, guest compilation, injection, and call-chain verification.
+- Maximum Kernel/Test Expert try-outs: {max_reproduction_rounds}
 """
 
         # Preflight: extract kernel config + scan test_assets for existing
@@ -426,8 +421,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     output_file = get_expert_output_file("kernel_expert")
 
     # 检查 kernel headers 是否存在
-    kernel_headers_path = f"/lib/modules/{os.uname().release}/build"
-    kernel_headers_exist = os.path.exists(kernel_headers_path)
+    # User-space reproducers are compiled inside the QEMU guest.  Host kernel
+    # headers are intentionally irrelevant and must not block analysis.
+    kernel_headers_exist = True
 
     # kernel headers 不存在时直接报错
     if not kernel_headers_exist:
@@ -528,8 +524,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     # Execute exactly one Claude agent loop.  A max-turns exhaustion is a
     # terminal blocked outcome; partial files must not bypass SSH verification.
-    cli_started_at = time.time()
-    max_reproduction_rounds = int((config.get("workflow", {}) or {}).get("max_reproduction_rounds", 9))
+    max_reproduction_rounds = int((config.get("workflow", {}) or {}).get("max_tryouts", 10))
     if max_reproduction_rounds < 1:
         raise ValueError("workflow.max_reproduction_rounds must be >= 1")
     try:
@@ -588,18 +583,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     except Exception:
         pass  # review pack 写失败不应阻塞主流程
 
-    # The loop must have run the deterministic SSH-QEMU runner itself.  Its
-    # JSON result is attached below; final natural-language text cannot claim
-    # a reproduction result without that fresh artifact.
+    # Test Expert owns deterministic QEMU execution.  Kernel Expert hands off
+    # source and oracle only; prose cannot claim a test outcome.
     parsed = _parse_kernel_expert_response(
         text=text,
         expert_results=expert_results,
         input_artifacts=input_artifacts,
         state=state,
         semcode_path_analysis=semcode_path_analysis,
-    )
-    parsed = _attach_persistent_test_result(
-        parsed, started_after=cli_started_at, max_rounds=max_reproduction_rounds,
     )
     if semcode_path_analysis is not None:
         parsed["semcode_path_analysis"] = semcode_path_analysis.as_dict()
@@ -1073,8 +1064,12 @@ def _kernel_contract_has_handoff(contract: KernelExpertOutput) -> bool:
     return bool(
         contract.target_arch
         and contract.boot_kernel_path
-        and contract.execution_steps
-        and contract.expected_signal
+        and contract.root_cause
+        and contract.reproducer.source_dir
+        and contract.reproducer.source_files
+        and contract.reproducer.entry_source
+        and contract.call_chain_oracle.fault_signatures
+        and contract.call_chain_oracle.required_frames
     )
 
 
@@ -1319,7 +1314,6 @@ def _validate_kernel_contract_artifacts(
     }
     optional_paths = {
         "reproducer_dir": contract.reproducer_dir,
-        "reproducer_module_path": contract.reproducer_module_path,
         "rootfs_path": contract.rootfs_path,
     }
 
@@ -1356,8 +1350,37 @@ def _validate_kernel_contract_artifacts(
         if kernel_type == "elf":
             errors.append("boot_kernel_path points to ELF vmlinux/debug symbols, not a bootable kernel image")
 
-    if not contract.expected_signal:
-        errors.append("missing expected_signal")
+    reproducer = contract.reproducer
+    if reproducer.language != "c" or reproducer.artifact_type != "userspace":
+        errors.append("reproducer must be a userspace C program")
+    if contract.reproducer_module_path:
+        errors.append("kernel modules are forbidden; reproducer_module_path must be empty")
+    if not reproducer.source_dir:
+        errors.append("missing reproducer.source_dir")
+    else:
+        source_dir = _resolve_contract_path(reproducer.source_dir)
+        if not source_dir.is_dir():
+            errors.append(f"reproducer.source_dir does not exist: {reproducer.source_dir}")
+        else:
+            data["reproducer"]["source_dir"] = str(source_dir)
+            for source_file in reproducer.source_files:
+                if not source_file or Path(source_file).is_absolute() or ".." in Path(source_file).parts:
+                    errors.append(f"invalid reproducer source file: {source_file!r}")
+                    continue
+                if Path(source_file).suffix not in {".c", ".h"}:
+                    errors.append(f"non-C reproducer source is forbidden: {source_file}")
+                if not (source_dir / source_file).is_file():
+                    errors.append(f"reproducer source does not exist: {source_file}")
+    if reproducer.entry_source not in reproducer.source_files:
+        errors.append("reproducer.entry_source must be included in source_files")
+    oracle = contract.call_chain_oracle
+    if not oracle.fault_signatures:
+        errors.append("missing call_chain_oracle.fault_signatures")
+    elif not contract.expected_signal:
+        data["expected_signal"] = oracle.fault_signatures[0]
+        warnings.append("expected_signal derived from call_chain_oracle.fault_signatures[0]")
+    if not oracle.required_frames:
+        errors.append("missing call_chain_oracle.required_frames")
 
     path_errors, path_evidence = _validate_path_analysis_contract(
         data, path_analysis_required=path_analysis_required,
