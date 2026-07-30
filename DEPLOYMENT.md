@@ -65,6 +65,11 @@ Total: ~10 GB for all test cases.
 
 ## 2. System Dependencies
 
+The deployment host may be either `x86_64`/`amd64` or `arm64`/`aarch64`.
+Run the same commands below on either host; the script builds host-native
+crash executables for both vmcore targets and cross-builds the arm64 BusyBox
+image when needed.
+
 ```bash
 sudo apt update
 
@@ -75,7 +80,11 @@ sudo apt install -y \
 
 # QEMU (x86_64 / arm64 kernel testing) and persistent SSH guests
 sudo apt install -y qemu-system-x86 qemu-system-arm qemu-utils \
-  openssh-client debootstrap qemu-user-static binfmt-support
+  openssh-client debootstrap qemu-user-binfmt binfmt-support
+
+# Some older distributions provide qemu-user-static instead of
+# qemu-user-binfmt; install whichever package is available.  One of these
+# packages must register qemu-x86_64 and qemu-aarch64 in binfmt_misc.
 
 # Initramfs creation
 sudo apt install -y cpio gzip
@@ -85,7 +94,11 @@ sudo apt install -y \
   build-essential gcc g++ gcc-aarch64-linux-gnu \
   bison flex patch texinfo file e2fsprogs \
   libncurses-dev zlib1g-dev liblzo2-dev libsnappy-dev \
-  libzstd-dev libgmp-dev libmpfr-dev
+  libzstd-dev libgmp-dev libmpfr-dev util-linux
+
+# Rust toolchain for semcode (use the project's rsproxy instructions below
+# when the default Rust download endpoint is slow).
+sudo apt install -y cargo rustc
 
 # Optional: faster text search in kernel source
 sudo apt install -y ripgrep
@@ -99,18 +112,29 @@ command -v python3       && python3 --version
 command -v qemu-system-x86_64 && qemu-system-x86_64 --version | head -1
 command -v qemu-system-aarch64 && qemu-system-aarch64 --version | head -1
 command -v aarch64-linux-gnu-gcc && aarch64-linux-gnu-gcc --version | head -1
+command -v cargo && cargo --version
+command -v rustc && rustc --version
 command -v cpio          && cpio --version | head -1
 ```
 
 Expected: Python 3.10+, QEMU 7+, and the build tools above available.
+
+For mainland network environments, the deploy script accepts these optional
+mirror variables:
+
+```bash
+export LUMEN_DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
+export LUMEN_GNU_MIRROR=https://mirrors.aliyun.com/gnu
+export LUMEN_PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+```
 
 ---
 
 ## 3. Clone & Submodule
 
 ```bash
-# Clone with submodules
-git clone git@github.com:Echohuiyin/Analysis-SKILL.git lumen
+# Clone the Lumen project with submodules
+git clone git@github.com:Echohuiyin/lumen.git lumen
 cd lumen
 git submodule update --init --recursive
 
@@ -292,49 +316,42 @@ crash=X86_64 vmcore=ARM64` then `not a supported file format`.
 
 Lumen auto-selects the right crash binary by sniffing the vmlinux's ELF
 `e_machine` field. It looks for `crash_<arch>` at:
-- `Analysis-SKILL/tools/crash/crash_<arch>` (source-built default)
+- `runtime/crash-source/crash_<arch>` (the `deploy.sh` default)
+- `${CRASH_SOURCE_DIR}/crash_<arch>` (when `CRASH_SOURCE_DIR` is overridden)
 - `/usr/local/bin/crash_<arch>`
 
-The bundled crash source is pinned in
-`Analysis-SKILL/tools/crash/SOURCE_VERSION`:
+The source is cloned into the ignored runtime directory and pinned by
+`CRASH_REF` (default `9.0.2`). The executable itself is built for the host
+machine, while `TARGET=X86_64` or `TARGET=ARM64` selects which vmcore format it
+parses. This is why the same procedure works on both x86_64 and arm64 hosts.
 
 ```text
 repo: https://github.com/crash-utility/crash.git
 ref: 9.0.2
-commit: 61fe107
 ```
 
-Build both binaries via the bundled crash build script:
+`deploy.sh` builds both binaries automatically. To override the source or use
+a local mirror, set `CRASH_REPO` and run:
 
 ```bash
-bash Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh \
-  --arch x86_64 \
-  --source-dir Analysis-SKILL/tools/crash \
-  --output Analysis-SKILL/tools/crash/crash_x86_64 \
-  --clean
-
-bash Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh \
-  --arch arm64 \
-  --source-dir Analysis-SKILL/tools/crash \
-  --output Analysis-SKILL/tools/crash/crash_arm64 \
-  --clean
+CRASH_REPO=https://github.com/crash-utility/crash.git bash deploy.sh
 ```
 
-`deploy.sh` runs these builds automatically when the binaries are missing.
+The generated binaries are host-native and both target decoders are produced.
 
 Verify:
 
 ```bash
-$ Analysis-SKILL/tools/crash/crash_arm64 -v | head -1
+$ runtime/crash-source/crash_arm64 -v | head -1
 crash_arm64 9.0.2
 
-$ Analysis-SKILL/tools/crash/crash_x86_64 -v | head -1
+$ runtime/crash-source/crash_x86_64 -v | head -1
 crash_x86_64 9.0.2
 
-$ strings Analysis-SKILL/tools/crash/crash_arm64 | grep -E '^(X86_64|ARM64)$' | head -1
+$ strings runtime/crash-source/crash_arm64 | grep -E '^(X86_64|ARM64)$' | head -1
 ARM64
 
-$ strings Analysis-SKILL/tools/crash/crash_x86_64 | grep -E '^(X86_64|ARM64)$' | head -1
+$ strings runtime/crash-source/crash_x86_64 | grep -E '^(X86_64|ARM64)$' | head -1
 X86_64
 ```
 
@@ -409,8 +426,21 @@ Requires the Rust toolchain:
 
 ```bash
 # Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+export RUSTUP_DIST_SERVER=https://rsproxy.cn
+export RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
+curl --proto '=https' --tlsv1.2 -sSf https://rsproxy.cn/rustup-init.sh | sh
 source "$HOME/.cargo/env"
+
+# Optional Cargo registry mirror for semcode dependencies
+mkdir -p "$HOME/.cargo"
+cat > "$HOME/.cargo/config.toml" <<'EOF'
+[source.crates-io]
+replace-with = "rsproxy"
+[source.rsproxy]
+registry = "sparse+https://rsproxy.cn/index/"
+[net]
+git-fetch-with-cli = true
+EOF
 
 # Build semcode from the project-managed source
 cd Analysis-SKILL/tools/semcode
@@ -487,7 +517,7 @@ bash deploy.sh
 2. **External dependency check**: looks for QEMU, build tools, cross compiler,
    Claude Code, cpio, gzip, git, wget, and project-managed tool outputs
 3. **Arch-specific crash binary check**: verifies `crash_x86_64` and
-   `crash_arm64` are present at `Analysis-SKILL/tools/crash/` or
+   `crash_arm64` are present at `runtime/crash-source/` or
    `/usr/local/bin/` (required for cross-arch vmcore analysis — see Section
    5.2.1)
 4. **Virtual environment**: creates `venv/` and activates it
@@ -498,7 +528,8 @@ bash deploy.sh
 9. **Tool builds**: builds `crash_x86_64`, `crash_arm64`,
    `busybox_x86_64`, `busybox_arm64`, `semcode-mcp`, and the x86_64/arm64
    persistent SSH guest images when missing
-10. **Verification**: imports langgraph, langchain, langchain_openai to confirm deps work
+10. **Verification**: imports langgraph, langchain, langchain_openai, and pytest
+    to confirm dependencies work
 
 ### Post-deploy: configure .env
 
@@ -703,8 +734,8 @@ file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 # Expected: "ELF 64-bit LSB executable, ARM aarch64, ... statically linked"
 
 # Crash arm64 binary (REQUIRED for arm64 vmcore analysis)
-ls -x Analysis-SKILL/tools/crash/crash_arm64 /usr/local/bin/crash_arm64 2>/dev/null
-strings Analysis-SKILL/tools/crash/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head -1
+ls -l runtime/crash-source/crash_arm64 /usr/local/bin/crash_arm64 2>/dev/null
+strings runtime/crash-source/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head -1
 # Expected: ARM64
 ```
 

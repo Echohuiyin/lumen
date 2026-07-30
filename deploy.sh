@@ -22,6 +22,14 @@ SEMCODE_SOURCE_DIR="Analysis-SKILL/tools/semcode"
 SEMCODE_REPO="${SEMCODE_REPO:-https://github.com/facebookexperimental/semcode.git}"
 SEMCODE_MCP_BIN="${SEMCODE_SOURCE_DIR}/target/release/semcode-mcp"
 PERSISTENT_QEMU_PROVISIONER="scripts/provision_qemu_ssh_image.sh"
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+    x86_64|amd64|aarch64|arm64) ;;
+    *)
+        fail "不支持的主机架构: $HOST_ARCH（仅支持 x86_64/amd64 或 arm64/aarch64）"
+        exit 1
+        ;;
+esac
 
 # ── Pre-flight: check required external binaries ──────────────────────────────
 check_cmd() {
@@ -64,6 +72,9 @@ preflight_check() {
     check_cmd file "apt install file" || ((fail_count++))
     check_cmd mke2fs "apt install e2fsprogs" || ((fail_count++))
     check_cmd aarch64-linux-gnu-gcc "apt install gcc-aarch64-linux-gnu" || ((fail_count++))
+    check_cmd cargo "安装 Rust/cargo（国内网络可使用 rsproxy）" || ((fail_count++))
+    check_cmd rustc "安装 Rust/rustc（国内网络可使用 rsproxy）" || ((fail_count++))
+    check_cmd mountpoint "apt install util-linux" || ((fail_count++))
 
     # ── Crash utility: arch-specific binaries ────────────────────────────────
     # crash is compiled with a single TARGET arch hardcoded. An x86_64-targeted
@@ -150,6 +161,7 @@ preflight_check() {
         echo ""
         warn "=== $fail_count 个依赖缺失，请安装后重试 ==="
         echo ""
+        return 1
     else
         echo ""
         ok "=== 所有外部依赖已就绪 ==="
@@ -186,7 +198,11 @@ create_virtualenv() {
 # ── Install Python deps ──────────────────────────────────────────────────────
 install_deps() {
     if [ -f "requirements.txt" ]; then
-        pip install -r requirements.txt -q
+        if [ -n "${LUMEN_PIP_INDEX_URL:-}" ]; then
+            pip install --index-url "$LUMEN_PIP_INDEX_URL" -r requirements.txt -q
+        else
+            pip install -r requirements.txt -q
+        fi
         ok "Python 依赖安装完成"
     else
         fail "未找到 requirements.txt"
