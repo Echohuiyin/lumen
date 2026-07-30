@@ -15,6 +15,7 @@ USE_VENV=true
 CRASH_SOURCE_DIR="${CRASH_SOURCE_DIR:-runtime/crash-source}"
 CRASH_REPO="${CRASH_REPO:-https://github.com/crash-utility/crash.git}"
 CRASH_REF="${CRASH_REF:-9.0.2}"
+GNU_MIRROR="${LUMEN_GNU_MIRROR:-https://mirrors.aliyun.com/gnu}"
 CRASH_BUILDER="Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh"
 BUSYBOX_BUILDER="Analysis-SKILL/tools/build_busybox.sh"
 SEMCODE_SOURCE_DIR="Analysis-SKILL/tools/semcode"
@@ -274,6 +275,7 @@ build_crash_binary() {
         fi
         git clone --depth 1 --branch "$CRASH_REF" "$CRASH_REPO" "$CRASH_SOURCE_DIR"
     fi
+    sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
 
     info "从固定源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
     (
