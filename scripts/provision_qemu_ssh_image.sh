@@ -47,8 +47,20 @@ host_arch="$(uname -m)"
 if [[ "$host_arch" == "amd64" ]]; then host_arch="x86_64"; fi
 if [[ "$host_arch" == "aarch64" ]]; then host_arch="arm64"; fi
 
+cleanup_rootfs_mounts() {
+    local rootfs="$1" mount
+
+    # Cross-architecture bootstraps may bind host pseudo-filesystems into the
+    # chroot.  They must not be copied into the ext4 image.
+    for mount in "$rootfs/dev/pts" "$rootfs/dev" "$rootfs/proc" "$rootfs/sys" "$rootfs/run"; do
+        if mountpoint -q "$mount"; then
+            sudo umount -l "$mount"
+        fi
+    done
+}
+
 build_one() {
-    local lumen_arch="$1" deb_arch rootfs image key qemu_static
+    local lumen_arch="$1" deb_arch rootfs image key qemu_static binfmt_name use_static=false
     case "$lumen_arch" in
         x86_64) deb_arch="amd64" ;;
         arm64) deb_arch="arm64" ;;
@@ -67,13 +79,20 @@ build_one() {
         exit 1
     fi
     if [[ "$lumen_arch" != "$host_arch" ]]; then
-        qemu_static="/usr/bin/qemu-aarch64-static"
-        if [[ ! -x "$qemu_static" ]]; then
-            echo "ERROR: arm64 guest bootstrap needs qemu-user-static: sudo apt install qemu-user-static binfmt-support" >&2
+        case "$lumen_arch" in
+            x86_64) qemu_static="/usr/bin/qemu-x86_64-static"; binfmt_name="qemu-x86_64" ;;
+            arm64) qemu_static="/usr/bin/qemu-aarch64-static"; binfmt_name="qemu-aarch64" ;;
+        esac
+        if [[ -x "$qemu_static" ]]; then
+            use_static=true
+        elif [[ ! -r "/proc/sys/fs/binfmt_misc/${binfmt_name}" ]] || ! grep -qx "enabled" "/proc/sys/fs/binfmt_misc/${binfmt_name}"; then
+            echo "ERROR: ${lumen_arch} guest bootstrap needs $qemu_static or enabled ${binfmt_name}: install qemu-user-binfmt/binfmt-support" >&2
             exit 1
         fi
         sudo debootstrap --foreign --arch="$deb_arch" "$DISTRIBUTION" "$rootfs" "$MIRROR"
-        sudo cp "$qemu_static" "$rootfs/usr/bin/"
+        if [[ "$use_static" == true ]]; then
+            sudo cp "$qemu_static" "$rootfs/usr/bin/"
+        fi
         sudo chroot "$rootfs" /debootstrap/debootstrap --second-stage
     else
         sudo debootstrap --arch="$deb_arch" "$DISTRIBUTION" "$rootfs" "$MIRROR"
@@ -121,9 +140,12 @@ EOF
     if [[ "$lumen_arch" == "arm64" ]]; then
         sudo chroot "$rootfs" systemctl enable serial-getty@ttyAMA0.service
     fi
-    sudo rm -f "$rootfs/usr/bin/qemu-aarch64-static"
+    if [[ "$use_static" == true ]]; then
+        sudo rm -f "$rootfs/usr/bin/$(basename "$qemu_static")"
+    fi
 
     # A raw ext4 image is accepted by both x86 IDE and arm virtio block QEMU.
+    cleanup_rootfs_mounts "$rootfs"
     truncate -s 2G "$image"
     sudo mke2fs -q -t ext4 -d "$rootfs" "$image"
     sudo chown "$(id -u):$(id -g)" "$image"
