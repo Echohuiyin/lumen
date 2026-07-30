@@ -390,7 +390,12 @@ main() {
     echo "======================================"
     echo -e "${NC}"
 
-    git submodule update --init --recursive
+    # Keep an already provisioned submodule intact.  Semcode is intentionally
+    # built under Analysis-SKILL and makes that worktree dirty; forcing a
+    # checkout here would discard the deployed toolchain.
+    if ! git submodule update --init --recursive; then
+        warn "Analysis-SKILL 有本地部署产物，保留当前工作区并继续"
+    fi
     check_python
     preflight_check
     create_virtualenv
