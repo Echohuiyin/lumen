@@ -13,11 +13,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 CHECKS = [
     ["dev/scripts/check_agent_contracts.py"],
-    ["-m", "compileall", "-q", "agents", "graph", "dev/scripts", "dev/tests/test_agent_contracts.py"],
+    ["-m", "compileall", "-q", "agents", "graph", "dev/scripts", "dev/tests"],
     ["dev/tests/test_agent_contracts.py"],
     ["dev/tests/test_validator_rules.py"],
     ["dev/tests/test_pm_rules.py"],
     ["dev/tests/test_kernel_contract.py"],
+    ["dev/tests/test_kernel_expert.py"],
+    ["dev/tests/test_test_expert.py"],
+    ["dev/tests/test_test_loop.py"],
+    ["dev/tests/test_persistent_qemu.py"],
     ["dev/tests/test_test_runner_contract.py"],
     ["dev/tests/test_tool_evidence.py"],
     ["dev/tests/test_semcode_mcp.py"],
