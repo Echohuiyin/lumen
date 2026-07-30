@@ -545,8 +545,15 @@ def _build_numa_qemu_args(n: int, smp_spec: str, memory: str) -> list[str]:
 
 
 def _rootfs_device_for_arch(arch: str) -> str:
-    """Return the QEMU virtio-blk device name for the target arch."""
-    return "virtio-blk-device,drive=rootfs" if arch in {"arm64", "arm32"} else "virtio-blk-pci,drive=rootfs"
+    """Return the QEMU virtio-blk device name for the target arch.
+
+    ARM64 maintenance kernels commonly enable the PCI virtio driver while
+    leaving the MMIO variant as a module.  The persistent image has no
+    kernel-specific module initramfs, so use the PCI device consistently for
+    both architectures; it is supported by QEMU's ``virt`` machine and keeps
+    the root disk available as ``/dev/vda``.
+    """
+    return "virtio-blk-pci,drive=rootfs"
 
 
 def boot_kernel(

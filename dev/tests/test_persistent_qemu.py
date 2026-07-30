@@ -55,6 +55,8 @@ def test_arm64_launch_recipe_uses_expected_console_and_disk(tmp_path):
     assert command[0] == "qemu-system-aarch64"
     assert "console=ttyAMA0" in rendered
     assert "root=/dev/vda" in rendered
+    assert "virtio-blk-pci,drive=rootfs" in rendered
+    assert "virtio-net-pci,netdev=net0" in rendered
 
 
 def test_missing_guest_artifacts_are_blocked_without_reuse(tmp_path):

@@ -261,10 +261,14 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
         cpu = recipe.cpu or ("host" if kvm_available else "cortex-a57")
         root_device = "/dev/vda"
         console = "ttyAMA0"
-        net_device = "virtio-net-device,netdev=net0"
+        # Use PCI virtio devices for the ARM guest.  The deployed ARM64
+        # kernels commonly enable CONFIG_VIRTIO_PCI but not
+        # CONFIG_VIRTIO_MMIO; the PCI form is also supported by QEMU's
+        # `virt` machine and keeps the root disk discoverable as /dev/vda.
+        net_device = "virtio-net-pci,netdev=net0"
         drive_args = [
             "-drive", f"if=none,id=rootfs,file={paths.image},format=raw",
-            "-device", "virtio-blk-device,drive=rootfs",
+            "-device", "virtio-blk-pci,drive=rootfs",
         ]
     else:
         raise ValueError(f"unsupported persistent QEMU architecture: {arch}")
