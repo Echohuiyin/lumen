@@ -251,19 +251,29 @@ init_dirs() {
 # ── Dual-architecture tools ──────────────────────────────────────────────────
 build_crash_binary() {
     local target="$1" output="$2"
+    local make_target
     if [ -x "$output" ]; then
         ok "crash_${target} 已存在: $output"
         return
     fi
 
-    info "从源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
-    bash "$CRASH_BUILDER" \
-        --arch "$target" \
-        --source-dir "$CRASH_SOURCE_DIR" \
-        --output "$output" \
-        --repo-url "$CRASH_REPO" \
-        --repo-ref "$CRASH_REF" \
-        --clean
+    case "$target" in
+        x86_64) make_target="X86_64" ;;
+        arm64) make_target="ARM64" ;;
+        *) fail "不支持的 crash 目标架构: $target"; exit 1 ;;
+    esac
+    if [ ! -f "$CRASH_SOURCE_DIR/Makefile" ]; then
+        fail "缺失固定版本的 crash 源码: $CRASH_SOURCE_DIR"
+        exit 1
+    fi
+
+    info "从固定源码构建 crash_${target}（首次构建会编译 GDB，需数分钟）"
+    (
+        cd "$CRASH_SOURCE_DIR"
+        make clean || true
+        make TARGET="$make_target" -j"$(nproc)"
+        install -Dm 0755 crash "$OLDPWD/$output"
+    )
     ok "crash_${target} 构建完成: $output"
 }
 
