@@ -264,7 +264,14 @@ build_crash_binary() {
     esac
     if [ ! -f "$CRASH_SOURCE_DIR/Makefile" ]; then
         info "获取固定版本 crash 源码: $CRASH_REF"
-        mkdir -p "$(dirname "$CRASH_SOURCE_DIR")"
+        local runtime_dir
+        runtime_dir="$(dirname "$CRASH_SOURCE_DIR")"
+        if [ ! -d "$runtime_dir" ]; then
+            mkdir -p "$runtime_dir"
+        fi
+        if [ ! -w "$runtime_dir" ]; then
+            sudo chown "$(id -u):$(id -g)" "$runtime_dir"
+        fi
         git clone --depth 1 --branch "$CRASH_REF" "$CRASH_REPO" "$CRASH_SOURCE_DIR"
     fi
 
