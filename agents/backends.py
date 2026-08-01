@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shlex
 import subprocess
 import tempfile
@@ -730,7 +731,79 @@ class ClaudeCodeBackend:
             "tools_stats": str(tools_stats_path),
         }
 
+    def _settings_candidates(self) -> list[str]:
+        """Return ordered Claude settings files without exposing credentials.
+
+        ``settings_file`` accepts either one path or a comma/``os.pathsep``
+        separated priority list.  When it is omitted, the maintenance
+        workflow prefers the local GLM account and falls back to the default
+        Claude settings file.  Missing files are ignored so the same config
+        remains portable across hosts.
+        """
+        configured = self._settings_file
+        if not configured:
+            configured = os.environ.get("LUMEN_CLAUDE_SETTINGS_PRIORITY", "")
+        if not configured:
+            configured = os.environ.get("CLAUDE_SETTINGS", "")
+        if not configured:
+            configured = "~/.claude/settings.json_GLM,~/.claude/settings.json"
+
+        if isinstance(configured, (list, tuple)):
+            raw_paths = [str(item) for item in configured]
+        else:
+            raw_paths = re.split(r"[,:\n]" if os.pathsep == ":" else r"[,;\n]", str(configured))
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+        for raw_path in raw_paths:
+            path = os.path.expanduser(raw_path.strip())
+            if not path or path in seen or not os.path.isfile(path):
+                continue
+            seen.add(path)
+            candidates.append(path)
+        return candidates
+
+    @staticmethod
+    def _is_quota_exhaustion(error: BaseException) -> bool:
+        """Recognize provider-credit failures that are safe to fail over."""
+        text = str(error).lower()
+        markers = (
+            "429", "402", "rate limit", "rate_limit", "too many requests",
+            "quota", "insufficient_quota", "out of credits", "credit balance",
+            "payment required", "billing", "额度", "余额",
+        )
+        return any(marker in text for marker in markers)
+
     def invoke(self, messages: list[BaseMessage], *, workdir: str = "", add_dirs: list[str] | None = None) -> AIMessage:
+        """Invoke Claude Code, failing over to the next settings file on quota exhaustion."""
+        candidates = self._settings_candidates()
+        # Keep the historical behavior when no settings file is available:
+        # Claude Code then uses its own default settings/environment.
+        if not candidates:
+            return self._invoke_once(messages, workdir=workdir, add_dirs=add_dirs, settings_path="")
+
+        for index, settings_path in enumerate(candidates):
+            try:
+                return self._invoke_once(
+                    messages,
+                    workdir=workdir,
+                    add_dirs=add_dirs,
+                    settings_path=settings_path,
+                )
+            except RuntimeError as exc:
+                if index + 1 >= len(candidates) or not self._is_quota_exhaustion(exc):
+                    raise
+        # The loop always returns or raises; this keeps type-checkers honest.
+        raise RuntimeError("Claude Code settings failover exhausted")
+
+    def _invoke_once(
+        self,
+        messages: list[BaseMessage],
+        *,
+        workdir: str = "",
+        add_dirs: list[str] | None = None,
+        settings_path: str = "",
+    ) -> AIMessage:
         system_parts: list[str] = []
         user_parts: list[str] = []
         for msg in messages:
@@ -760,10 +833,8 @@ class ClaudeCodeBackend:
         if add_dirs:
             for d in add_dirs:
                 cmd.extend(["--add-dir", d])
-        if self._settings_file:
-            settings_path = os.path.expanduser(self._settings_file)
-            if os.path.exists(settings_path):
-                cmd.extend(["--settings", settings_path])
+        if settings_path:
+            cmd.extend(["--settings", settings_path])
         if self._semcode_mcp:
             # Generate a temp mcp config in CLI format from the inline
             # semcode_mcp dict. This is what makes the semcode tools
@@ -1373,4 +1444,3 @@ class OpenCodeBackend:
     def stream(self, messages: list[BaseMessage]):
         """Non-streaming fallback: invoke and yield single chunk."""
         yield self.invoke(messages)
-

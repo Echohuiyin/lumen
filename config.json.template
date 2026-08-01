@@ -26,7 +26,7 @@
       "permission_mode": "bypassPermissions",
       "max_turns": 900,
       "disable_skills": true,
-      "settings_file": "${CLAUDE_SETTINGS_PATH:-${HOME}/.claude/settings-lumen-deepseek.json}",
+      "settings_file": "${LUMEN_CLAUDE_SETTINGS_PRIORITY:-${HOME}/.claude/settings.json_GLM,${HOME}/.claude/settings.json}",
       "semcode_mcp": {
         "command": "${LUMEN_SEMCODE_MCP:-${LUMEN_PROJECT_ROOT:-.}/Analysis-SKILL/tools/semcode/target/release/semcode-mcp}",
         "args": []
@@ -36,7 +36,7 @@
       "prompt_file": "prompts/test_expert.md"
     },
     "_kernel_expert_settings_file_note": {
-      "_comment": "settings_file isolates the Claude Code CLI invocation that kernel_expert spawns from the user's global ~/.claude/settings.json. Without this, Claude Code CLI inherits whatever ANTHROPIC_AUTH_TOKEN / ANTHROPIC_BASE_URL the shell or global settings provide, so kernel_expert would silently call the wrong model. The settings file MUST set ANTHROPIC_AUTH_TOKEN (NOT ANTHROPIC_API_KEY) — Claude Code CLI prefers the former and falls back to global settings.json if only the latter is set. A working DeepSeek settings file lives at ~/.claude/settings-lumen-deepseek.json by default; override the path with the CLAUDE_SETTINGS_PATH env var. See DEPLOYMENT.md §4.4."
+      "_comment": "settings_file is an ordered comma-separated list for the Claude Code CLI used by kernel_expert. The first file is tried first; an explicit quota/429/credit failure moves to the next file, while configuration or MCP errors remain terminal. The settings file MUST set ANTHROPIC_AUTH_TOKEN (NOT ANTHROPIC_API_KEY) and ANTHROPIC_BASE_URL. By default Lumen tries ~/.claude/settings.json_GLM, then ~/.claude/settings.json; override the list with LUMEN_CLAUDE_SETTINGS_PRIORITY. See DEPLOYMENT.md §4.4."
     },
     "_kernel_expert_opencode_alt": {
       "_comment": "Alternate kernel_expert config for environments without Claude Code. Copy these fields over kernel_expert above and remove the _alt prefix. OpenCode requires `opencode` CLI installed (curl -fsSL https://opencode.ai/install | bash) and a provider configured in ~/.config/opencode/opencode.jsonc (e.g., `opencode providers add`). semcode MCP must be registered via `opencode mcp add semcode <command> -- -d <db>` (no CLI flag injection).",
