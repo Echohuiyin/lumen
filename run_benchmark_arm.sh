@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-PROJECT=/home/liumingrui/lumen-arm64
+PROJECT="${LUMEN_ARM_PROJECT:-$HOME/lumen-arm64}"
 cd "$PROJECT"
 source .env
 export LUMEN_SEMCODE_MCP="$PROJECT/Analysis-SKILL/tools/semcode/target/release/semcode-mcp"

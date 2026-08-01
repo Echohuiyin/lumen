@@ -391,7 +391,7 @@ def test_dsml_fragment_detection_helper():
 def integration_env(monkeypatch, tmp_path):
     """Set up a realistic E2E environment:
     - session_dir as get_output_dir
-    - reproducer with test.sh and crash_uaf.ko
+    - reproducer with a userspace C source file
     - kernel_contract.json with valid contract
     - mock subprocess.run to return tool-use-only JSONL (no text events)
     - patch kernel_expert paths
@@ -404,20 +404,30 @@ def integration_env(monkeypatch, tmp_path):
 
     reproducer = session_dir / "reproducer"
     reproducer.mkdir()
-    (reproducer / "test.sh").write_text(
-        "#!/bin/sh\necho test\n# REPRODUCER_SIGNAL: BUG: KASAN: slab-use-after-free"
+    (reproducer / "repro.c").write_text(
+        "int main(void) { return 0; }\n", encoding="utf-8"
     )
-    (reproducer / "crash_uaf.ko").write_text("fake ko")
 
+    # Keep a valid userspace contract on disk so this integration test proves
+    # that an empty model response is not allowed to consume stale artifacts.
     contract = {
         "status": "ok",
         "target_arch": "x86_64",
+        "root_cause": "diagnostic uaf",
         "vmlinux_path": str(session_dir / "vmlinux"),
         "boot_kernel_path": str(session_dir / "bzImage"),
-        "reproducer_dir": str(reproducer),
-        "reproducer_module_path": str(reproducer / "crash_uaf.ko"),
-        "test_script_path": str(reproducer / "test.sh"),
-        "execution_steps": [{"type": "load_module", "path": "modules/crash_uaf.ko"}],
+        "reproducer": {
+            "language": "c",
+            "artifact_type": "userspace",
+            "source_dir": str(reproducer),
+            "source_files": ["repro.c"],
+            "entry_source": "repro.c",
+        },
+        "call_chain_oracle": {
+            "fault_signatures": ["BUG: KASAN: slab-use-after-free"],
+            "required_frames": ["foo_ioctl"],
+        },
+        "execution_steps": [{"type": "run_binary", "path": "repro.c"}],
         "expected_signal": "BUG: KASAN: slab-use-after-free",
         "build_status": "passed",
         "blocked_reason": "",
@@ -445,9 +455,12 @@ def integration_env(monkeypatch, tmp_path):
     return session_dir
 
 
-def test_integration_opencode_empty_text_disk_contract(monkeypatch, integration_env):
-    """Full chain: OpenCodeBackend returns empty AIMessage → kernel_expert
-    fallback picks up contract from disk → ready_for_test=True."""
+def test_integration_opencode_empty_text_blocks_without_explicit_contract(monkeypatch, integration_env):
+    """An empty OpenCode response must block, even when a disk contract exists.
+
+    The workflow no longer consumes stale or partial contracts after the model
+    boundary; the Kernel Expert must emit an explicit structured response.
+    """
     from agents.kernel_expert import kernel_expert_node
 
     state = {
@@ -485,7 +498,6 @@ def test_integration_opencode_empty_text_disk_contract(monkeypatch, integration_
     result = kernel_expert_node(state)
     contract = result["kernel_contract"]
 
-    assert contract["status"] == "ok"
-    assert contract["expected_signal"] == "BUG: KASAN: slab-use-after-free"
-    assert contract["build_status"] == "passed"
-    assert result["kernel_ready_for_test"] is True
+    assert contract["status"] == "blocked"
+    assert "explicit structured response" in contract["blocked_reason"]
+    assert result["kernel_ready_for_test"] is False

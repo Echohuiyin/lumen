@@ -50,7 +50,7 @@ Kernel Expert 与 Test Expert 组成显式 loop。两个角色通过结构化 co
 4. 禁止 monkey patch。
 5. Bugfix 和新功能严格限制在批准范围内；无关问题只记录。
 6. 一键部署脚本及其依赖检查必须同步维护。
-7. 远端 `/home/liumingrui/lumen/spec.md` 是规格事实源；每次更新后同步本地副本并校验 SHA-256 一致。
+7. 远端 `$HOME/lumen/spec.md` 是规格事实源；每次更新后同步本地副本并校验 SHA-256 一致。
 8. 所有 prompt 必须明确 Linux 内核维护定位，使用诊断性语言，不得把工作描述为漏洞发现或利用。
 
 ## 4.1 Kernel Expert ????????

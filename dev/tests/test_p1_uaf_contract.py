@@ -17,11 +17,21 @@ def _model_validate(model_cls, data):
     return model_cls.model_validate(data) if hasattr(model_cls, "model_validate") else model_cls.parse_obj(data)
 
 
-def _valid_uaf_contract(kernel_path: str, test_script: str) -> KernelExpertOutput:
+def _valid_uaf_contract(kernel_path: str, reproducer_dir: str) -> KernelExpertOutput:
     summary = "ioctl -> get -> close -> put -> free -> ioctl access"
     return _model_validate(KernelExpertOutput, {
         "status": "ok", "target_arch": "x86_64", "boot_kernel_path": kernel_path,
-        "test_script_path": test_script, "expected_signal": "BUG: KASAN",
+        "root_cause": "ioctl close race releases foo before a later access",
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": reproducer_dir, "source_files": ["repro.c"],
+            "entry_source": "repro.c",
+        },
+        "call_chain_oracle": {
+            "fault_signatures": ["BUG: KASAN"],
+            "required_frames": ["foo_ioctl"],
+        },
+        "expected_signal": "BUG: KASAN",
         "path_analysis_required": True, "all_possible_paths": [summary],
         "max_likely_path": summary, "reproduction_target_path": summary,
         "path_analysis_scope": {
@@ -48,30 +58,27 @@ def _valid_uaf_contract(kernel_path: str, test_script: str) -> KernelExpertOutpu
 
 
 def test_structured_uaf_path_contract_and_causal_markers_are_required():
-    with tempfile.NamedTemporaryFile() as kernel, tempfile.NamedTemporaryFile(suffix=".sh") as script:
+    with tempfile.NamedTemporaryFile() as kernel, tempfile.TemporaryDirectory() as repro_dir:
         kernel.write(b"MZ\x00\x00")
         kernel.flush()
-        script.write(
-            b"#!/bin/sh\n"
-            b"echo LUMEN_REPRO_START:case-1:p1\n"
-            b"echo run\n"
-            b"echo LUMEN_REPRO_END:case-1:p1:done\n"
+        (Path(repro_dir) / "repro.c").write_text(
+            "int main(void) { return 0; }\n", encoding="utf-8"
         )
-        script.flush()
         validated = _validate_kernel_contract_artifacts(
-            _valid_uaf_contract(kernel.name, script.name), path_analysis_required=True,
+            _valid_uaf_contract(kernel.name, repro_dir), path_analysis_required=True,
         )
         assert validated.status == "ok"
         assert validated.uaf_analysis.paths[0].id == "p1"
 
 
 def test_structured_uaf_delta_mismatch_is_blocked():
-    with tempfile.NamedTemporaryFile() as kernel, tempfile.NamedTemporaryFile(suffix=".sh") as script:
+    with tempfile.NamedTemporaryFile() as kernel, tempfile.TemporaryDirectory() as repro_dir:
         kernel.write(b"MZ\x00\x00")
         kernel.flush()
-        script.write(b"#!/bin/sh\necho LUMEN_REPRO_START:case-1:p1\necho LUMEN_REPRO_END:case-1:p1:done\n")
-        script.flush()
-        contract = _valid_uaf_contract(kernel.name, script.name)
+        (Path(repro_dir) / "repro.c").write_text(
+            "int main(void) { return 0; }\n", encoding="utf-8"
+        )
+        contract = _valid_uaf_contract(kernel.name, repro_dir)
         data = contract.model_dump() if hasattr(contract, "model_dump") else contract.dict()
         data["uaf_analysis"]["paths"][0]["net_delta"] = 1
         validated = _validate_kernel_contract_artifacts(

@@ -31,6 +31,8 @@ EXCLUDE_PATTERNS = (
     "__pycache__/",
     ".venv/",
     "Analysis-SKILL/",           # git submodule
+    "syzfetch-cases/",           # fetched/deployed case metadata, not source
+    "runtime/",                  # generated QEMU/session artifacts
     "dev/tests/test_hardcoded_paths.py",  # this file itself is fine
 )
 

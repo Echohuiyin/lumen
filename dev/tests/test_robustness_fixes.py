@@ -258,9 +258,18 @@ def test_kernel_contract_file_is_preferred_over_text_extraction(tmp_path, monkey
         "status": "ok",
         "target_arch": "arm64",
         "boot_kernel_path": "/tmp/Image",
-        "reproducer_dir": "/tmp/repro",
-        "reproducer_module_path": "/tmp/repro/x.ko",
-        "test_script_path": "/tmp/repro/test.sh",
+        "root_cause": "diagnostic uaf",
+        "reproducer": {
+            "language": "c",
+            "artifact_type": "userspace",
+            "source_dir": "/tmp/repro",
+            "source_files": ["repro.c"],
+            "entry_source": "repro.c",
+        },
+        "call_chain_oracle": {
+            "fault_signatures": ["BUG: KASAN:"],
+            "required_frames": ["trigger_fault"],
+        },
         "execution_steps": [{"type": "run_binary", "path": "bin/trigger"}],
         "expected_signal": "BUG: KASAN:",
         "binaries_dir": "",
@@ -288,12 +297,14 @@ def test_kernel_contract_file_is_preferred_over_text_extraction(tmp_path, monkey
     assert ke._kernel_contract_has_handoff(kernel_contract)
     assert kernel_contract.target_arch == "arm64"
     assert kernel_contract.expected_signal == "BUG: KASAN:"
+    assert kernel_contract.reproducer_module_path == ""
+    assert kernel_contract.reproducer.artifact_type == "userspace"
 
 
 def test_kernel_contract_text_extraction_still_works_without_file(tmp_path, monkeypatch):
     """When no kernel_contract.json file exists, the text-extraction path
-    must still function (backward compatibility for LLMs that emit
-    KERNEL_CONTRACT in their final response)."""
+    must still function for a userspace-C contract emitted in the final
+    response."""
     from agents import kernel_expert as ke
 
     monkeypatch.setattr(ke, "paths_get_output_dir", lambda: tmp_path)
@@ -303,18 +314,15 @@ def test_kernel_contract_text_extraction_still_works_without_file(tmp_path, monk
     with tempfile.NamedTemporaryFile(suffix="-bzImage") as bz:
         bz.write(b"MZ\x00\x00")
         bz.flush()
-        with tempfile.NamedTemporaryFile(suffix="-test.sh") as ts:
-            ts.write(b"#!/bin/sh\ntrue\n")
-            ts.flush()
-            text = f"""
+        (tmp_path / "repro.c").write_text(
+            "int main(void) { return 0; }\n", encoding="utf-8"
+        )
+        text = f"""
 REPRODUCE_CASE: uaf trigger
 KERNEL_DIAGNOSIS: kasan
 
 TARGET_ARCH: x86_64
 BOOT_KERNEL_PATH: {bz.name}
-REPRODUCER_DIR: {tmp_path}
-REPRODUCER_MODULE_PATH: {tmp_path}/x.ko
-TEST_SCRIPT_PATH: {ts.name}
 EXPECTED_SIGNAL: BUG: KASAN:
 BINARIES_DIR:
 
@@ -324,18 +332,29 @@ KERNEL_CONTRACT:
   "status": "ok",
   "target_arch": "x86_64",
   "boot_kernel_path": "{bz.name}",
-  "reproducer_dir": "{tmp_path}",
-  "reproducer_module_path": "{tmp_path}/x.ko",
-  "test_script_path": "{ts.name}",
+  "root_cause": "diagnostic uaf",
+  "reproducer": {{
+    "language": "c",
+    "artifact_type": "userspace",
+    "source_dir": "{tmp_path}",
+    "source_files": ["repro.c"],
+    "entry_source": "repro.c"
+  }},
+  "call_chain_oracle": {{
+    "fault_signatures": ["BUG: KASAN:"],
+    "required_frames": ["trigger_fault"]
+  }},
   "execution_steps": [{{"type": "run_binary", "path": "bin/trigger"}}],
   "expected_signal": "BUG: KASAN:",
   "build_status": "passed"
 }}
 ```
 """
-            contract = ke._extract_kernel_contract(text)
-            assert ke._kernel_contract_has_handoff(contract)
-            assert contract.expected_signal == "BUG: KASAN:"
+        contract = ke._extract_kernel_contract(text)
+        assert ke._kernel_contract_has_handoff(contract)
+        assert contract.expected_signal == "BUG: KASAN:"
+        assert contract.reproducer_module_path == ""
+        assert contract.reproducer.language == "c"
 
 
 # ---------------------------------------------------------------------------
