@@ -4,3 +4,6 @@ vmlinux: ./test_case/vmlinux
 # log: ./test_case/kernel.log
 boot_kernel: ./test_case/bzImage
 kernel_source: /path/to/linux
+rootfs: ./test_case/debian.img
+reproducer: ./test_case/repro.syz
+qemu_extra_cmdline: panic_on_warn=1
