@@ -120,6 +120,10 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             permission_mode=agent_config.get("permission_mode") or defaults.get("permission_mode", "bypassPermissions"),
             max_turns=int(agent_config.get("max_turns") if agent_config.get("max_turns") is not None else defaults.get("max_turns", 100)),
             settings_file=agent_config.get("settings_file") or defaults.get("settings_file", ""),
+            model_pool=agent_config.get("model_pool") or defaults.get("model_pool"),
+            quota_preflight=bool(agent_config.get("quota_preflight", defaults.get("quota_preflight", True))),
+            quota_preflight_timeout=int(agent_config.get("quota_preflight_timeout") if agent_config.get("quota_preflight_timeout") is not None else defaults.get("quota_preflight_timeout", 15)),
+            quota_cooldown_seconds=int(agent_config.get("quota_cooldown_seconds") if agent_config.get("quota_cooldown_seconds") is not None else defaults.get("quota_cooldown_seconds", 300)),
             semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
             disable_skills=bool(agent_config.get("disable_skills", defaults.get("disable_skills", False))),
         )
