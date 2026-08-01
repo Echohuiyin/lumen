@@ -107,7 +107,10 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     Keep the raw SSH artifact and stop the Kernel/Test loop with an auditable
     reason instead of spending the retry budget on identical failures.
     """
-    if result.status != "failed" or result.code != "FAILED_SIGNAL_NOT_FOUND":
+    if result.status != "failed" or result.code not in {
+        "FAILED_SIGNAL_NOT_FOUND",
+        "FAILED_CALL_CHAIN_MISMATCH",
+    }:
         return result
 
     evidence: list[tuple[str, str, str]] = []
@@ -125,6 +128,30 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
     # Restrict promotion to an explicit gadgetfs/USB ABI failure so an
     # unrelated boot-time message cannot suppress legitimate try-outs.
+    # Deep suspend needs a PSCI system-suspend implementation.  A QEMU
+    # virt guest can boot correctly yet expose only s2idle; in that case
+    # the userspace ABI returns EINVAL before ct_kernel_exit is reachable.
+    # This is a platform capability block, not a reproducer mismatch.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        deep_suspend_unavailable = (
+            "mem_sleep" in lowered
+            and ("invalid argument" in lowered or "could not select deep" in lowered)
+        ) or (
+            "/sys/power/state" in lowered
+            and "invalid argument" in lowered
+        )
+        if deep_suspend_unavailable:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_PLATFORM_UNSUPPORTED"
+            result.summary = (
+                "Guest exposes only s2idle/does not implement the PSCI deep "
+                "suspend ABI; ct_kernel_exit cannot be reached by this QEMU platform."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     for key, raw_path, text in evidence:
         lowered = text.lower()
         if "gadgetfs" in lowered and "no such device" in lowered:

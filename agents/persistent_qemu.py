@@ -431,7 +431,26 @@ class PersistentQemuManager:
         while _pid_is_live(pid) and time.monotonic() < deadline:
             time.sleep(0.2)
         if _pid_is_live(pid):
-            return ToolStepResult(name="shutdown_persistent_qemu", status="failed", message="QEMU did not exit after SIGTERM.")
+            # A guest that is suspended or wedged in a KVM ioctl may not
+            # service SIGTERM.  The manager owns this exact recorded PID, so
+            # force-reap it before returning; leaving it alive would contaminate
+            # the next isolated try-out and exhaust host KVM resources.
+            try:
+                os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+            kill_deadline = time.monotonic() + 5
+            while _pid_is_live(pid) and time.monotonic() < kill_deadline:
+                time.sleep(0.2)
+            if _pid_is_live(pid):
+                return ToolStepResult(
+                    name="shutdown_persistent_qemu", status="failed",
+                    message="QEMU did not exit after SIGTERM or SIGKILL.",
+                )
+            return ToolStepResult(
+                name="shutdown_persistent_qemu", status="ok",
+                message="Persistent QEMU stopped after SIGKILL fallback.",
+            )
         return ToolStepResult(name="shutdown_persistent_qemu", status="ok", message="Persistent QEMU stopped.")
 
     def _stage_poc(self) -> tuple[Path, str]:

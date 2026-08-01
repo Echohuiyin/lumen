@@ -145,3 +145,36 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as directory:
             test(Path(directory))
     print("persistent_qemu OK")
+
+
+def test_shutdown_force_kills_stuck_qemu(tmp_path, monkeypatch):
+    plan = _plan(tmp_path)
+    manager = PersistentQemuManager(plan, runtime_root=tmp_path / "guests")
+    manager.paths.state_file.parent.mkdir(parents=True, exist_ok=True)
+    manager.paths.state_file.write_text('{"pid": 4242}', encoding="utf-8")
+
+    alive = {"value": True}
+    signals = []
+    clock = {"value": 0.0}
+
+    def fake_alive(pid):
+        return alive["value"]
+
+    def fake_kill(pid, signal):
+        signals.append(signal)
+        if signal == 9:
+            alive["value"] = False
+
+    def fake_monotonic():
+        clock["value"] += 11.0
+        return clock["value"]
+
+    monkeypatch.setattr("agents.persistent_qemu._pid_is_live", fake_alive)
+    monkeypatch.setattr("agents.persistent_qemu.os.kill", fake_kill)
+    monkeypatch.setattr("agents.persistent_qemu.time.monotonic", fake_monotonic)
+
+    result = manager.shutdown()
+
+    assert result.status == "ok"
+    assert signals == [15, 9]
+    assert "SIGKILL" in result.message
