@@ -20,6 +20,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
                 "rootfs: /tmp/debian.img",
                 "reproducer: /tmp/repro.syz",
                 "qemu_extra_cmdline: no-kvmapf no-steal-acc init=/root/lumen-init",
+                "maintenance_notes: use fork workers and a blocking userspace sendmsg sequence",
                 "kernel_source: /tmp/linux",
             ]
         )
@@ -31,8 +32,10 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
     assert fields["rootfs"] == "/tmp/debian.img"
     assert fields["reproducer"] == "/tmp/repro.syz"
     assert fields["qemu_extra_cmdline"] == "no-kvmapf no-steal-acc init=/root/lumen-init"
+    assert fields["maintenance_notes"] == "use fork workers and a blocking userspace sendmsg sequence"
     rendered = format_user_input(fields)
     assert "qemu_extra_cmdline: no-kvmapf no-steal-acc init=/root/lumen-init" in rendered
+    assert "maintenance_notes: use fork workers and a blocking userspace sendmsg sequence" in rendered
 
     contract = parse_input_artifacts(rendered, validate_paths=False)
     assert contract.rootfs_path == "/tmp/debian.img"
