@@ -577,7 +577,7 @@ Report format:
                 pass  # Ignore cleanup errors
 
 
-def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
+def _tool_expert_node_impl(state: MaintenanceWorkflowState) -> dict:
     """工具专家 agent：根据 expert_type 执行对应的专业分析。
 
     支持的专家类型通过配置文件定义，目前包括：
@@ -892,6 +892,14 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
             # 没有 vmcore，纯文本分析
             user_content = f"用户输入:\n{user_input}\n\n请基于用户输入中的内核日志信息进行分析。"
             evidence = _parse_log_evidence(user_input)
+            supplied_log = ""
+            log_path = (state.get("input_artifacts_contract") or {}).get("log_path", "")
+            if log_path:
+                log_file = Path(os.path.expanduser(str(log_path)))
+                if log_file.is_file():
+                    supplied_log = log_file.read_text(encoding="utf-8", errors="replace")[:12000]
+            if supplied_log:
+                user_content += f"\n\nFIRST_HAND_LOG:\n```\n{supplied_log}\n```"
 
             response = call_llm_with_display(
                 expert_name, "分析中", llm,
@@ -927,5 +935,36 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                 expert_name=expert_name,
                 analysis_output=response.content.strip(),
                 status="degraded",
+            )],
+        }
+
+
+def tool_expert_node(state: MaintenanceWorkflowState) -> dict:
+    """Run one tool expert and turn provider failures into explicit blocks.
+
+    A quota/network/provider error must not abort LangGraph with an empty
+    state (nor be treated as an analysis result).  Returning a blocked,
+    durable expert result lets the workflow archive the case truthfully and
+    makes the external dependency the visible next action.
+    """
+    try:
+        return _tool_expert_node_impl(state)
+    except Exception as exc:
+        set_session_dir(state.get("session_dir"))
+        ensure_output_dir()
+        expert_type = state.get("expert_type", "unknown")
+        error_msg = f"工具专家调用失败: {type(exc).__name__}: {exc}"
+        try:
+            output_file = get_expert_output_file(expert_type)
+            _write_tool_call_output(output_file, error_msg, expert_type)
+        except Exception:
+            pass
+        return {
+            "expert_results": [_make_tool_result(
+                expert_type=expert_type,
+                expert_name=expert_type,
+                analysis_output=error_msg,
+                status="blocked",
+                errors=[error_msg],
             )],
         }

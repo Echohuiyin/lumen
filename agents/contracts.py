@@ -240,6 +240,7 @@ class InputArtifactsContract(BaseModel):
     vmcore_path: str = ""
     vmlinux_path: str = ""
     boot_kernel_path: str = ""
+    rootfs_path: str = ""
     target_arch: str = ""
     kernel_source_path: str = ""
     log_path: str = ""

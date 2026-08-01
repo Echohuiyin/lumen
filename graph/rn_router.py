@@ -47,7 +47,13 @@ def route_after_kernel(state: MaintenanceWorkflowState):
 def route_after_test(state: MaintenanceWorkflowState):
     """Close, retry, or block the ten-try-out Kernel/Test Expert loop."""
     contract = state.get("test_attempt_contract") or state.get("test_contract") or {}
-    if state.get("call_chain_consistent") or contract.get("call_chain_consistent"):
+    # A raw signal/call-chain match is not sufficient: Test Expert also has
+    # to approve the semantic/root-cause review.  In particular, a run may
+    # observe the target signal while the ordered oracle or principle review
+    # fails.  The old check closed the workflow on that intermediate state
+    # because ``call_chain_consistent`` remained true in the result payload.
+    # Only the complete Test Expert verdict is terminal success.
+    if state.get("test_passed") or contract.get("test_passed"):
         return "knowledge_base"
     if contract.get("status") in {"blocked", "skipped"}:
         return "knowledge_base"

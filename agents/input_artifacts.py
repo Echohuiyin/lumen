@@ -155,6 +155,9 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "Image",
         ],
     )
+    rootfs_path, rootfs_label = _extract_labeled_path(
+        text, ["rootfs", "rootfs_path", "root filesystem", "disk image", "disk"]
+    )
     kernel_source_path, source_label = _extract_labeled_path(
         text,
         [
@@ -185,6 +188,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "vmcore_path": (vmcore_path, vmcore_label),
         "vmlinux_path": (vmlinux_path, vmlinux_label),
         "boot_kernel_path": (boot_kernel_path, boot_label),
+        "rootfs_path": (rootfs_path, rootfs_label),
         "kernel_source_path": (kernel_source_path, source_label),
         "log_path": (log_path, log_label),
         "reproducer_path": (reproducer_path, reproducer_label),
@@ -205,6 +209,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "vmcore_path": "file",
             "vmlinux_path": "file",
             "boot_kernel_path": "file",
+            "rootfs_path": "file",
             "kernel_source_path": "dir",
             "log_path": "file",
             "reproducer_path": "file",
@@ -231,6 +236,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         vmcore_path=vmcore_path,
         vmlinux_path=vmlinux_path,
         boot_kernel_path=boot_kernel_path,
+        rootfs_path=rootfs_path,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
         log_path=log_path,

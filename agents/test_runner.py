@@ -374,6 +374,19 @@ def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal:
         matches = [line for line in window if context.lower() in line.lower()]
         if matches:
             result["matched_stack_frames"].extend(matches[:3])
+    # Subsystem/object labels are useful annotations but often do not appear
+    # verbatim in a kernel stack (for example ``security/smack`` is rendered
+    # only as the individual SMACK symbols).  The deterministic call-chain
+    # oracle is the stronger evidence: if a required frame is present in the
+    # post-signal window, use that frame as the causal context rather than
+    # rejecting an otherwise exact userspace reproduction on a display-name
+    # mismatch.
+    if not result["matched_stack_frames"]:
+        required = list(plan.call_chain_oracle.required_frames)
+        for frame in required:
+            matches = [line for line in window if frame.lower() in line.lower()]
+            if matches:
+                result["matched_stack_frames"].extend(matches[:1])
     result["target_context_matched"] = bool(result["matched_stack_frames"])
     if not result["target_context_matched"]:
         result["false_positive_checks"].append(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import shutil
+import subprocess
 
 from agents.contracts import (
     DetectionSignals,
@@ -36,21 +37,31 @@ def _attempt_runtime_root(session_dir: str, tryout: int) -> Path:
     return Path(session_dir).resolve() / "tryouts" / f"tryout-{tryout:02d}" / "qemu-ssh"
 
 
-def _copy_base_image(*, arch: str, runtime_root: Path) -> dict[str, str]:
-    """Make the current try-out's image/key copy before touching QEMU."""
+def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -> dict[str, str]:
+    """Copy the declared case image into an isolated try-out directory."""
     base = persistent_qemu_paths(arch)
     attempt = persistent_qemu_paths(arch, runtime_root=runtime_root)
-    if not base.image.is_file():
-        raise FileNotFoundError(f"base image is missing: {base.image}")
+    image_source = Path(source_image).expanduser().resolve() if source_image else base.image
+    if not image_source.is_file():
+        raise FileNotFoundError(f"base image is missing: {image_source}")
     if not base.ssh_key.is_file():
         raise FileNotFoundError(f"base SSH key is missing: {base.ssh_key}")
     attempt.image.parent.mkdir(parents=True, exist_ok=True)
-    # copy2 is intentional: each try-out owns a writable image and never
-    # reuses a previous guest's filesystem state.
-    shutil.copy2(base.image, attempt.image)
+    # Preserve sparse holes in the base image.  ``shutil.copy2`` expands the
+    # 2-GiB sparse guest image to its logical size, which exhausts the host
+    # after only a few ten-try-out loops.  Every try-out still gets its own
+    # writable copy; ``cp --sparse=always`` changes only the representation.
+    try:
+        subprocess.run(
+            ["cp", "--sparse=always", "--preserve=mode,timestamps",
+             str(image_source), str(attempt.image)],
+            check=True, capture_output=True, text=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise OSError(f"failed to create sparse writable image copy: {exc}") from exc
     shutil.copy2(base.ssh_key, attempt.ssh_key)
     attempt.ssh_key.chmod(0o600)
-    return {"base_image": str(base.image), "attempt_image": str(attempt.image), "runtime_root": str(runtime_root)}
+    return {"base_image": str(image_source), "attempt_image": str(attempt.image), "runtime_root": str(runtime_root)}
 
 
 def _build_plan(contract: KernelExpertOutput) -> TestPlan:
@@ -65,6 +76,7 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         target_arch=contract.target_arch,
         boot_kernel_path=contract.boot_kernel_path,
         rootfs_mode="ext4",
+        rootfs_path=contract.rootfs_path,
         reproducer_dir=reproducer.source_dir,
         reproducer=reproducer,
         execution_steps=steps,
@@ -146,7 +158,11 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         else:
             try:
                 runtime_root = _attempt_runtime_root(state.get("session_dir", ""), tryout)
-                image_artifacts = _copy_base_image(arch=contract.target_arch, runtime_root=runtime_root)
+                image_artifacts = _copy_base_image(
+                    arch=contract.target_arch,
+                    runtime_root=runtime_root,
+                    source_image=contract.rootfs_path,
+                )
             except (OSError, ValueError) as exc:
                 result = _blocked_attempt(code="BLOCKED_BASE_IMAGE_MISSING", summary=str(exc), tryout=tryout)
             else:

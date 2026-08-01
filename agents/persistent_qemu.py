@@ -83,6 +83,29 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _root_device_for_image(image: Path, base_device: str) -> str:
+    """Select the first partition when a raw QEMU image has a partition table.
+
+    The provisioned Debian image is commonly a filesystem directly on the
+    block device, while report-time syzbot disks are partitioned (for example
+    ``vda1``).  Inspecting the image on the host keeps the kernel command line
+    deterministic and avoids silently booting an unmountable root device.
+    """
+    try:
+        result = subprocess.run(
+            ["fdisk", "-l", str(image)], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return base_device
+    if result.returncode != 0:
+        return base_device
+    prefix = re.escape(str(image))
+    if re.search(rf"(?m)^{prefix}\d+\s+", result.stdout or ""):
+        return base_device + "1"
+    return base_device
+
+
 def guest_identity(plan: TestPlan, paths: PersistentQemuPaths) -> dict[str, Any]:
     """Return the immutable compatibility identity used for VM reuse."""
     kernel = Path(os.path.expanduser(plan.boot_kernel_path)).resolve()
@@ -273,6 +296,8 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
     else:
         raise ValueError(f"unsupported persistent QEMU architecture: {arch}")
 
+    root_device = _root_device_for_image(paths.image, root_device)
+
     # Both documented x86 and arm64 debug boots require early serial output.
     cmdline = f"console={console} root={root_device} rw net.ifnames=0 earlyprintk=serial"
     if recipe.extra_cmdline:
@@ -383,9 +408,17 @@ class PersistentQemuManager:
                     artifacts={"serial_log": str(self.paths.serial_log), "state": str(self.paths.state_file), "qemu_log": str(self.paths.qemu_log)},
                 ), state
             time.sleep(1)
+        # A boot timeout is a failed attempt, not a request to leave the
+        # guest running in the background.  Reap this exact process before
+        # returning so the next evidence-backed try-out starts with an
+        # isolated VM and does not exhaust the host's KVM/ disk resources.
+        stopped = self.shutdown()
+        artifacts = {"serial_log": str(self.paths.serial_log), "qemu_log": str(self.paths.qemu_log)}
+        if stopped.status != "ok":
+            artifacts["shutdown_error"] = stopped.message
         return ToolStepResult(
             name="ensure_persistent_qemu", status="failed", message="QEMU boot timed out before SSH became ready.",
-            artifacts={"serial_log": str(self.paths.serial_log), "qemu_log": str(self.paths.qemu_log)},
+            artifacts=artifacts,
         ), state
 
     def shutdown(self) -> ToolStepResult:
@@ -408,8 +441,24 @@ class PersistentQemuManager:
         stage.mkdir(parents=True, exist_ok=False)
         if self.plan.reproducer_dir:
             source_dir = Path(os.path.expanduser(self.plan.reproducer_dir)).resolve()
-            if source_dir.is_dir():
-                shutil.copytree(source_dir, stage / "reproducer", dirs_exist_ok=True)
+            if not source_dir.is_dir():
+                raise ValueError(f"reproducer source directory is missing: {source_dir}")
+            # The Kernel Expert output directory is also the session root.  It
+            # contains tryouts/ and prior runner artifacts, so copying the
+            # whole directory would recursively copy the current QEMU stage
+            # into itself.  Transfer only the declared C/H inputs.
+            destination = stage / "reproducer"
+            destination.mkdir(parents=True, exist_ok=True)
+            declared_sources = list(self.plan.reproducer.source_files)
+            for relative_name in declared_sources:
+                source = (source_dir / relative_name).resolve()
+                try:
+                    source.relative_to(source_dir)
+                except ValueError as exc:
+                    raise ValueError(f"reproducer source escapes source directory: {relative_name!r}") from exc
+                if not source.is_file():
+                    raise ValueError(f"declared reproducer source is missing: {source}")
+                shutil.copy2(source, destination / relative_name)
         if self.plan.reproducer_module_path:
             module = Path(os.path.expanduser(self.plan.reproducer_module_path)).resolve()
             if module.is_file():
@@ -432,7 +481,7 @@ class PersistentQemuManager:
         port = int(state.get("ssh_port", 0))
         if not port:
             return ToolStepResult(name="run_poc_over_ssh", status="blocked", message="Persistent QEMU state has no SSH port.")
-        stage, _ = self._stage_poc()
+        stage, marker = self._stage_poc()
         remote = "/tmp/lumen-poc"
         serial_offset = self.paths.serial_log.stat().st_size if self.paths.serial_log.exists() else 0
         command = "rm -rf /tmp/lumen-poc && mkdir -p /tmp/lumen-poc"
@@ -456,8 +505,16 @@ class PersistentQemuManager:
         while executed_proc.poll() is None and time.monotonic() < deadline:
             if self.paths.serial_log.exists():
                 serial_text = self.paths.serial_log.read_text(encoding="utf-8", errors="replace")
+                # QEMU's serial file is appended asynchronously.  A byte-size
+                # snapshot taken immediately before SSH starts can become
+                # stale when buffered boot output is flushed afterwards, which
+                # may place the marker before ``serial_offset``.  Anchor the
+                # live polling window on the explicit marker whenever it is
+                # visible; use the byte offset only before the marker appears.
+                marker_index = serial_text.find(marker)
+                post_marker = serial_text[marker_index:] if marker_index >= 0 else serial_text[serial_offset:]
                 signal_seen = bool(_match_serial_signals(
-                    log_content=serial_text[serial_offset:],
+                    log_content=post_marker,
                     detection=self.plan.detection_signals,
                     expected_signal=self.plan.expected_signal,
                 ))
@@ -495,20 +552,39 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         result["missing_frames"] = list(oracle.required_frames)
         return result
     window = lines[start + 1:]
+    def frame_seen(line: str, frame: str) -> bool:
+        # Avoid treating ``evict`` as present in the distinct symbol
+        # ``jfs_evict_inode``.  Stack symbols are token-like identifiers;
+        # boundaries make both presence and ordering deterministic.
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(frame)}(?![A-Za-z0-9_])"
+        return re.search(pattern, line, flags=re.IGNORECASE) is not None
+
     lower_window = "\n".join(window).lower()
     for frame in oracle.required_frames:
-        if frame.lower() in lower_window:
+        if any(frame_seen(line, frame) for line in window):
             result["required_frames_found"].append(frame)
         else:
             result["missing_frames"].append(frame)
     positions = {
-        frame: next((index for index, line in enumerate(window) if frame.lower() in line.lower()), -1)
+        frame: next((index for index, line in enumerate(window) if frame_seen(line, frame)), -1)
         for frame in oracle.required_frames
     }
-    result["frame_order_matched"] = not result["missing_frames"] and all(
+    pairs = [pair for pair in oracle.required_frame_order if len(pair) == 2]
+    forward = all(
         positions.get(pair[0], -1) < positions.get(pair[1], -1)
-        for pair in oracle.required_frame_order if len(pair) == 2
+        for pair in pairs
     )
+    # Kernel reports commonly print a stack from the faulting leaf toward
+    # its callers, while an LLM contract may express the same path from the
+    # entry point toward the fault.  These are the same ordered call chain,
+    # not two different reproductions.  Accept either complete orientation,
+    # but never accept a partial or scrambled sequence.
+    reverse = all(
+        positions.get(pair[1], -1) < positions.get(pair[0], -1)
+        for pair in pairs
+    )
+    result["frame_order_matched"] = not result["missing_frames"] and (forward or reverse)
+    result["frame_order_direction"] = "forward" if forward else ("reverse" if reverse else "mismatch")
     return result
 
 
@@ -533,9 +609,10 @@ def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root:
         execution = ToolStepResult(name="run_poc_over_ssh", status="failed", message="POC execution setup failed.", error=str(exc))
     steps.append(execution)
     serial = manager.paths.serial_log
+    # Keep the complete serial log.  The causal and call-chain validators
+    # locate LUMEN_REPRO_START themselves, so they remain correct even if
+    # QEMU flushes pre-marker bytes after the snapshot used by run_poc().
     content = serial.read_text(encoding="utf-8", errors="replace") if serial.exists() else ""
-    offset = int(state.get("serial_offset", 0))
-    content = content[offset:] if offset > 0 else content
     matched = _match_serial_signals(log_content=content, detection=plan.detection_signals, expected_signal=plan.expected_signal)
     chain = _check_call_chain_match(content, plan)
     shutdown = manager.shutdown()

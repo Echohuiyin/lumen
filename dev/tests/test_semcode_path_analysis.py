@@ -109,6 +109,27 @@ def test_entry_point_extraction_accepts_only_explicit_function_evidence():
     assert entries == ["foo_ioctl", "bar_release"]
 
 
+def test_entry_point_extraction_accepts_structured_stack_evidence():
+    entries = extract_semcode_entry_points(
+        '{"report_evidence":{"top_stack":["strlen","smack_log_callback","audit_log_format"]}}'
+    )
+    assert entries == ["strlen", "smack_log_callback", "audit_log_format"]
+
+
+def test_entry_point_extraction_normalises_compiler_stack_suffixes():
+    entries = extract_semcode_entry_points(
+        "Call Trace: smack_log_callback.cold+0x1a/0x40\nfunction: audit_log_format.isra.0"
+    )
+    assert entries == ["audit_log_format", "smack_log_callback"]
+
+
+def test_entry_point_extraction_accepts_quoted_json_fields():
+    entries = extract_semcode_entry_points(
+        '{"function":"foo_ioctl","frame":"bar_release+0x1a"}'
+    )
+    assert entries == ["foo_ioctl", "bar_release"]
+
+
 def test_semcode_path_analysis_online_llm_roundtrip():
     """Live gate: semcode evidence must remain intelligible to the configured LLM."""
     input_file = os.environ.get("LUMEN_P2_ONLINE_INPUT", "")

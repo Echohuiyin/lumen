@@ -45,6 +45,20 @@ _CALL_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _FUNCTION_RE = re.compile(r"^Function:\s*([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE)
 _LOCATION_RE = re.compile(r"^File:\s*(.+?):(\d+)(?:-(\d+))?", re.MULTILINE)
 _DIRECT_CALL_RE = re.compile(r"^\s*\d+\.\s+([A-Za-z_][A-Za-z0-9_]*)\s*$", re.MULTILINE)
+_ENTRY_FIELD_RE = re.compile(
+    r"""(?ix)\b(?:function|func|entry(?:[ _-]?point)?|frame|symbol|caller|callee)\b
+        [\"'`]?\s*[:=]\s*[\"'`]?([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"""
+)
+_STACK_FIELD_RE = re.compile(
+    r"""(?ix)\b(?:top[_ -]?stack|stack[_ -]?(?:trace|frames?)|call[_ -]?trace)\b
+        [\"'`]?\s*[:=]\s*\[([^\]]{0,2000})\]"""
+)
+_STACK_SYMBOL_RE = re.compile(
+    r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"
+)
+_STACK_FRAME_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)\+0x[0-9a-fA-F]+"
+)
 
 
 class SemcodePathAnalysisError(RuntimeError):
@@ -500,18 +514,26 @@ def _classify_event(function_name: str) -> tuple[str, int]:
 
 
 def _extract_identifiers(text: str) -> list[str]:
-    explicit = re.findall(r"\b(?:function|func|entry(?:[ _-]?point)?|frame)\s*[:=]\s*([A-Za-z_][A-Za-z0-9_]*)", text or "", re.IGNORECASE)
-    stack = re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\+0x[0-9a-fA-F]+", text or "")
-    return [*explicit, *stack]
+    """Extract kernel symbols from explicit and structured crash evidence."""
+    value = text or ""
+    explicit = _ENTRY_FIELD_RE.findall(value)
+    structured_stack: list[str] = []
+    for block in _STACK_FIELD_RE.findall(value):
+        structured_stack.extend(_STACK_SYMBOL_RE.findall(block))
+    stack = _STACK_FRAME_RE.findall(value)
+    return [*explicit, *structured_stack, *stack]
 
 
 def _unique_identifiers(values: Iterable[str]) -> list[str]:
     result: list[str] = []
     for value in values:
         normalized = str(value).strip()
+        normalized = re.sub(r"\.(?:cold|isra|constprop|part)(?:\.\d+)*$", "", normalized)
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", normalized):
             continue
-        if normalized.lower() in _C_KEYWORDS or normalized in result:
+        if normalized.lower() in _C_KEYWORDS or normalized.lower() in {
+            "unknown", "none", "null", "n/a", "unresolved", "anonymous",
+        } or normalized in result:
             continue
         result.append(normalized)
     return result

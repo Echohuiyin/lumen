@@ -70,7 +70,7 @@ def test_router_retries_until_tenth_mismatch_then_ends():
     failed = {"status": "failed", "call_chain_consistent": False}
     assert route_after_test({"tryout_count": 1, "max_tryouts": 10, "test_attempt_contract": failed}) == "kernel_expert"
     assert route_after_test({"tryout_count": 10, "max_tryouts": 10, "test_attempt_contract": failed}) == "knowledge_base"
-    assert route_after_test({"tryout_count": 1, "max_tryouts": 10, "test_attempt_contract": {"status": "ok", "call_chain_consistent": True}}) == "knowledge_base"
+    assert route_after_test({"tryout_count": 1, "max_tryouts": 10, "test_attempt_contract": {"status": "ok", "test_passed": True}}) == "knowledge_base"
     assert route_after_test({"tryout_count": 1, "max_tryouts": 10, "test_attempt_contract": {"status": "blocked"}}) == "knowledge_base"
     assert route_after_validator({"validation_passed": False}) == "__end__"
     build_maintenance_workflow()

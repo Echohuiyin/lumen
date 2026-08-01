@@ -8,7 +8,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.contracts import CallChainOracle, DetectionSignals, ExecutionStep, QemuRecipe, TestPlan, UserspaceReproducer
-from agents.persistent_qemu import _check_call_chain_match, _render_execution_script, build_qemu_command, persistent_qemu_paths, run_persistent_qemu_test_plan
+from agents.persistent_qemu import (
+    PersistentQemuManager,
+    _check_call_chain_match,
+    _render_execution_script,
+    build_qemu_command,
+    persistent_qemu_paths,
+    run_persistent_qemu_test_plan,
+)
 
 
 def _plan(tmp_path: Path, *, arch: str = "x86_64") -> TestPlan:
@@ -73,6 +80,19 @@ def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
     assert "load_module" not in script
 
 
+def test_stage_poc_copies_declared_sources_only(tmp_path):
+    plan = _plan(tmp_path)
+    # A session source directory also contains prior try-out artifacts.  The
+    # runner must not recursively copy that directory into the next stage.
+    nested = Path(plan.reproducer_dir) / "tryouts" / "tryout-01" / "qemu-ssh"
+    nested.mkdir(parents=True)
+    (nested / "old-serial.log").write_text("old", encoding="utf-8")
+    manager = PersistentQemuManager(plan, runtime_root=tmp_path / "guests")
+    stage, _ = manager._stage_poc()
+    assert (stage / "reproducer" / "repro.c").is_file()
+    assert not (stage / "reproducer" / "tryouts").exists()
+
+
 def test_fault_injection_is_allowlisted_and_rendered(tmp_path):
     plan = _plan(tmp_path)
     plan.execution_steps = [
@@ -95,6 +115,21 @@ def test_call_chain_requires_post_start_frames_and_context(tmp_path):
     match = _check_call_chain_match(content, plan)
     assert match["missing_frames"] == []
     assert match["frame_order_matched"] is True
+
+
+def test_call_chain_accepts_leaf_to_caller_stack_orientation(tmp_path):
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_frames = ["leaf", "caller"]
+    plan.call_chain_oracle.required_frame_order = [["caller", "leaf"]]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "leaf",
+        "caller",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+    assert match["frame_order_direction"] == "reverse"
 
 
 if __name__ == "__main__":

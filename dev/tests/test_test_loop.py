@@ -15,6 +15,7 @@ def _state(**updates):
         "tryout_count": 1,
         "max_tryouts": 10,
         "call_chain_consistent": False,
+        "test_passed": False,
         "test_attempt_contract": {"status": "failed", "code": "FAILED_CALL_CHAIN_MISMATCH"},
     }
     state.update(updates)
@@ -22,7 +23,12 @@ def _state(**updates):
 
 
 def test_first_consistent_call_chain_finishes_immediately():
-    assert route_after_test(_state(call_chain_consistent=True)) == "knowledge_base"
+    assert route_after_test(_state(call_chain_consistent=True, test_passed=True,
+                                   test_attempt_contract={"status": "ok", "test_passed": True})) == "knowledge_base"
+
+
+def test_raw_call_chain_match_without_full_verdict_retries():
+    assert route_after_test(_state(call_chain_consistent=True)) == "kernel_expert"
 
 
 def test_nonmatching_call_chain_returns_to_kernel_expert_before_limit():

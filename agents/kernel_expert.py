@@ -28,6 +28,7 @@ from agents.llm_display import (
     wait_for_hint,
 )
 from agents.test_runner import detect_kernel_type, normalize_target_arch
+from agents.input_artifacts import parse_input_artifacts
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
 from paths import PROJECT_ROOT, get_output_dir as paths_get_output_dir
@@ -117,8 +118,6 @@ def _scan_test_assets_for_reproducers(test_assets_dir: str) -> list[dict[str, st
                     findings.append({"name": name, "path": str(entry), "kind": "syzbot_repro_binary"})
                 elif name in {"repro.c", "repro_C", "repro.cc"}:
                     findings.append({"name": name, "path": str(entry), "kind": "syzbot_repro_source"})
-                elif name.endswith(".ko"):
-                    findings.append({"name": name, "path": str(entry), "kind": "kernel_module"})
                 elif name == "REPRODUCTION.md":
                     findings.append({"name": name, "path": str(entry), "kind": "reproduction_notes"})
                 elif entry.stat().st_size > 0 and os.access(entry, os.X_OK):
@@ -180,7 +179,6 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
             kind_label = {
                 "syzbot_repro_binary": "syzbot 预编译复现器（直接塞 initramfs /bin/）",
                 "syzbot_repro_source": "syzbot 复现器源码（需编译）",
-                "kernel_module": "预编译内核模块（直接塞 initramfs /modules/）",
                 "userspace_trigger": "用户态触发程序（直接塞 initramfs /bin/）",
                 "reproduction_notes": "复现说明文档（含触发配置，必读）",
             }.get(f["kind"], f["kind"])
@@ -189,8 +187,7 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
         parts.append("**决策树**：")
         parts.append("1. 有 syzbot_repro_binary → 直接复用，binaries_dir 填该目录，并用 execution_steps 声明 run_binary")
         parts.append("2. 有 syzbot_repro_source → 先尝试编译（gcc -static），失败则降级到自写 PoC")
-        parts.append("3. 有 kernel_module → 直接复用，reproducer_module_path 填该 .ko")
-        parts.append("4. 有 reproduction_notes → 必读，里面有 smp/numa/timeout 等关键配置")
+        parts.append("3. 有 reproduction_notes → 必读，里面有 smp/numa/timeout 等关键配置")
 
     if not parts:
         return ""
@@ -263,9 +260,18 @@ def _run_kernel_expert_with_agent_loop(
 
         output_content = response.content or ""
         # Retry once inside this same Kernel Expert loop when the final turn
-        # is empty or lacks the required structured contract.  No disk
-        # contract, marker, stale artifact, or alternate expert is consulted.
-        if not output_content.strip() or "KERNEL_CONTRACT" not in output_content:
+        # is empty or lacks a parseable structured contract.  A bare JSON
+        # object is valid too; requiring the cosmetic marker here used to
+        # trigger a second expensive Claude run even when the contract was
+        # complete and only the heading punctuation differed.
+        parsed_contract = _extract_kernel_contract(output_content) if output_content.strip() else None
+        has_structured_contract = bool(
+            parsed_contract is not None
+            and parsed_contract.status not in {"degraded", "blocked"}
+            and parsed_contract.root_cause
+            and parsed_contract.call_chain_oracle.required_frames
+        )
+        if not output_content.strip() or not has_structured_contract:
             retry_messages = messages + [HumanMessage(content=(
                 "当前最终输出缺少可解析的 KERNEL_CONTRACT。请在本次 loop 内补交完整结构化 JSON，"
                 "保留已完成的分析、PoC 和验证结果；不要引用旧文件或省略字段。"
@@ -329,7 +335,16 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # If the input specifies kernel_source_path, point semcode MCP's db to
     # that tree's index so cross-tree lookups (kvm/btrfs in linux-next vs
     # deadlock/UAF in OLK-6.6) resolve against the correct source.
-    input_artifacts = state.get("input_artifacts_contract", {})
+    input_artifacts = dict(state.get("input_artifacts_contract", {}) or {})
+    # Retry/direct callers can carry an incomplete artifact contract even
+    # though the user input still contains authoritative paths. Reparse it
+    # here so the kernel prompt always exposes the real log/reproducer paths.
+    if not input_artifacts.get("reproducer_path") or not input_artifacts.get("log_path"):
+        reparsed = parse_input_artifacts(state.get("user_input", ""), validate_paths=False)
+        reparsed_dict = model_to_dict(reparsed)
+        for key, value in reparsed_dict.items():
+            if value and not input_artifacts.get(key):
+                input_artifacts[key] = value
     kernel_source_path = input_artifacts.get("kernel_source_path", "")
     if kernel_source_path and "semcode_mcp" in agent_config:
         candidate_db = os.path.join(
@@ -403,7 +418,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"- vmcore_path: {input_artifacts.get('vmcore_path', 'N/A')}\n"
         f"- vmlinux_path: {input_artifacts.get('vmlinux_path', 'N/A')}\n"
         f"- boot_kernel_path: {input_artifacts.get('boot_kernel_path', input_artifacts.get('vmlinux_path', 'N/A'))}\n\n"
+        f"- rootfs_path: {input_artifacts.get('rootfs_path', 'N/A')}\n\n"
         f"- 原始日志路径（第一手证据，按需直接读取，禁止以专家摘要替代）: {original_log_path or 'N/A（vmcore 日志提取失败或未提供）'}\n\n"
+        f"- 原始复现器路径（仅作 ABI/调用序列参考，必须重写为用户态 C）: {input_artifacts.get('reproducer_path', 'N/A')}\n\n"
         f"## 工具专家结果文件（按需直接读取；不要以路径外的摘要替代原文）\n"
         + "\n".join(expert_result_paths) + "\n\n"
         f"## 关键证据摘要\n{evidence_summary}"
@@ -505,13 +522,19 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # Derive target kernel source dir from boot_kernel_path in input_artifacts
     boot_kernel_path = input_artifacts.get("boot_kernel_path", "") or input_artifacts.get("vmlinux_path", "")
     target_kernel_dir = ""
+    declared_source = os.path.expanduser(str(kernel_source_path or ""))
+    if declared_source and os.path.isdir(os.path.join(declared_source, "include")):
+        # The input contract is authoritative when it names a complete source
+        # checkout.  This is preferable to guessing from an assets directory
+        # that contains only bzImage/vmlinux/disk files.
+        target_kernel_dir = declared_source
     if boot_kernel_path:
         _kp = os.path.expanduser(boot_kernel_path)
         if _kp:
             _p = os.path.dirname(_kp)
             for _ in range(3):
                 _p = os.path.dirname(_p)
-            if os.path.isdir(os.path.join(_p, "include")):
+            if not target_kernel_dir and os.path.isdir(os.path.join(_p, "include")):
                 target_kernel_dir = _p
 
     # Derive test_assets_dir from boot_kernel_path: if bzImage is at
@@ -755,6 +778,15 @@ def _parse_kernel_expert_response(
     all_possible_paths_text = _extract_section(text, "ALL_POSSIBLE_PATHS")
     max_likely_path = _extract_section(text, "MAX_LIKELY_PATH")
     kernel_contract = _extract_kernel_contract(text)
+    # The CLI agent may render the structured object in prose without the
+    # exact ``KERNEL_CONTRACT:`` marker.  Enrich only from authoritative
+    # runtime artifacts and files that the agent actually created; never
+    # invent a boot image, source file, or architecture.
+    kernel_contract = _enrich_kernel_contract_from_runtime(
+        kernel_contract,
+        input_artifacts=input_artifacts,
+        output_dir=paths_get_output_dir(),
+    )
     if not _kernel_contract_has_handoff(kernel_contract):
         kernel_contract.status = "blocked"
         kernel_contract.blocked_reason = "missing explicit structured KERNEL_CONTRACT"
@@ -808,6 +840,17 @@ def _parse_kernel_expert_response(
         kernel_contract,
         path_analysis_required=path_analysis_required,
     )
+    # Persist the validated handoff for audit/retry.  Test Expert still
+    # receives the in-memory contract; this file is only a durable copy of
+    # the current attempt, never a source for silently recovering stale data.
+    try:
+        contract_path = paths_get_output_dir() / "kernel_contract.json"
+        contract_path.write_text(
+            json.dumps(model_to_dict(kernel_contract), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        kernel_contract.warnings.append(f"could not persist kernel_contract.json: {exc}")
     contract_ready = _kernel_contract_ready_for_test(kernel_contract)
     print(f"  [contract诊断] status={kernel_contract.status} target_arch={kernel_contract.target_arch} "
           f"boot_kernel={kernel_contract.boot_kernel_path is not None} "
@@ -993,6 +1036,41 @@ def _model_validate(model_cls, data: dict):
     return model_cls.parse_obj(data)
 
 
+def _coerce_contract_json(data: object) -> object:
+    """Normalize harmless LLM prose before validating the handoff schema.
+
+    The contract fields for pressure/fault injection are executable
+    ``ExecutionStep`` objects.  Claude occasionally puts a human-readable
+    requirement string in those arrays (for example, describing work already
+    performed by the C reproducer).  Treating that prose as an execution step
+    would either reject an otherwise complete evidence contract or invent a
+    guest-side action.  Preserve the text as a warning and leave only actual
+    structured steps in the executable arrays.
+
+    This is deliberately limited to type normalization; diagnosis, oracle
+    frames, paths, and runtime actions are never synthesized here.
+    """
+    if not isinstance(data, dict):
+        return data
+    normalized = dict(data)
+    warnings = list(normalized.get("warnings") or [])
+    for field in ("pressure_requirements", "fault_injection_requirements"):
+        raw = normalized.get(field)
+        if raw is None:
+            continue
+        if not isinstance(raw, list):
+            raw = [raw]
+        structured = []
+        for item in raw:
+            if isinstance(item, dict):
+                structured.append(item)
+            elif isinstance(item, str) and item.strip():
+                warnings.append(f"{field} prose requirement retained as warning: {item.strip()}")
+        normalized[field] = structured
+    normalized["warnings"] = warnings
+    return normalized
+
+
 def _extract_kernel_contract(text: str) -> KernelExpertOutput:
     """Extract JSON-first Kernel Expert contract from model output."""
     candidates: list[str] = []
@@ -1007,6 +1085,16 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
     if marker_idx >= 0:
         candidates.append(text[marker_idx + len("KERNEL_CONTRACT:"):])
 
+    # Claude sometimes says ``the KERNEL_CONTRACT`` and then emits a bare
+    # JSON object (as opposed to ``KERNEL_CONTRACT:```json``).  Scan balanced
+    # JSON objects after that anchor, and fall back to the whole response only
+    # when the anchor is absent.  raw_decode guarantees that trailing prose is
+    # not accidentally accepted as part of the contract.
+    anchor = text.upper().find("KERNEL_CONTRACT")
+    scan_start = anchor if anchor >= 0 else 0
+    for match in re.finditer(r"\{", text[scan_start:]):
+        candidates.append(text[scan_start + match.start():])
+
     for candidate in candidates:
         try:
             stripped = candidate.strip()
@@ -1015,7 +1103,17 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
                 if stripped.lower().startswith("json"):
                     stripped = stripped[4:].strip()
             data, _ = json.JSONDecoder().raw_decode(stripped)
-            return _model_validate(KernelExpertOutput, data)
+            # Do not accept a nested object (for example one evidence item)
+            # merely because pydantic can fill all of its defaults.  Only a
+            # top-level contract-shaped object is eligible for handoff.
+            if not isinstance(data, dict) or not any(
+                key in data for key in (
+                    "root_cause", "call_chain_oracle", "reproducer",
+                    "original_call_chain", "status",
+                )
+            ):
+                continue
+            return _model_validate(KernelExpertOutput, _coerce_contract_json(data))
         except Exception:
             continue
 
@@ -1024,6 +1122,45 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
         blocked_reason="missing or invalid KERNEL_CONTRACT JSON",
         warnings=["Kernel Expert did not produce a valid KERNEL_CONTRACT JSON object"],
     )
+
+
+def _enrich_kernel_contract_from_runtime(
+    contract: KernelExpertOutput,
+    *,
+    input_artifacts: dict,
+    output_dir: Path,
+) -> KernelExpertOutput:
+    """Complete handoff fields from declared inputs and verified output files.
+
+    The model owns the diagnosis, call-chain oracle, and reproduction design.
+    The workflow owns the paths supplied by the user and the output directory
+    it created.  Joining those two sources makes the handoff deterministic
+    while keeping the no-fallback rule: a missing file remains missing.
+    """
+    data = model_to_dict(contract)
+    if not data.get("target_arch"):
+        data["target_arch"] = str(input_artifacts.get("target_arch", "") or "")
+    if not data.get("boot_kernel_path"):
+        data["boot_kernel_path"] = str(input_artifacts.get("boot_kernel_path", "") or "")
+    if not data.get("rootfs_path"):
+        data["rootfs_path"] = str(input_artifacts.get("rootfs_path", "") or "")
+
+    repro = dict(data.get("reproducer") or {})
+    source_dir = str(repro.get("source_dir") or "")
+    if not source_dir:
+        source_dir = str(output_dir)
+    source_files = list(repro.get("source_files") or [])
+    # Only infer the conventional file when it is present on disk and is C.
+    # This is an observed artifact, not a generated fallback.
+    if not source_files and (output_dir / "repro.c").is_file():
+        source_files = ["repro.c"]
+    if source_files:
+        repro["source_dir"] = source_dir
+        repro["source_files"] = source_files
+        if not repro.get("entry_source") and "repro.c" in source_files:
+            repro["entry_source"] = "repro.c"
+    data["reproducer"] = repro
+    return _model_validate(KernelExpertOutput, data)
 
 
 
@@ -1087,8 +1224,18 @@ def _resolve_contract_path(path: str) -> Path:
 
 
 def _requires_path_analysis(*texts: str) -> bool:
-    """Return whether this case requires the P0 UAF/refcount path contract."""
-    combined = "\n".join(texts).lower()
+    """Return whether the declared case requires the P0 UAF/refcount path contract.
+
+    Only the first text is authoritative (the user declaration).  Expert
+    summaries are hypotheses and may mention UAF while analysing a different
+    sanitizer failure; allowing them to change routing creates false P0
+    semcode blocks for ordinary out-of-bounds cases.
+    """
+    combined = (texts[0] if texts else "").lower()
+    # Paths such as ``test_assets/uaf/bzImage`` are transport metadata, not
+    # a declared UAF diagnosis.  Remove absolute/home-relative path tokens
+    # before matching semantic keywords.
+    combined = re.sub(r"(?<!\S)(?:/|~\/)[^\s,，;；]+", "", combined)
     return any(token in combined for token in (
         "use-after-free", "use after free", "slab-use-after-free", "uaf",
         "kref", "refcount", "reference count", "引用计数", "释放后使用",
@@ -1300,6 +1447,45 @@ def _validate_kernel_contract_artifacts(
     evidence = list(data.get("evidence") or [])
     errors: list[str] = []
 
+    # A legacy Kernel Expert response can contain a complete, source-backed
+    # original_call_chain while leaving the P2 selector fields empty (the
+    # bounded Semcode graph may legitimately have no ranked max path).  Keep
+    # that case auditable and testable: derive one explicit candidate from the
+    # declared chain, retain the legacy marker, and surface the limitation as
+    # a warning instead of converting an otherwise valid userspace C handoff
+    # into a hard contract block.
+    legacy_analysis = data.get("uaf_analysis") or {}
+    if (
+        path_analysis_required
+        and (
+            not str(data.get("max_likely_path") or "").strip()
+            or not str(data.get("reproduction_target_path") or "").strip()
+        )
+    ):
+        chain = [str(frame).strip() for frame in data.get("original_call_chain") or [] if str(frame).strip()]
+        candidates = [str(path).strip() for path in data.get("all_possible_paths") or [] if str(path).strip()]
+        if candidates:
+            # Semcode's legacy response preserves the deterministic candidate
+            # list even when it omits the selected ID; its first path is the
+            # ranked max path in the emitted evidence graph.
+            legacy_path = candidates[0]
+        elif chain:
+            legacy_path = " -> ".join(chain)
+            data["all_possible_paths"] = [legacy_path]
+        else:
+            legacy_path = ""
+        if legacy_path:
+            data["max_likely_path"] = legacy_path
+            data["reproduction_target_path"] = legacy_path
+            warnings.append(
+                "legacy Semcode path ranking was empty; preserved the evidence-backed original_call_chain as the test target"
+            )
+            evidence.append({
+                "kind": "legacy_path_target_derived",
+                "source": "original_call_chain",
+                "candidate": legacy_path,
+            })
+
     target_arch = normalize_target_arch(contract.target_arch)
     if target_arch != contract.target_arch:
         data["target_arch"] = target_arch
@@ -1397,4 +1583,11 @@ def _validate_kernel_contract_artifacts(
         data["status"] = "blocked"
         data["blocked_reason"] = "; ".join(errors)
         print(f"  [contract诊断] 校验发现 {len(errors)} 个错误: {'; '.join(errors[:3])}", flush=True)
+    else:
+        # Re-validation can repair a legacy contract that was persisted as
+        # blocked only because its derived path selectors were empty.  Do not
+        # carry that stale terminal status into Test Expert after all current
+        # artifact and path checks pass.
+        data["status"] = "ok"
+        data["blocked_reason"] = ""
     return _model_validate(KernelExpertOutput, data)
