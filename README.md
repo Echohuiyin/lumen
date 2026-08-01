@@ -43,26 +43,28 @@ python3 main.py input.txt --config config.json
 | cpio / gzip | Initramfs packaging | `apt install cpio gzip` |
 | git / wget | Fetch sources during deployment | `apt install git wget` |
 | Claude Code CLI | Default KernelExpert backend | `npm install -g @anthropic-ai/claude-code` |
-| Embedding endpoint | Full RAG historical-case retrieval and Chroma import | OpenAI-compatible `/v1/embeddings`, e.g. Ollama |
+| Embedding endpoint | Full RAG historical-case retrieval and Chroma import | Any configured OpenAI-compatible `/v1/embeddings` service |
 | semcode-mcp | Semantic code search | Built by `deploy.sh` under `Analysis-SKILL/tools/semcode/` |
 | Analysis-SKILL | Kernel tools and skills | `git submodule update --init --recursive` |
 
 ## Configuration
 
-1. Edit `.env` with your LLM settings, then run `source .env` in each new
-   shell. The template includes default RAG embedding settings; adjust them if
-   you use a non-default embedding service.
+1. Edit `.env` with your provider settings, then run `source .env` in each new
+   shell. API keys, endpoints, models, and embedding settings are deployment
+   inputs; the repository supplies no provider-specific defaults.
 
 ```bash
-export ANTHROPIC_API_KEY="sk-..."
-export EMBEDDING_BASE_URL="http://localhost:11434/v1"
-export EMBEDDING_MODEL="bge-large-zh"
-export EMBEDDING_API_KEY="not-required"
+export ANTHROPIC_API_KEY="<provider-api-key>"
+export ANTHROPIC_BASE_URL="<provider-anthropic-compatible-endpoint>"
+export ANTHROPIC_MODEL="<provider-model>"
+export EMBEDDING_BASE_URL="<embedding-endpoint>"
+export EMBEDDING_MODEL="<embedding-model>"
+export EMBEDDING_API_KEY="<embedding-api-key>"
 ```
 
-`knowledge_search` and `knowledge_base` use the embedding endpoint for full RAG
-retrieval/import. If it is unavailable, the workflow continues with degraded
-historical-case search and Chroma import.
+`knowledge_search` and `knowledge_base` use the configured embedding endpoint for
+full RAG retrieval/import. If it is missing or unavailable, configuration is
+reported explicitly; Lumen does not substitute another provider or account.
 
 2. `config.json` is generated from `config.json.template`. The default chat
 backend is Anthropic-compatible; `kernel_expert` uses Claude Code. OpenAI,
@@ -72,22 +74,14 @@ Backend 说明：
 
 | Backend | 作用与适用场景 |
 |---------|----------------|
-| `anthropic` | 普通 Anthropic-compatible 聊天 API，适合 validator、PM、工具专家和知识库总结；默认可连接 DeepSeek Anthropic 兼容接口。 |
+| `anthropic` | 普通 Anthropic-compatible 聊天 API，适合 validator、PM、工具专家和知识库总结；端点和模型由部署配置提供。 |
 | `claude_code` | Claude Code CLI agent loop，提供文件读写、编译、Shell 和多轮工具调用；Kernel Expert 的默认 backend。 |
 | `opencode` | 可替代 Claude Code 的 CLI agent loop，适用于需要独立 provider 或 API 配置的 Kernel Expert 部署。 |
 
 Kernel Expert 必须使用 `claude_code` 或 `opencode`；普通 `anthropic` backend
 不支持其 `workdir`/`add_dirs` 文件操作接口。
 
-KernelExpert's Claude Code settings file is configurable through
-`agents.kernel_expert.settings_file` (default:
-`${CLAUDE_SETTINGS_PATH:-${HOME}/.claude/settings-lumen-deepseek.json}`). This
-isolates kernel_expert's Claude Code invocation from the user's global
-`~/.claude/settings.json` — without it, kernel_expert would inherit whatever
-`ANTHROPIC_AUTH_TOKEN` the shell or global settings provide and silently call
-the wrong model. Point the path at a settings file holding the DeepSeek (or
-other Anthropic-compatible) credentials for kernel analysis; the backend
-passes it to Claude Code with `--settings`. See DEPLOYMENT.md §4.4.
+Kernel Expert uses Claude Code with a project-local settings file. Copy the selected file with cp $HOME/.claude/settings.json .claude/settings.json and chmod 600 .claude/settings.json. The configuration passes it through --settings and sets --setting-sources project, so user-level settings and skills are not loaded. A missing file is a terminal configuration error; Lumen never switches to another account or a global settings file.
 KernelExpert must use the `claude_code` or `opencode` agent-loop backend:
 the workflow passes `workdir` and `add_dirs` to `invoke()` so the agent can
 construct and validate PoC artifacts. The plain `anthropic` backend is not
@@ -99,9 +93,8 @@ With a local Claude Code installation, run the online backend smoke test with:
 venv/bin/pytest -m online --run-online dev/tests/test_claude_code_online.py
 ```
 
-The test uses `LUMEN_CLAUDE_SETTINGS_FILE` (default:
-`~/.claude/settings.json`) and `LUMEN_KERNEL_SOURCE` (default:
-`~/linux-next`), checks the local `workdir`/`add_dirs` agent-loop contract, and
+The test requires `LUMEN_CLAUDE_SETTINGS_FILE` and `LUMEN_KERNEL_SOURCE`, checks
+the local `workdir`/`add_dirs` agent-loop contract, and
 does not run a kernel or QEMU case.
 
 ## Input Format

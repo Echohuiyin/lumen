@@ -54,21 +54,23 @@ _PERTINENT_CONFIG_OPTIONS = [
 
 
 def _find_extract_ikconfig() -> Optional[str]:
-    """Locate extract-ikconfig script in known kernel source paths."""
-    candidates = [
-        os.path.expanduser("~/linux-next/scripts/extract-ikconfig"),
-        os.path.expanduser("~/linux-stable/scripts/extract-ikconfig"),
-        os.path.expanduser("~/code/OLK-6.6/scripts/extract-ikconfig"),
-        "/lib/modules/$(uname -r)/build/scripts/extract-ikconfig",
-    ]
+    """Locate extract-ikconfig only from explicit deployment inputs or PATH."""
+    candidates: list[str] = []
+    configured_script = os.environ.get("LUMEN_IKCONFIG_SCRIPT", "").strip()
+    if configured_script:
+        candidates.append(configured_script)
+    for source_root in (
+        os.environ.get("KERNEL_SOURCE_DIR", ""),
+        os.environ.get("LUMEN_KERNEL_SOURCE_ROOT", ""),
+    ):
+        source_root = source_root.strip()
+        if source_root:
+            candidates.append(str(Path(source_root).expanduser() / "scripts" / "extract-ikconfig"))
     for path in candidates:
-        expanded = os.path.expandvars(path)
+        expanded = os.path.expanduser(os.path.expandvars(path))
         if os.path.isfile(expanded) and os.access(expanded, os.X_OK):
             return expanded
-    try:
-        from shutil import which
-    except ImportError:
-        return None
+    from shutil import which
     return which("extract-ikconfig")
 
 

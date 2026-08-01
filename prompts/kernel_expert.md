@@ -54,6 +54,9 @@ If a root-cause hypothesis cannot be exercised through a userspace ABI, return `
 
 The contract must describe how Test Expert can distinguish a true maintenance reproduction from noise. Provide:
 
+- original_call_chain is the authoritative sequence extracted from the
+  first-hand original log. Include every non-wrapper function in stack order;
+  do not shorten it to only the faulting leaf and syscall entry.
 - `fault_signatures`: specific original-log signatures;
 - `required_frames`: named frames that must occur;
 - `required_frame_alternatives`: mutually exclusive evidence-backed frames
@@ -61,6 +64,9 @@ The contract must describe how Test Expert can distinguish a true maintenance re
   `["j1939_session_put", "j1939_session_destroy"]`); one member satisfies
   the position and the members must not be treated as independent required
   frames;
+- use alternatives only when the original evidence documents a genuine
+  mutually-exclusive source branch; never put KASAN, kasan_report, BUG,
+  WARNING, panic, or another generic diagnostic marker in an alternative group for a concrete stack frame;
 - `required_frame_order`: required ordering of critical frames;
 - `target_subsystems` and `target_objects`;
 - `allowed_wrapper_frames`: optional architecture/exception wrappers.

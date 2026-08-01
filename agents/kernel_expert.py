@@ -1088,11 +1088,11 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
 
     # Claude sometimes says ``the KERNEL_CONTRACT`` and then emits a bare
     # JSON object (as opposed to ``KERNEL_CONTRACT:```json``).  Scan balanced
-    # JSON objects after that anchor, and fall back to the whole response only
-    # when the anchor is absent.  raw_decode guarantees that trailing prose is
-    # not accidentally accepted as part of the contract.
-    anchor = text.upper().find("KERNEL_CONTRACT")
-    scan_start = anchor if anchor >= 0 else 0
+    # JSON objects across the whole response.  The literal marker can appear
+    # inside a contract string value; starting there would skip the outer
+    # object and leave only nested evidence objects to parse.  raw_decode
+    # guarantees that trailing prose is not accepted as part of the contract.
+    scan_start = 0
     for match in re.finditer(r"\{", text[scan_start:]):
         candidates.append(text[scan_start + match.start():])
 

@@ -46,6 +46,33 @@ def pytest_collection_modifyitems(config, items):
                 item.add_marker(skip_online)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _required_chat_environment():
+    """Keep pure unit tests independent of a developer's shell.
+
+    Production config remains strict: missing values still raise in
+    load_config(). The placeholders only exist for tests that inspect rules,
+    contracts, or paths without making an API call.
+    """
+    defaults = {
+        "ANTHROPIC_API_KEY": "test-api-key",
+        "ANTHROPIC_BASE_URL": "https://example.invalid/anthropic",
+        "ANTHROPIC_MODEL": "test-model",
+    }
+    previous = {key: os.environ.get(key) for key in defaults}
+    for key, value in defaults.items():
+        if not os.environ.get(key):
+            os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
 @pytest.fixture
 def name() -> str:
     return "test"

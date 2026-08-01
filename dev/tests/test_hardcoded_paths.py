@@ -139,11 +139,16 @@ def test_config_template_no_hardcoded_paths():
         )
 
 
-def test_env_var_resolution_runtime():
+def test_env_var_resolution_runtime(monkeypatch):
     """Verify _resolve_env_vars handles all template patterns correctly."""
     from llm_config import _resolve_env_vars
 
-    # Load template and verify every ${...} is resolvable
+    # Required chat settings are supplied by the deployment environment.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid/anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "test-model")
+
+    # Load template and verify every environment reference is resolvable.
     template = PROJECT_ROOT / "config.json.template"
     if not template.exists():
         pytest.skip("No template file found")
@@ -163,15 +168,18 @@ def test_env_var_resolution_runtime():
     if unresolved:
         pytest.fail(
             f"Template has unresolved variables: {unresolved[:5]}\n"
-            f"All variables should have :-default fallbacks.",
+            f"All variables should be resolved from the test environment.",
             pytrace=False,
         )
 
 
-def test_config_parses_after_env_resolution():
+def test_config_parses_after_env_resolution(monkeypatch):
     """Verify config.json loads correctly after env resolution."""
     from llm_config import load_config
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid/anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "test-model")
     config_path = PROJECT_ROOT / "config.json"
     if not config_path.exists():
         pytest.skip("No config file found")
@@ -256,10 +264,13 @@ def test_resolve_env_vars_unresolved_strict():
         pass
 
 
-def test_config_resolves_semcode_paths():
+def test_config_resolves_semcode_paths(monkeypatch):
     """config.json must resolve semcode_mcp paths to absolute strings."""
     from llm_config import load_config
 
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-api-key")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid/anthropic")
+    monkeypatch.setenv("ANTHROPIC_MODEL", "test-model")
     config_path = PROJECT_ROOT / "config.json"
     if not config_path.exists():
         pytest.skip("No config.json found")
@@ -313,3 +324,33 @@ def test_no_hardcoded_username_in_agent_source():
             f"Hardcoded /home/ paths in agent source:\n" + "\n".join(violations[:20]),
             pytrace=False,
         )
+
+def test_config_does_not_pin_provider_or_model_defaults():
+    """Provider URLs, credentials, and model names come from deployment env."""
+    template = (PROJECT_ROOT / "config.json.template").read_text(encoding="utf-8")
+    forbidden = ("api.deepseek.com", "deepseek-v4-flash", "localhost:11434", '"model": "sonnet"')
+    found = [value for value in forbidden if value in template]
+    assert not found, f"provider-specific defaults must be configured externally: {found}"
+
+def test_ikconfig_discovery_uses_explicit_kernel_root(monkeypatch, tmp_path):
+    """Kernel config extraction must not probe another developer's tree."""
+    from agents.cache.ikconfig_cache import _find_extract_ikconfig
+
+    source = tmp_path / "kernel"
+    script = source / "scripts" / "extract-ikconfig"
+    script.parent.mkdir(parents=True)
+    script.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.chmod(0o700)
+    for variable in ("LUMEN_IKCONFIG_SCRIPT", "KERNEL_SOURCE_DIR", "LUMEN_KERNEL_SOURCE_ROOT"):
+        monkeypatch.delenv(variable, raising=False)
+    monkeypatch.setenv("PATH", "")
+    assert _find_extract_ikconfig() is None
+
+    monkeypatch.setenv("LUMEN_KERNEL_SOURCE_ROOT", str(source))
+    assert _find_extract_ikconfig() == str(script)
+
+def test_deploy_preflight_uses_loaded_crash_dir_env():
+    """The preflight must read LUMEN_CRASH_BIN_DIRS after .env loading."""
+    deploy = (PROJECT_ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert 'configured_crash_bin_dirs="${LUMEN_CRASH_BIN_DIRS:-$CRASH_BIN_DIRS}"' in deploy
+    assert 'read -r -a extra_crash_dirs <<< "$configured_crash_bin_dirs"' in deploy

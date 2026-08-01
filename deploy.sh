@@ -12,7 +12,10 @@ fail()  { echo -e "${RED}[FAIL]${NC} $1"; }
 # ── Config ───────────────────────────────────────────────────────────────────
 VENV_DIR="venv"
 USE_VENV=true
+CLAUDE_SETTINGS_SOURCE="${LUMEN_CLAUDE_SETTINGS_SOURCE:-${HOME}/.claude/settings.json}"
+CLAUDE_SETTINGS_TARGET="${LUMEN_CLAUDE_SETTINGS_TARGET:-.claude/settings.json}"
 CRASH_SOURCE_DIR="${CRASH_SOURCE_DIR:-runtime/crash-source}"
+CRASH_BIN_DIRS="${LUMEN_CRASH_BIN_DIRS:-}"
 CRASH_REPO="${CRASH_REPO:-https://github.com/crash-utility/crash.git}"
 CRASH_REF="${CRASH_REF:-9.0.2}"
 GNU_MIRROR="${LUMEN_GNU_MIRROR:-https://mirrors.aliyun.com/gnu}"
@@ -84,13 +87,22 @@ preflight_check() {
     # vmlinux's ELF e_machine. Verify the binaries exist.
     # Lumen looks for arch-suffixed binaries at:
     #   Analysis-SKILL/tools/crash/crash_<arch>  (source-built)
-    #   /usr/local/bin/crash_<arch>
+    #   directories listed in LUMEN_CRASH_BIN_DIRS or the executable PATH
     echo ""
     info "=== crash 二进制 (按架构区分) ==="
     # Check for arch-suffixed binaries in Lumen's lookup paths
     local crash_x86_64_found=""
     local crash_arm64_found=""
-    for d in "$CRASH_SOURCE_DIR" "/usr/local/bin"; do
+    local crash_bin_dirs=("$CRASH_SOURCE_DIR")
+    local configured_crash_bin_dirs="${LUMEN_CRASH_BIN_DIRS:-$CRASH_BIN_DIRS}"
+    if [ -n "$configured_crash_bin_dirs" ]; then
+        local old_ifs="$IFS"
+        IFS=:
+        read -r -a extra_crash_dirs <<< "$configured_crash_bin_dirs"
+        IFS="$old_ifs"
+        crash_bin_dirs+=("${extra_crash_dirs[@]}")
+    fi
+    for d in "${crash_bin_dirs[@]}"; do
         if [ -z "$crash_x86_64_found" ] && [ -x "${d}/crash_x86_64" ]; then
             crash_x86_64_found="${d}/crash_x86_64"
         fi
@@ -98,6 +110,13 @@ preflight_check() {
             crash_arm64_found="${d}/crash_arm64"
         fi
     done
+
+    if [ -z "$crash_x86_64_found" ] && command -v crash_x86_64 &>/dev/null; then
+        crash_x86_64_found="$(command -v crash_x86_64)"
+    fi
+    if [ -z "$crash_arm64_found" ] && command -v crash_arm64 &>/dev/null; then
+        crash_arm64_found="$(command -v crash_arm64)"
+    fi
 
     if [ -n "$crash_x86_64_found" ]; then
         ok "crash_x86_64 — $crash_x86_64_found"
@@ -220,21 +239,21 @@ setup_env() {
     if [ ! -f .env ]; then
         cat > .env << 'ENVEOF'
 # ── LLM API ──────────────────────────────────────────────────────────────────
-# 后端服务：https://api.deepseek.com/anthropic（DeepSeek Anthropic 兼容）
-# 或 https://api.openai.com/v1（原生 OpenAI）
-export ANTHROPIC_API_KEY="sk-your-key-here"
-export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
-export ANTHROPIC_MODEL="deepseek-v4-flash"
+# Set these values for the provider selected by your deployment.
+# The endpoint and model are deployment inputs, not project constants.
+export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
+export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
+export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-}"
 
 # ── RAG Embedding API ────────────────────────────────────────────────────────
 # Required by knowledge_search and knowledge_base Chroma import.
 # Any OpenAI-compatible /v1/embeddings endpoint can be used.
-export EMBEDDING_BASE_URL="http://localhost:11434/v1"
-export EMBEDDING_MODEL="bge-large-zh"
-export EMBEDDING_API_KEY="not-required"
+export EMBEDDING_BASE_URL="${EMBEDDING_BASE_URL:-}"
+export EMBEDDING_MODEL="${EMBEDDING_MODEL:-}"
+export EMBEDDING_API_KEY="${EMBEDDING_API_KEY:-}"
 
 ENVEOF
-        warn "已创建 .env 模板 — 请编辑 .env 填写 LLM 配置；如使用非默认 RAG embedding，请调整 EMBEDDING_*"
+        warn "已创建 .env 模板 — 请编辑 .env 填写 LLM 和 embedding 配置"
     else
         ok ".env 已存在"
     fi
@@ -261,6 +280,30 @@ ENVEOF
 }
 
 # ── Directory init ────────────────────────────────────────────────────────────
+# Claude Code project settings
+setup_claude_settings() {
+    echo ""
+    info "=== Claude Code project settings.json ==="
+
+    if [ ! -f "$CLAUDE_SETTINGS_SOURCE" ]; then
+        fail "Missing Claude settings file: $CLAUDE_SETTINGS_SOURCE"
+        fail "Set LUMEN_CLAUDE_SETTINGS_SOURCE or prepare $HOME/.claude/settings.json"
+        return 1
+    fi
+
+    local target_dir
+    target_dir="$(dirname "$CLAUDE_SETTINGS_TARGET")"
+    mkdir -p "$target_dir"
+    install -m 600 "$CLAUDE_SETTINGS_SOURCE" "$CLAUDE_SETTINGS_TARGET"
+
+    if ! cmp -s "$CLAUDE_SETTINGS_SOURCE" "$CLAUDE_SETTINGS_TARGET"; then
+        fail "Claude settings verification failed: $CLAUDE_SETTINGS_TARGET"
+        return 1
+    fi
+    chmod 600 "$CLAUDE_SETTINGS_TARGET"
+    ok "Claude settings copied to project path: $CLAUDE_SETTINGS_TARGET (mode 600)"
+}
+
 init_dirs() {
     mkdir -p knowledge_base outputs
     ok "目录结构已创建 (knowledge_base/ outputs/)"
@@ -483,10 +526,13 @@ main() {
         warn "Analysis-SKILL 有本地部署产物，保留当前工作区并继续"
     fi
     check_python
+    # Load deployment inputs before preflight so explicitly configured paths,
+    # including LUMEN_CRASH_BIN_DIRS, are visible to all checks.
+    setup_env
     preflight_check
     create_virtualenv
     install_deps
-    setup_env
+    setup_claude_settings
     init_dirs
     build_dual_arch_tools
     provision_persistent_qemu_images

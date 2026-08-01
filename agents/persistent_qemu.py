@@ -222,8 +222,9 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         if source.endswith(".c")), *(shlex.quote(arg) for arg in compiler_args),
         *(shlex.quote(lib) for lib in libraries), "-o", shlex.quote("../bin/" + reproducer.output_binary),
     ])
+    component_marker = f"LUMEN_GUEST_COMPONENT_MISSING:compiler:{reproducer.compiler}"
     lines.extend([
-        f"test -x /usr/bin/{shlex.quote(reproducer.compiler)} || command -v {shlex.quote(reproducer.compiler)} >/dev/null",
+        f"if ! command -v {shlex.quote(reproducer.compiler)} >/dev/null 2>&1; then printf '%s\\n' {shlex.quote(component_marker)} > /dev/console 2>/dev/null || true; printf '%s\\n' {shlex.quote(component_marker)} >&2; exit 125; fi",
         compile_command,
         "cd /tmp/lumen-poc",
         f"echo {shlex.quote(marker)} > /dev/console",
@@ -563,6 +564,12 @@ class PersistentQemuManager:
 def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     """Match original-log frames in the post-marker serial window only."""
     oracle = plan.call_chain_oracle
+    allowed_wrappers = {str(wrapper).strip() for wrapper in oracle.allowed_wrapper_frames if str(wrapper).strip()}
+    original_chain = [
+        str(frame).strip()
+        for frame in plan.original_call_chain
+        if str(frame).strip() and str(frame).strip() not in allowed_wrappers
+    ]
     result = {
         "required_frames_found": [], "missing_frames": [],
         "frame_order_matched": False,
@@ -601,6 +608,12 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         [str(frame).strip() for frame in group if str(frame).strip()]
         for group in oracle.required_frame_alternatives
     ]
+    if original_chain:
+        original_set = set(original_chain)
+        alternative_groups = [
+            group for group in alternative_groups
+            if not any(frame in original_set for frame in group)
+        ]
     alternative_members = {
         frame for group in alternative_groups for frame in group
     }
@@ -609,6 +622,11 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         if frame not in alternative_members
     ]
     required_groups.extend(alternative_groups)
+    if original_chain:
+        required_groups = (
+            [[frame] for frame in original_chain]
+            + [group for group in required_groups if group[0] not in original_set]
+        )
 
     seen_positions: dict[str, int] = {
         frame: next(
@@ -692,6 +710,12 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         return -1
 
     pairs = [pair for pair in oracle.required_frame_order if len(pair) == 2]
+    if original_chain:
+        exact_pairs = [list(pair) for pair in zip(original_chain, original_chain[1:])]
+        pairs = exact_pairs + [
+            pair for pair in pairs
+            if pair not in exact_pairs
+        ]
     forward = all(
         group_position(pair[0]) < group_position(pair[1])
         for pair in pairs

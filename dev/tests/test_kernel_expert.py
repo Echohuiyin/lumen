@@ -52,6 +52,17 @@ def test_structured_kernel_contract_round_trips_without_module_build():
         assert validated.reproducer.output_binary == "lumen-repro"
 
 
+def test_bare_json_contract_survives_marker_word_in_string():
+    with tempfile.TemporaryDirectory() as directory:
+        contract = _contract(Path(directory))
+        data = model_to_dict(contract)
+        data["change_from_previous_tryout"] = (
+            "retry note mentions KERNEL_CONTRACT but is not a marker"
+        )
+        parsed = _extract_kernel_contract("最终分析结果\n" + json.dumps(data))
+        assert parsed.status == "ok"
+        assert parsed.call_chain_oracle.required_frames == ["target_frame"]
+
 def test_contract_rejects_module_metadata_in_c_source_set():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))

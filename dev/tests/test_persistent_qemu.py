@@ -75,6 +75,8 @@ def test_missing_guest_artifacts_are_blocked_without_reuse(tmp_path):
 def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
     script = _render_execution_script(_plan(tmp_path), "LUMEN_REPRO_START:case:path")
     assert "gcc repro.c" in script
+    assert "LUMEN_GUEST_COMPONENT_MISSING:compiler:gcc" in script
+    assert "/usr/bin/" not in script
     assert "./bin/trigger" in script
     assert "insmod" not in script
     assert "load_module" not in script
@@ -130,6 +132,22 @@ def test_call_chain_accepts_leaf_to_caller_stack_orientation(tmp_path):
     assert match["missing_frames"] == []
     assert match["frame_order_matched"] is True
     assert match["frame_order_direction"] == "reverse"
+
+
+def test_original_log_chain_cannot_be_shortened(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["strlen", "audit_log", "smack_log", "smk_access"]
+    plan.call_chain_oracle.required_frames = ["smk_access"]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  smk_access+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert "strlen" in match["missing_frames"]
+    assert "audit_log" in match["missing_frames"]
+    assert "smack_log" in match["missing_frames"]
+    assert match["frame_order_matched"] is False
 
 
 def test_call_chain_order_uses_trace_not_printk_or_question_mark_frames(tmp_path):

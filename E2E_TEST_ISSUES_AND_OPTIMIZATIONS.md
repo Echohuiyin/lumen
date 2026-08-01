@@ -34,7 +34,7 @@
 
 **现象**:
 ```
-[内核专家] 执行工具: bash(command=crash ~/code/OLK-6.6/vmlinux ~/lumen/test_outputs/deadlock_fault/vmcore.elf -i <(echo "log") 2>&1 | tail -200, timeout=120)
+[内核专家] 执行工具: bash(command=crash "${LUMEN_VMLINUX_PATH:?set LUMEN_VMLINUX_PATH}" "${LUMEN_VMCORE_PATH:?set LUMEN_VMCORE_PATH}" -i <(printf '%s\n' "$LUMEN_CRASH_INPUT") 2>&1 | tail -200, timeout=120)
 ```
 
 **预期**: kernel_expert 应使用 `kernel_tools` 的 StructuredTool（create_directory, write_file, compile_module 等）创建复现用例

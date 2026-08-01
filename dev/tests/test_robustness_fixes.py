@@ -138,6 +138,20 @@ def test_crash_binary_lookup_prefers_project_managed_tools(tmp_path, monkeypatch
 
     assert crash_tools._select_crash_binary_for_arch("arm64") == str(crash_bin)
 
+def test_crash_binary_lookup_uses_explicit_dirs_or_path(tmp_path, monkeypatch):
+    custom_dir = tmp_path / "custom-crash"
+    custom_dir.mkdir()
+    crash_bin = custom_dir / "crash_arm64"
+    crash_bin.write_text("#!/bin/sh\n")
+    crash_bin.chmod(0o755)
+
+    monkeypatch.setattr(crash_tools, "PROJECT_ROOT", tmp_path / "empty-project")
+    monkeypatch.setenv("LUMEN_CRASH_BIN_DIRS", str(custom_dir))
+    monkeypatch.setenv("PATH", "")
+
+    assert crash_tools._select_crash_binary_for_arch("arm64") == str(crash_bin)
+
+
 
 def test_get_llm_with_config_uses_default_config_max_tokens():
     """Default_config.max_tokens is honored as the second-priority source."""

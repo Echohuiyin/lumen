@@ -65,15 +65,23 @@ def _select_crash_binary_for_arch(arch: str) -> str | None:
     """Pick the right crash binary for the target arch.
 
     Looks for crash_<arch> in Lumen's project-managed tool directory, then
-    system locations. Returns None if no arch-specific binary is found —
+    explicitly configured directories and PATH. Returns None if no
+    arch-specific binary is found —
     caller falls back to AppConfig's default detection.
     """
     if not arch:
         return None
-    candidates = [
-        PROJECT_ROOT / "Analysis-SKILL" / "tools" / "crash" / f"crash_{arch}",
-        Path("/usr/local/bin") / f"crash_{arch}",
-    ]
+    binary_name = f"crash_{arch}"
+    candidates = [PROJECT_ROOT / "Analysis-SKILL" / "tools" / "crash" / binary_name]
+    configured_dirs = os.environ.get("LUMEN_CRASH_BIN_DIRS", "")
+    for raw_dir in configured_dirs.replace(",", os.pathsep).split(os.pathsep):
+        raw_dir = raw_dir.strip()
+        if raw_dir:
+            candidates.append(Path(os.path.expanduser(os.path.expandvars(raw_dir))) / binary_name)
+    from shutil import which
+    discovered = which(binary_name)
+    if discovered:
+        candidates.append(Path(discovered))
     for c in candidates:
         if c.is_file() and os.access(c, os.X_OK):
             return str(c)

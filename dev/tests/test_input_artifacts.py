@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.input_artifacts import parse_input_artifacts
+from agents.input_artifacts import _resolve_input_path, parse_input_artifacts
 from project import format_user_input, parse_input_file
 
 
@@ -46,3 +46,35 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
 if __name__ == "__main__":
     test_parse_input_preserves_qemu_runtime_declarations(Path("/tmp"))
     print("input_artifacts OK")
+
+
+def test_resolve_input_path_expands_environment_variables(tmp_path, monkeypatch):
+    artifact = tmp_path / "artifact.log"
+    artifact.write_text("kernel log\n", encoding="utf-8")
+    monkeypatch.setenv("LUMEN_TEST_ARTIFACT_DIR", str(tmp_path))
+
+    resolved = _resolve_input_path("$LUMEN_TEST_ARTIFACT_DIR/artifact.log")
+    assert resolved == artifact.resolve()
+
+    contract = parse_input_artifacts(
+        "log: $LUMEN_TEST_ARTIFACT_DIR/artifact.log",
+        validate_paths=True,
+    )
+    assert contract.log_path == "$LUMEN_TEST_ARTIFACT_DIR/artifact.log"
+    assert contract.status == "ok"
+
+    unresolved = _resolve_input_path("$LUMEN_UNSET_ARTIFACT/artifact.log")
+    assert "$LUMEN_UNSET_ARTIFACT" in str(unresolved)
+
+def test_parse_input_expands_kernel_source_environment(tmp_path: Path, monkeypatch):
+    source_dir = tmp_path / "linux"
+    source_dir.mkdir()
+    monkeypatch.setenv("LUMEN_TEST_KERNEL_SOURCE", str(source_dir))
+    input_file = tmp_path / "input.txt"
+    input_file.write_text(
+        "kernel_source: ${LUMEN_TEST_KERNEL_SOURCE}\n",
+        encoding="utf-8",
+    )
+
+    fields = parse_input_file(str(input_file))
+    assert fields["kernel_source"] == str(source_dir)

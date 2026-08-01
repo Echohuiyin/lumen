@@ -11,7 +11,7 @@ from agents.test_runner import detect_kernel_type, normalize_target_arch
 from paths import PROJECT_ROOT
 
 
-PATH_PATTERN = r"([~/][^\s,，;；]+)"
+PATH_PATTERN = r"((?:[~/]|\$)[^\s,?;?]+)"
 
 
 def _extract_labeled_path(text: str, labels: list[str]) -> tuple[str, str]:
@@ -81,7 +81,10 @@ def _extract_log_excerpt(text: str, limit: int = 4000) -> str:
 
 
 def _resolve_input_path(path: str) -> Path:
-    expanded = Path(os.path.expanduser(path))
+    # Inputs may be shared across developers and hosts. Expand only declared
+    # environment variables and the user's home; an unresolved variable stays
+    # literal and is reported as a missing artifact by validation.
+    expanded = Path(os.path.expanduser(os.path.expandvars(path)))
     if not expanded.is_absolute():
         expanded = PROJECT_ROOT / expanded
     return expanded.resolve()

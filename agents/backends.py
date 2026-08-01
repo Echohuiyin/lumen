@@ -615,7 +615,7 @@ class ClaudeCodeBackend:
         self,
         cli_command: str = "claude",
         cli_timeout: int = 600,
-        model: str = "sonnet",
+        model: str = "",
         permission_mode: str = "bypassPermissions",
         max_turns: int = 100,
         settings_file: str = "",
@@ -625,6 +625,7 @@ class ClaudeCodeBackend:
         quota_preflight: bool = False,
         quota_preflight_timeout: int = 15,
         quota_cooldown_seconds: int = 300,
+        setting_sources: str | list[str] | tuple[str, ...] | None = None,
     ):
         self._cli_command = cli_command
         self._cli_timeout = cli_timeout
@@ -633,8 +634,13 @@ class ClaudeCodeBackend:
         self._max_turns = max_turns
         self._settings_file = settings_file
         self._disable_skills = disable_skills
+        self._setting_sources = self._normalize_setting_sources(setting_sources)
         pool = [model_pool] if isinstance(model_pool, dict) else model_pool
         self._model_pool_config = list(pool) if pool else None
+        # Kernel Expert is the only production caller of this backend and it
+        # must use an explicit project settings file. Never silently attach
+        # the invoking developer's global Claude account/settings.
+        self._settings_required = True
         self._quota_preflight = bool(quota_preflight)
         self._quota_preflight_timeout = max(1, int(quota_preflight_timeout))
         self._quota_cooldown_seconds = max(0, int(quota_cooldown_seconds))
@@ -650,6 +656,37 @@ class ClaudeCodeBackend:
         # searches the cwd, finds no index, and the agent reports
         # "find_function not in my tool list".
         self._semcode_mcp = semcode_mcp or {}
+
+    @staticmethod
+    def _normalize_setting_sources(
+        setting_sources: str | list[str] | tuple[str, ...] | None,
+    ) -> str:
+        """Normalize Claude setting-source allow-list for the CLI.
+
+        "project" is the only source used by the production kernel expert
+        configuration. Keeping the value explicit prevents Claude from
+        silently loading user/local settings and skills.
+        """
+        if setting_sources is None:
+            return ""
+        if isinstance(setting_sources, (list, tuple)):
+            value = ",".join(str(item).strip() for item in setting_sources if str(item).strip())
+        else:
+            value = str(setting_sources).strip()
+        if not value:
+            return ""
+        sources = [item.strip() for item in value.split(",") if item.strip()]
+        invalid = [item for item in sources if item not in {"user", "project", "local"}]
+        if invalid:
+            raise ValueError(
+                "Claude setting_sources contains unsupported source(s): "
+                + ", ".join(invalid)
+            )
+        return ",".join(dict.fromkeys(sources))
+
+    def _append_setting_sources(self, cmd: list[str]) -> None:
+        if self._setting_sources:
+            cmd.extend(["--setting-sources", self._setting_sources])
 
     def bind_tools(self, tools):
         """No-op: Claude Code has its own built-in tools. Returns self so the
@@ -758,17 +795,14 @@ class ClaudeCodeBackend:
 
         ``settings_file`` accepts either one path or a comma/``os.pathsep``
         separated priority list.  When it is omitted, the maintenance
-        workflow prefers the local GLM account and falls back to the default
-        Claude settings file.  Missing files are ignored so the same config
-        remains portable across hosts.
+        workflow does not discover any global account. Missing files are
+        ignored so the same config remains portable across hosts.
         """
         configured = self._settings_file
         if not configured:
             configured = os.environ.get("LUMEN_CLAUDE_SETTINGS_PRIORITY", "")
         if not configured:
             configured = os.environ.get("CLAUDE_SETTINGS", "")
-        if not configured:
-            configured = "~/.claude/settings.json_GLM,~/.claude/settings.json"
 
         if isinstance(configured, (list, tuple)):
             raw_paths = [str(item) for item in configured]
@@ -778,7 +812,7 @@ class ClaudeCodeBackend:
         candidates: list[str] = []
         seen: set[str] = set()
         for raw_path in raw_paths:
-            path = os.path.expanduser(raw_path.strip())
+            path = os.path.expanduser(os.path.expandvars(raw_path.strip()))
             if not path or path in seen or not os.path.isfile(path):
                 continue
             seen.add(path)
@@ -810,15 +844,15 @@ class ClaudeCodeBackend:
                 else:
                     continue
                 settings_path = os.path.expanduser(os.path.expandvars(str(raw_path).strip()))
-                if settings_path and not os.path.isfile(settings_path):
+                if not settings_path or not os.path.isfile(settings_path):
                     continue
                 if not name:
                     name = Path(settings_path).name if settings_path else f"profile-{index + 1}"
                 profiles.append(ClaudeModelProfile(name=name, settings_path=settings_path, model=model))
 
         # Backward compatibility: an ordered settings_file list is itself a
-        # model pool. This keeps GLM first and the default account as the
-        # quota fallback when no explicit model_pool is configured.
+        # model pool. Every entry is still explicit; no global account is
+        # synthesized when the list is empty.
         if not profiles:
             profiles = [
                 ClaudeModelProfile(
@@ -829,7 +863,10 @@ class ClaudeCodeBackend:
                 for path in self._settings_candidates()
             ]
         if not profiles:
-            profiles = [ClaudeModelProfile(name="default", model=self._model)]
+            raise RuntimeError(
+                "Claude Code settings file is missing or unreadable; "
+                "refusing to use implicit global settings"
+            )
         return profiles
 
     @staticmethod
@@ -896,14 +933,16 @@ class ClaudeCodeBackend:
             "1",
             "--permission-mode",
             self._permission_mode,
-            "--model",
-            profile.model or self._model,
             "--tools",
             "",
             "--disable-slash-commands",
         ]
+        selected_model = profile.model or self._model
+        if selected_model:
+            cmd.extend(["--model", selected_model])
         if profile.settings_path:
             cmd.extend(["--settings", profile.settings_path])
+        self._append_setting_sources(cmd)
         try:
             result = subprocess.run(
                 cmd,
@@ -1018,9 +1057,11 @@ class ClaudeCodeBackend:
             "-p", user_prompt,
             "--output-format", "stream-json" if _STREAM_JSON else "json",
             "--permission-mode", self._permission_mode,
-            "--model", model or self._model,
             "--max-turns", str(self._max_turns),
         ]
+        selected_model = model or self._model
+        if selected_model:
+            cmd.extend(["--model", selected_model])
         if _STREAM_JSON:
             # stream-json requires --verbose per CLI spec
             cmd.append("--verbose")
@@ -1031,6 +1072,7 @@ class ClaudeCodeBackend:
                 cmd.extend(["--add-dir", d])
         if settings_path:
             cmd.extend(["--settings", settings_path])
+        self._append_setting_sources(cmd)
         if self._semcode_mcp:
             # Generate a temp mcp config in CLI format from the inline
             # semcode_mcp dict. This is what makes the semcode tools

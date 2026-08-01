@@ -131,9 +131,10 @@ def parse_input_file(file_path: str) -> dict[str, str]:
             key, _, value = line.partition(":")
             key = key.strip()
             value = value.strip()
-            # Kernel source is always supplied as an absolute path in input.txt.
-            # Do not expand environment variables for this field.
-            fields[key] = value if key == "kernel_source" else _resolve_env_vars(value)
+            # Resolve every declared path/value through the deployment
+            # environment. Kernel source is intentionally not special-cased:
+            # shared input files must work on hosts with different layouts.
+            fields[key] = _resolve_env_vars(value)
 
     # Return only recognised fields so unknown keys don't leak through.  The
     # runtime fields above are intentionally retained for Test Expert.

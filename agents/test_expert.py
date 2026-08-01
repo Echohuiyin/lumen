@@ -8,11 +8,13 @@ maintenance reproduction.
 from __future__ import annotations
 
 from pathlib import Path
+import re
 import shutil
 import subprocess
 
 from agents.contracts import (
     DetectionSignals,
+    CallChainOracle,
     ExecutionStep,
     KernelExpertOutput,
     QemuRecipe,
@@ -91,8 +93,58 @@ def _build_detection_signals(
     ])
 
 
+def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
+    """Make the original log chain authoritative for a real Test Expert plan."""
+    original = [
+        str(frame).strip()
+        for frame in contract.original_call_chain
+        if str(frame).strip()
+    ]
+    if not original:
+        return contract.call_chain_oracle
+
+    data = model_to_dict(contract.call_chain_oracle)
+    allowed = {
+        str(frame).strip()
+        for frame in data.get("allowed_wrapper_frames") or []
+        if str(frame).strip()
+    }
+    exact: list[str] = []
+    for frame in original:
+        if frame not in allowed and frame not in exact:
+            exact.append(frame)
+    exact_set = set(exact)
+
+    configured_required = [
+        str(frame).strip()
+        for frame in data.get("required_frames") or []
+        if str(frame).strip() and str(frame).strip() not in exact_set
+    ]
+    required = [*exact, *configured_required]
+    alternatives: list[list[str]] = []
+    for group in data.get("required_frame_alternatives") or []:
+        members = [str(frame).strip() for frame in group if str(frame).strip()]
+        if members and not any(member in exact_set for member in members):
+            alternatives.append(members)
+    data["required_frames"] = required
+    data["required_frame_alternatives"] = alternatives
+
+    valid = set(required)
+    valid.update(member for group in alternatives for member in group)
+    order = [
+        [str(pair[0]).strip(), str(pair[1]).strip()]
+        for pair in data.get("required_frame_order") or []
+        if len(pair) == 2 and str(pair[0]).strip() in valid and str(pair[1]).strip() in valid
+    ]
+    for pair in zip(exact, exact[1:]):
+        pair_list = list(pair)
+        if pair_list not in order:
+            order.append(pair_list)
+    data["required_frame_order"] = order
+    return _model_validate(CallChainOracle, data)
 def _build_plan(contract: KernelExpertOutput) -> TestPlan:
     reproducer = contract.reproducer
+    oracle = _strict_call_chain_oracle(contract)
     steps = [*contract.pressure_requirements, *contract.fault_injection_requirements]
     steps.append(ExecutionStep(
         type="run_binary",
@@ -108,13 +160,14 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         reproducer=reproducer,
         execution_steps=steps,
         expected_signal=contract.expected_signal,
-        detection_signals=DetectionSignals(serial_signals=list(contract.call_chain_oracle.fault_signatures)),
+        detection_signals=DetectionSignals(serial_signals=list(oracle.fault_signatures)),
         qemu_recipe=contract.qemu_recipe,
         reproduction_case_id=contract.uaf_analysis.case_id if contract.uaf_analysis else "maintenance-case",
         target_path_id=contract.uaf_analysis.reproduction_target_path_id if contract.uaf_analysis else f"tryout-{contract.tryout}",
-        target_contexts=[*contract.call_chain_oracle.target_subsystems, *contract.call_chain_oracle.target_objects],
+        original_call_chain=list(contract.original_call_chain),
+        target_contexts=[*oracle.target_subsystems, *oracle.target_objects],
         require_causal_reproduction=True,
-        call_chain_oracle=contract.call_chain_oracle,
+        call_chain_oracle=oracle,
         root_cause=contract.root_cause,
     )
 
@@ -151,6 +204,27 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             continue
         evidence.append((key, raw_path, text))
 
+    # The runner emits this marker before compilation when a declared guest
+    # component is unavailable.  Treat it as a terminal environment block:
+    # retrying an unchanged rootfs cannot make the compiler appear.
+    for key, raw_path, text in evidence:
+        match = re.search(
+            r"LUMEN_GUEST_COMPONENT_MISSING:([A-Za-z0-9_.+-]+):([A-Za-z0-9_.+-]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        component_kind, component_name = match.groups()
+        result.status = "blocked"
+        result.code = "BLOCKED_GUEST_COMPONENT_MISSING"
+        result.summary = (
+            f"Guest is missing the declared {component_kind} component "
+            f"{component_name}; install it in the selected QEMU image or "
+            "select a compatible image before retrying."
+        )
+        result.kernel_feedback = result.summary
+        result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
     # ``mount gadgetfs: No such device`` is the canonical signature when the
     # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
     # Restrict promotion to an explicit gadgetfs/USB ABI failure so an

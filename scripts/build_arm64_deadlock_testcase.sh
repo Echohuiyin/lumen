@@ -14,8 +14,15 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-OLK_DIR=${OLK_DIR:-/home/liumingrui/code/OLK-6.6}
-LUMEN_DIR=${LUMEN_DIR:-/home/liumingrui/lumen}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+PROJECT_ROOT=$(cd -- "${SCRIPT_DIR}/.." && pwd)
+LUMEN_DIR=${LUMEN_DIR:-$PROJECT_ROOT}
+# The kernel tree is host-specific; deployment must declare it explicitly.
+# LUMEN_KERNEL_SOURCE_ROOT is shared with the main workflow configuration.
+OLK_DIR=${OLK_DIR:-${LUMEN_KERNEL_SOURCE_ROOT:-}}
+if [ -z "$OLK_DIR" ]; then
+    echo "[build_arm64] missing OLK_DIR or LUMEN_KERNEL_SOURCE_ROOT (set it to the arm64 kernel source tree)" >&2; exit 1
+fi
 MODULE_SRC=${LUMEN_DIR}/deadlock_analysis_output/mutex_abba_deadlock.c
 TARGET_DIR=${LUMEN_DIR}/test_assets/deadlock_arm64
 INITRAMFS=/tmp/initramfs_deadlock_arm64.cpio.gz

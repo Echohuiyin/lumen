@@ -1,5 +1,6 @@
 # local env files
 .env*
+.claude/settings.json
 config.yaml
 config.json
 AGENTS.md

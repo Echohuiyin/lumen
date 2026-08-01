@@ -37,8 +37,8 @@ CLAUDE_CODE_ALLOWED = AGENT_LOOP_ALLOWED
 DEFAULT_CONFIG_PATH = "config.json"
 
 # ---------------------------------------------------------------------------
-# Code-side defaults — these are baked into the binary so config.json only
-# needs the bare essentials (api_key, base_url, model_name).
+# Deployment configuration is authoritative. Code does not inject a provider,
+# endpoint, model, or account when the project config omits one.
 # ---------------------------------------------------------------------------
 
 
@@ -81,15 +81,18 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
     depending on the 'backend' field in config.
     """
     defaults = default_config or {}
-    backend = agent_config.get("backend") or defaults.get("backend", "anthropic")
-
+    backend = agent_config.get("backend") or defaults.get("backend")
+    if not backend:
+        raise ValueError(
+            "LLM backend is not configured; set it explicitly in config.json"
+        )
     # Validate backend type for automation agents
     if agent_name:
         validate_agent_backend(agent_name, backend)
 
     if backend == "openai":
         return ChatOpenAI(
-            model=agent_config.get("model_name") or defaults.get("model_name", "gpt-4o-mini"),
+            model=agent_config.get("model_name") or defaults.get("model_name", ""),
             api_key=agent_config.get("api_key") or defaults.get("api_key", ""),
             base_url=agent_config.get("base_url") or defaults.get("base_url"),
             temperature=float(agent_config.get("temperature") if agent_config.get("temperature") is not None else defaults.get("temperature", 0)),
@@ -116,7 +119,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
         return ClaudeCodeBackend(
             cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "claude"),
             cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 600)),
-            model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", "sonnet"),
+            model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", ""),
             permission_mode=agent_config.get("permission_mode") or defaults.get("permission_mode", "bypassPermissions"),
             max_turns=int(agent_config.get("max_turns") if agent_config.get("max_turns") is not None else defaults.get("max_turns", 100)),
             settings_file=agent_config.get("settings_file") or defaults.get("settings_file", ""),
@@ -126,6 +129,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             quota_cooldown_seconds=int(agent_config.get("quota_cooldown_seconds") if agent_config.get("quota_cooldown_seconds") is not None else defaults.get("quota_cooldown_seconds", 300)),
             semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
             disable_skills=bool(agent_config.get("disable_skills", defaults.get("disable_skills", False))),
+            setting_sources=agent_config.get("setting_sources") or defaults.get("setting_sources"),
         )
     elif backend == "opencode":
         return OpenCodeBackend(

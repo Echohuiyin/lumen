@@ -85,21 +85,14 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         )
         knowledge_content = response.content.strip()
     except Exception as e:
-        # knowledge_base is the terminal node — its LLM failure must not
-        # throw away the entire workflow's analysis. Degrade to saving the
-        # raw structured summary so the case is still archived and
-        # retrievable. Common triggers: 429 budget_exceeded on the proxy,
-        # upstream 5xx, or transient network errors.
+        # This is the terminal evidence-archive node. A model/API failure
+        # must remain a terminal failure; serializing raw state as a fake
+        # summary would violate the no-fallback workflow contract.
         error = classify_error(e, operation="knowledge_base LLM summary")
-        err_line = (
-            f"[knowledge_base LLM failure] {error.category}/{error.code}: {error.message}. "
-            f"Next action: {error.next_action} Cause: {error.cause}"
-        )
-        knowledge_content = (
-            f"# 知识库归档（LLM 总结失败，已降级保存原始输入）\n\n"
-            f"{err_line}\n\n"
-            f"--- 原始输入 ---\n{user_content}"
-        )
+        raise RuntimeError(
+            f"knowledge_base LLM summary failed ({error.category}/{error.code}): "
+            f"{error.message}"
+        ) from e
 
     # Do not delegate the evidence appendix to the LLM.  The report remains
     # useful even when it summarises poorly or its output is truncated.

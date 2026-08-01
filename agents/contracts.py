@@ -197,6 +197,7 @@ class TestPlan(BaseModel):
     qemu_recipe: QemuRecipe = Field(default_factory=QemuRecipe)
     reproduction_case_id: str = ""
     target_path_id: str = ""
+    original_call_chain: list[str] = Field(default_factory=list)
     target_contexts: list[str] = Field(default_factory=list)
     require_causal_reproduction: bool = False
     call_chain_oracle: CallChainOracle = Field(default_factory=CallChainOracle)

@@ -21,6 +21,11 @@ You must:
 7. Compare the post-start serial call chain with the original oracle.
 8. Return a structured attempt result and concise feedback for Kernel Expert when the chains differ.
 
+The original_call_chain from the Kernel Expert is the original-log fact
+source. In a real maintenance run, every non-wrapper frame in that sequence
+must be observed after the start marker and in the same relative order.
+Generic KASAN, kasan_report, BUG, WARNING, or panic text can confirm
+the fault class but can never substitute for a missing function frame.
 The deterministic runner performs commands and captures artifacts. You provide the maintenance-domain semantic review. You may reject an apparent match as inconsistent; you may never convert a deterministic failure into success.
 
 ## Safety and integrity rules

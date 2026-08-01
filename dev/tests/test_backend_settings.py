@@ -1,5 +1,6 @@
 """Tests for Claude settings priority and quota failover."""
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from agents.backends import ClaudeCodeBackend
@@ -128,7 +129,7 @@ def test_explicit_model_pool_round_robin(tmp_path):
 
     backend = ClaudeCodeBackend(
         model_pool=[
-            {"name": "one", "settings_file": str(paths[0]), "model": "sonnet"},
+            {"name": "one", "settings_file": str(paths[0]), "model": "test-model-a"},
             {"name": "two", "settings_file": str(paths[1]), "model": "opus"},
             {"name": "three", "settings_file": str(paths[2]), "model": "haiku"},
         ],
@@ -145,8 +146,66 @@ def test_explicit_model_pool_round_robin(tmp_path):
         backend.invoke([])
 
     assert calls == [
-        (str(paths[0]), ""),
+        (str(paths[0]), "test-model-a"),
         (str(paths[1]), "opus"),
         (str(paths[2]), "haiku"),
-        (str(paths[0]), ""),
+        (str(paths[0]), "test-model-a"),
     ]
+
+
+def test_setting_sources_are_normalized():
+    backend = ClaudeCodeBackend(setting_sources=["project", "project"])
+    assert backend._setting_sources == "project"
+
+    with pytest.raises(ValueError, match="unsupported source"):
+        ClaudeCodeBackend(setting_sources="user,unknown")
+
+
+def test_missing_explicit_settings_refuses_implicit_global(tmp_path):
+    backend = ClaudeCodeBackend(
+        settings_file=str(tmp_path / "missing-settings.json"),
+        quota_preflight=False,
+    )
+
+    with pytest.raises(RuntimeError, match="implicit global settings"):
+        backend._model_profiles()
+
+
+def test_setting_sources_are_forwarded_to_cli(tmp_path, monkeypatch):
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    backend = ClaudeCodeBackend(
+        settings_file=str(settings),
+        setting_sources="project",
+        quota_preflight=False,
+    )
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = '{"is_error": false, "result": "ok"}'
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return Result()
+
+    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+    backend._invoke_once(
+        [],
+        workdir=str(tmp_path),
+        settings_path=str(settings),
+    )
+    cmd = captured["cmd"]
+    assert cmd[cmd.index("--settings") + 1] == str(settings)
+    assert cmd[cmd.index("--setting-sources") + 1] == "project"
+    assert "--model" not in cmd
+
+def test_empty_settings_configuration_never_discovers_global(monkeypatch):
+    monkeypatch.delenv("LUMEN_CLAUDE_SETTINGS_PRIORITY", raising=False)
+    monkeypatch.delenv("CLAUDE_SETTINGS", raising=False)
+    backend = ClaudeCodeBackend(quota_preflight=False)
+
+    assert backend._settings_candidates() == []
+    with pytest.raises(RuntimeError, match="implicit global settings"):
+        backend._model_profiles()

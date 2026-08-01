@@ -169,8 +169,8 @@ Lumen supports multiple backends:
 | OpenAI | `openai` | OpenAI-compatible API |
 | Claude Code | `claude_code` | Claude Code CLI (used by kernel_expert) |
 
-The default config uses **DeepSeek via Anthropic-compatible API** for chat agents
-and **Claude Code CLI** for the kernel_expert (the most complex agent).
+The deployment config has no provider, endpoint, model, or account defaults.
+Set these values explicitly in `.env` and in the project Claude settings file.
 
 You need:
 
@@ -213,71 +213,20 @@ Get your API key from one of:
 - **OpenAI**: https://platform.openai.com/api-keys
 - **Anthropic**: https://console.anthropic.com/settings/keys
 
-### 4.4 Claude Code Settings File (kernel_expert Isolation)
+### 4.4 Claude Code Settings File (kernel_expert)
 
-`kernel_expert` spawns `claude` CLI as a subprocess. By default, Claude Code CLI
-loads `~/.claude/settings.json` from the user's home directory and inherits
-whatever `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_BASE_URL` it finds there (and from
-the shell environment). If you already use Claude Code CLI with another model
-(e.g. an internal GLM proxy), kernel_expert would silently call the wrong
-endpoint.
+Claude Code supports an explicit settings file. Lumen copies the selected
+settings into the project-local file and invokes the CLI with both
+--settings and --setting-sources project. This keeps kernel_expert on one known credential profile and limits skills/settings discovery to the project scope.
 
-To isolate kernel_expert's Claude Code invocation, `config.json.template` sets:
+Prepare the file once on the deployment host:
 
-```json
-"kernel_expert": {
-  ...
-  "settings_file": "${CLAUDE_SETTINGS_PATH:-${HOME}/.claude/settings-lumen-deepseek.json}"
-}
-```
+    mkdir -p .claude
+    cp $HOME/.claude/settings.json .claude/settings.json
+    chmod 600 .claude/settings.json
 
-`ClaudeCodeBackend` passes this path to `claude --settings <path>`, which loads
-that settings file in place of the global one. Create the file with your
-DeepSeek (or other Anthropic-compatible) credentials:
+The project configuration points agents.kernel_expert.settings_file at ${LUMEN_PROJECT_ROOT:-.}/.claude/settings.json. The source file should contain the Claude Code env values required by your provider, including ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL. If the file is absent or invalid, the workflow stops with an explicit configuration error. There is no settings file, account, model, or session fallback.
 
-```bash
-mkdir -p ~/.claude
-cat > ~/.claude/settings-lumen-deepseek.json <<'EOF'
-{
-  "env": {
-    "DISABLE_TELEMETRY": "1",
-    "DISABLE_ERROR_REPORTING": "1",
-    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-    "ANTHROPIC_AUTH_TOKEN": "sk-your-deepseek-key",
-    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
-    "ANTHROPIC_MODEL": "deepseek-v4-flash",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash"
-  },
-  "skipDangerousModePermissionPrompt": true,
-  "model": "haiku"
-}
-EOF
-chmod 600 ~/.claude/settings-lumen-deepseek.json
-```
-
-> **Field name matters**: use `ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`.
-> Claude Code CLI prefers `ANTHROPIC_AUTH_TOKEN`; if the settings file only sets
-> `ANTHROPIC_API_KEY`, the CLI falls back to the global `~/.claude/settings.json`
-> token (or the shell's `ANTHROPIC_AUTH_TOKEN`), and kernel_expert will silently
-> call the wrong model — typically surfacing as `401 ****Qg3g is invalid`.
-
-Verify isolation:
-
-```bash
-# Should print deepseek-v4-flash, not whatever model your global settings use.
-claude --settings ~/.claude/settings-lumen-deepseek.json \
-  -p 'reply with only your model id, nothing else'
-```
-
-Override the path with `CLAUDE_SETTINGS_PATH` if you keep the settings file
-elsewhere:
-
-```bash
-export CLAUDE_SETTINGS_PATH=/opt/lumen/claude-deepseek.json
-```
 
 ---
 
@@ -288,20 +237,18 @@ export CLAUDE_SETTINGS_PATH=/opt/lumen/claude-deepseek.json
 Kernel source is required for:
 
 1. **Crash analysis**: symbol resolution in vmcore dumps
-2. **Module compilation**: if the test needs a kernel module
+2. **Source validation**: evidence-backed source and symbol lookup for a userspace reproducer
 3. **semcode MCP (optional)**: semantic code search indexing
 
 ```bash
-# Clone your target kernel (example: linux-next)
-git clone git://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git \
-  ~/linux-next
-
-# Or OLK-6.6 (used by deadlock/uaf test cases):
-# git clone https://github.com/openanolis/cloud-kernel.git ~/code/OLK-6.6
+# Clone the target kernel source using a deployment-provided URL.
+git clone "${KERNEL_SOURCE_URL:?set KERNEL_SOURCE_URL}" \
+  "${LUMEN_KERNEL_SOURCE_ROOT:?set LUMEN_KERNEL_SOURCE_ROOT}"
 ```
 
-> The deadlock and uaf test cases reference a specific commit in OLK-6.6. For
-> those cases to compile kernel modules correctly, you need the matching tree.
+> The maintenance workflow creates only userspace C reproducers. If a legacy
+> fixture references a matching kernel commit, use the configured source root
+> for read-only evidence and symbol lookup; do not build or load a kernel module.
 
 ### 5.2 Crash Utility
 
@@ -319,7 +266,7 @@ Lumen auto-selects the right crash binary by sniffing the vmlinux's ELF
 `e_machine` field. It looks for `crash_<arch>` at:
 - `runtime/crash-source/crash_<arch>` (the `deploy.sh` default)
 - `${CRASH_SOURCE_DIR}/crash_<arch>` (when `CRASH_SOURCE_DIR` is overridden)
-- `/usr/local/bin/crash_<arch>`
+- directories listed in `LUMEN_CRASH_BIN_DIRS` or executable `PATH`
 
 The source is cloned into the ignored runtime directory and pinned by
 `CRASH_REF` (default `9.0.2`). The executable itself is built for the host
@@ -470,8 +417,8 @@ If the source directory is missing, `deploy.sh` clones it from
 ```bash
 # Index your kernel source tree (this takes 5-30 minutes)
 Analysis-SKILL/tools/semcode/target/release/semcode-index \
-  -s ~/code/OLK-6.6 \
-  -d ~/code/OLK-6.6/.semcode.db
+  -s "${LUMEN_KERNEL_SOURCE_ROOT:?set LUMEN_KERNEL_SOURCE_ROOT}" \
+  -d "${LUMEN_KERNEL_SOURCE_ROOT:?set LUMEN_KERNEL_SOURCE_ROOT}/.semcode.db"
 ```
 
 ### 7.3 Verify
@@ -481,7 +428,7 @@ Analysis-SKILL/tools/semcode/target/release/semcode-mcp --help
 # Expected: prints usage, exits 0
 
 # Check DB exists
-ls -lh ~/code/OLK-6.6/.semcode.db
+ls -lh "${LUMEN_KERNEL_SOURCE_ROOT:?set LUMEN_KERNEL_SOURCE_ROOT}/.semcode.db"
 ```
 
 ---
@@ -489,29 +436,22 @@ ls -lh ~/code/OLK-6.6/.semcode.db
 ## 8. RAG / Knowledge Base (Optional)
 
 The RAG system enables semantic search over archived analysis reports during
-future workflow runs. It uses ChromaDB + Ollama.
+future workflow runs. It uses ChromaDB and the embedding endpoint configured
+by `EMBEDDING_BASE_URL`, `EMBEDDING_MODEL`, and `EMBEDDING_API_KEY`.
 
 ```bash
-# Install Ollama (embedding service)
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull embedding model
-ollama pull nomic-embed-text
 
 # Install Analysis-SKILL with RAG extras
-cd ~/lumen/Analysis-SKILL
+cd "${LUMEN_PROJECT_ROOT:?set LUMEN_PROJECT_ROOT}/Analysis-SKILL"
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e .[rag]
 deactivate
 ```
 
-Verify:
-
-```bash
-curl http://localhost:11434/api/tags
-# Should show "nomic-embed-text" in the response
-```
+Before running the workflow, source `.env` and verify that the deployment
+environment supplies all three embedding variables. The endpoint and model
+are provider-specific inputs; Lumen does not assume a local service.
 
 ---
 
@@ -521,7 +461,7 @@ Now run the main deploy script. This creates the Python virtual environment,
 installs dependencies, generates config files, and verifies everything.
 
 ```bash
-cd ~/lumen
+cd "${LUMEN_PROJECT_ROOT:?set LUMEN_PROJECT_ROOT}"
 bash deploy.sh
 ```
 
@@ -531,9 +471,9 @@ bash deploy.sh
 2. **External dependency check**: looks for QEMU, build tools, cross compiler,
    Claude Code, cpio, gzip, git, wget, and project-managed tool outputs
 3. **Arch-specific crash binary check**: verifies `crash_x86_64` and
-   `crash_arm64` are present at `runtime/crash-source/` or
-   `/usr/local/bin/` (required for cross-arch vmcore analysis — see Section
-   5.2.1)
+   `crash_arm64` are present in the project crash directory, configured
+   `LUMEN_CRASH_BIN_DIRS`, or executable `PATH` (required for cross-arch
+   vmcore analysis — see Section 5.2.1)
 4. **Virtual environment**: creates `venv/` and activates it
 5. **Python deps**: `pip install -r requirements.txt`
 6. **Env setup**: creates `.env` template if it doesn't exist (edit this!)
@@ -558,18 +498,18 @@ Required settings:
 
 ```bash
 # Your LLM API key (from Section 4.3)
-export ANTHROPIC_API_KEY="sk-xxxxxxxxxxxxxxxx"
+export ANTHROPIC_API_KEY="<provider-api-key>"
 
-# API endpoint (DeepSeek Anthropic-compatible, or use OpenAI/Anthropic)
-export ANTHROPIC_BASE_URL="https://api.deepseek.com/anthropic"
+# API endpoint selected by this deployment
+export ANTHROPIC_BASE_URL="<provider-anthropic-compatible-endpoint>"
 
 # Model
-export ANTHROPIC_MODEL="deepseek-v4-flash"
+export ANTHROPIC_MODEL="<provider-model>"
 
 # RAG embedding endpoint for full knowledge_search and Chroma import
-export EMBEDDING_BASE_URL="http://localhost:11434/v1"
-export EMBEDDING_MODEL="bge-large-zh"
-export EMBEDDING_API_KEY="not-required"
+export EMBEDDING_BASE_URL="<embedding-endpoint>"
+export EMBEDDING_MODEL="<embedding-model>"
+export EMBEDDING_API_KEY="<embedding-api-key>"
 ```
 
 After editing, reload and verify:
@@ -586,7 +526,7 @@ echo "API Key: ${ANTHROPIC_API_KEY:0:8}..."
 ### 10.1 Activate environment
 
 ```bash
-cd ~/lumen
+cd "${LUMEN_PROJECT_ROOT:?set LUMEN_PROJECT_ROOT}"
 source venv/bin/activate
 ```
 
@@ -619,9 +559,9 @@ The workflow takes 5-20 minutes depending on LLM speed and hardware:
   vmcore: ${PROJECT_ROOT}/test_assets/deadlock/vmcore.elf
   vmlinux: ${PROJECT_ROOT}/test_assets/deadlock/vmlinux
   boot_kernel: ${PROJECT_ROOT}/test_assets/deadlock/bzImage
-  kernel_source: /home/user/code/OLK-6.6
+  kernel_source: ${LUMEN_KERNEL_SOURCE_ROOT}
   ────────────────────────────────────────────────────────
-  Model: deepseek-v4-flash
+  Model: ${ANTHROPIC_MODEL:-<provider-model>}
   Input: test_assets/deadlock/input.txt
   Config: config.json
   Session: 20260707_120000_abcd12
@@ -748,7 +688,8 @@ file Analysis-SKILL/tools/busybox/prebuilt/busybox_arm64
 # Expected: "ELF 64-bit LSB executable, ARM aarch64, ... statically linked"
 
 # Crash arm64 binary (REQUIRED for arm64 vmcore analysis)
-ls -l runtime/crash-source/crash_arm64 /usr/local/bin/crash_arm64 2>/dev/null
+test -x runtime/crash-source/crash_arm64 || command -v crash_arm64
+# If LUMEN_CRASH_BIN_DIRS is set, check the configured directories as well.
 strings runtime/crash-source/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head -1
 # Expected: ARM64
 ```
@@ -758,12 +699,12 @@ strings runtime/crash-source/crash_arm64 2>/dev/null | grep -E '^ARM64$' | head 
 ```bash
 # Clone an arm64-capable kernel source tree
 git clone git://git.kernel.org/pub/scm/linux/kernel/git/next/linux-next.git \
-  ~/linux-next-arm64
+  "${LUMEN_ARM64_KERNEL_SOURCE:?set LUMEN_ARM64_KERNEL_SOURCE}"
 
-# Build arm64 kernel + modules (cross-compile from x86 host)
-cd ~/linux-next-arm64
+# Build the arm64 kernel image (cross-compile from x86 host)
+cd "${LUMEN_ARM64_KERNEL_SOURCE:?set LUMEN_ARM64_KERNEL_SOURCE}"
 make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- defconfig
-make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image modules
+make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- -j$(nproc) Image
 # Outputs:
 #   arch/arm64/boot/Image       (QEMU-bootable)
 #   vmlinux                      (with debug symbols, for crash)
@@ -781,7 +722,7 @@ Bug Promote: arm64 内核 [...bug description...]
 vmcore: /path/to/arm64/vmcore.elf
 vmlinux: /path/to/arm64/vmlinux
 boot_kernel: /path/to/arm64/Image
-kernel_source: /home/user/linux-next-arm64
+kernel_source: ${LUMEN_ARM64_KERNEL_SOURCE}
 ```
 
 Run:
@@ -911,11 +852,13 @@ crash --version
 ### LLM: "401 Unauthorized" or "Insufficient Balance"
 
 ```bash
-# Verify your API key works
-curl -H "Authorization: Bearer $ANTHROPIC_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}' \
-  $ANTHROPIC_BASE_URL/chat/completions
+# Confirm the deployment inputs are present, then use the selected provider's
+# documented health check (the endpoint and model are intentionally not fixed).
+test -n "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}"
+test -n "${ANTHROPIC_BASE_URL:?set ANTHROPIC_BASE_URL}"
+test -n "${ANTHROPIC_MODEL:?set ANTHROPIC_MODEL}"
+printf 'Configured endpoint: %s\nConfigured model: %s\n' \
+  "$ANTHROPIC_BASE_URL" "$ANTHROPIC_MODEL"
 ```
 
 ### ChromaDB: "sqlite3 version too old"
@@ -940,11 +883,11 @@ This means the test script (PID 1) exited. Common causes:
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
 | `ANTHROPIC_API_KEY` | **Yes** | — | LLM API key for chat agents |
-| `ANTHROPIC_BASE_URL` | No | `https://api.deepseek.com/anthropic` | LLM API endpoint |
-| `ANTHROPIC_MODEL` | No | `deepseek-v4-flash` | Chat model name |
-| `EMBEDDING_BASE_URL` | Recommended | `http://localhost:11434/v1` | RAG embedding API endpoint |
-| `EMBEDDING_MODEL` | Recommended | `bge-large-zh` | RAG embedding model |
-| `EMBEDDING_API_KEY` | Recommended | `not-required` | RAG embedding API key or placeholder |
+| `ANTHROPIC_BASE_URL` | **Yes** | - | LLM API endpoint for tool experts |
+| `ANTHROPIC_MODEL` | **Yes** | - | Chat model name for tool experts |
+| `EMBEDDING_BASE_URL` | **Yes** | — | RAG embedding API endpoint |
+| `EMBEDDING_MODEL` | **Yes** | — | RAG embedding model |
+| `EMBEDDING_API_KEY` | **Yes** | — | RAG embedding API key |
 
 ---
 
