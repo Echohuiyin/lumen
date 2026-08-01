@@ -23,7 +23,6 @@ from agents.qemu_tools import (
     boot_kernel_result,
     check_qemu_available_result,
     create_ext4_rootfs_result,
-    create_initramfs_result,
 )
 
 
@@ -177,51 +176,40 @@ def run_qemu_test_plan(
     if not modules_dir and plan.reproducer_module_path:
         modules_dir = str(Path(os.path.expanduser(plan.reproducer_module_path)).parent)
 
-    initramfs_path = ""
+    if plan.rootfs_mode != "ext4":
+        return _failure_result(
+            code="BLOCKED_INITRAMFS_UNSUPPORTED",
+            summary="The maintenance QEMU path boots a disk image; initramfs is not supported.",
+            plan=plan,
+            attempts=attempt,
+            steps=steps,
+        )
+
     rootfs_path = ""
-    if plan.rootfs_mode == "ext4":
-        if plan.rootfs_path:
-            rootfs_path = os.path.expanduser(plan.rootfs_path)
-            if not os.path.exists(rootfs_path):
-                return _failure_result(
-                    code="BLOCKED_ROOTFS_MISSING",
-                    summary=f"Rootfs image does not exist: {plan.rootfs_path}",
-                    plan=plan,
-                    attempts=attempt,
-                    steps=steps,
-                )
-        else:
-            rootfs_step = create_ext4_rootfs_result(
-                arch=plan.target_arch,
-                test_script_path=None,
-                modules_dir=modules_dir or None,
-                binaries_dir=plan.binaries_dir or None,
-                size_mb=plan.rootfs_size_mb or 128,
+    if plan.rootfs_path:
+        rootfs_path = os.path.expanduser(plan.rootfs_path)
+        if not os.path.exists(rootfs_path):
+            return _failure_result(
+                code="BLOCKED_ROOTFS_MISSING",
+                summary=f"Rootfs image does not exist: {plan.rootfs_path}",
+                plan=plan,
+                attempts=attempt,
+                steps=steps,
             )
-            steps.append(rootfs_step)
-            rootfs_path = rootfs_step.artifacts.get("rootfs_path", "")
-            if rootfs_step.status != "ok" or not rootfs_path:
-                return _failure_result(
-                    code="FAILED_EXT4_ROOTFS",
-                    summary="Failed to create ext4 rootfs for QEMU test.",
-                    plan=plan,
-                    attempts=attempt,
-                    steps=steps,
-                    status="failed",
-                )
     else:
-        initramfs_step = create_initramfs_result(
+        rootfs_step = create_ext4_rootfs_result(
             arch=plan.target_arch,
             test_script_path=None,
             modules_dir=modules_dir or None,
             binaries_dir=plan.binaries_dir or None,
+            size_mb=plan.rootfs_size_mb or 128,
         )
-        steps.append(initramfs_step)
-        initramfs_path = initramfs_step.artifacts.get("initramfs_path", "")
-        if initramfs_step.status != "ok" or not initramfs_path:
+        steps.append(rootfs_step)
+        rootfs_path = rootfs_step.artifacts.get("rootfs_path", "")
+        if rootfs_step.status != "ok" or not rootfs_path:
             return _failure_result(
-                code="FAILED_INITRAMFS",
-                summary="Failed to create initramfs for QEMU test.",
+                code="FAILED_EXT4_ROOTFS",
+                summary="Failed to create ext4 rootfs for QEMU test.",
                 plan=plan,
                 attempts=attempt,
                 steps=steps,
@@ -230,7 +218,6 @@ def run_qemu_test_plan(
 
     boot_step = boot_kernel_result(
         kernel_path=kernel_path,
-        initramfs_path=initramfs_path,
         rootfs_path=rootfs_path,
         arch=plan.target_arch,
         timeout=plan.qemu_recipe.timeout_sec if plan.qemu_recipe.timeout_sec else timeout,

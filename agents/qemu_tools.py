@@ -47,8 +47,7 @@ class CreateExt4RootfsInput(BaseModel):
 class BootKernelInput(BaseModel):
     """Input schema for boot_kernel."""
     kernel_path: str
-    initramfs_path: str = ""
-    rootfs_path: str = ""
+    rootfs_path: str
     arch: str = "x86_64"
     timeout: int = 300
     memory: str = ""
@@ -572,9 +571,10 @@ def boot_kernel(
 
     Args:
         kernel_path: Path to kernel image (vmlinux or Image)
-        initramfs_path: Path to initramfs/initrd
-        rootfs_path: Optional ext4 root filesystem image. When set, QEMU boots
-            with this image as /dev/vda and root=/dev/vda.
+        initramfs_path: Deprecated and rejected. The maintenance path boots a
+            disk image only.
+        rootfs_path: Required ext4/raw root filesystem image. QEMU boots with
+            this image as the root disk.
         arch: Target architecture
         timeout: Boot timeout in seconds
         memory: Memory allocation; empty = auto-select based on kernel size
@@ -587,19 +587,19 @@ def boot_kernel(
     """
     arch = _normalize_arch(arch)
 
+    if initramfs_path:
+        return "Error: initramfs is unsupported; provide a disk image through rootfs_path"
+
     # Validate inputs
     kernel = _resolve_runtime_path(kernel_path)
-    initramfs = _resolve_runtime_path(initramfs_path) if initramfs_path else None
     rootfs = _resolve_runtime_path(rootfs_path) if rootfs_path else None
 
     if not kernel.exists():
         return f"Error: kernel not found: {kernel_path}"
-    if initramfs is not None and not initramfs.exists():
-        return f"Error: initramfs not found: {initramfs_path}"
     if rootfs is not None and not rootfs.exists():
         return f"Error: rootfs not found: {rootfs_path}"
-    if initramfs is None and rootfs is None:
-        return "Error: either initramfs_path or rootfs_path is required"
+    if rootfs is None:
+        return "Error: rootfs_path is required; initramfs is unsupported"
 
     # Auto-select memory: KASAN/debug kernels need >=2GB or they panic during
     # kasan_populate_shadow before any test code runs.
@@ -690,8 +690,6 @@ def boot_kernel(
             "-kernel", str(kernel),
             "-append", cmdline,
         ]
-        if initramfs is not None:
-            qemu_cmd.extend(["-initrd", str(initramfs)])
         if rootfs is not None:
             qemu_cmd.extend([
                 "-drive", f"if=none,id=rootfs,file={rootfs},format=raw",
@@ -752,7 +750,6 @@ def boot_kernel(
 
         return f"""{status}
   Kernel: {kernel}
-  Initramfs: {initramfs or ''}
   RootFS: {rootfs or ''}
   Arch: {arch}
   Memory: {memory}
@@ -780,7 +777,6 @@ Last 20 lines:
             Path(log_path).write_text(partial)
             return f"""⚠ Boot timed out ({timeout}s) — partial output captured
   Kernel: {kernel}
-  Initramfs: {initramfs or ''}
   RootFS: {rootfs or ''}
 
 Boot Log saved to: {log_path}
@@ -1038,17 +1034,6 @@ def create_qemu_tools() -> list[StructuredTool]:
             args_schema=CheckQemuInput,
         ),
         StructuredTool(
-            name="create_initramfs",
-            description=(
-                "Create minimal initramfs for QEMU kernel testing. "
-                "Includes busybox and essential init scripts. "
-                "Optionally includes a test script and kernel modules for automated testing. "
-                "Returns path to created initramfs."
-            ),
-            func=create_initramfs,
-            args_schema=CreateInitramfsInput,
-        ),
-        StructuredTool(
             name="create_ext4_rootfs",
             description=(
                 "Create an ext4 root filesystem image for QEMU kernel testing. "
@@ -1062,7 +1047,8 @@ def create_qemu_tools() -> list[StructuredTool]:
         StructuredTool(
             name="boot_kernel",
             description=(
-                "Boot a kernel in QEMU with specified initramfs or ext4 rootfs. "
+                "Boot a kernel in QEMU with a specified ext4/raw disk image. "
+                "Initramfs boot is unsupported. "
                 "Captures boot log and detects kernel panics or errors. "
                 "Returns boot status and log analysis. "
                 "Use for verifying kernel functionality or reproducing issues."

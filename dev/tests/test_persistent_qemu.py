@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.contracts import CallChainOracle, DetectionSignals, ExecutionStep, QemuRecipe, TestPlan, UserspaceReproducer
+from agents.contracts import CallChainOracle, DetectionSignals, ExecutionStep, QemuRecipe, TestPlan as QemuTestPlan, UserspaceReproducer
 from agents.persistent_qemu import (
     PersistentQemuManager,
     _check_call_chain_match,
@@ -18,13 +18,13 @@ from agents.persistent_qemu import (
 )
 
 
-def _plan(tmp_path: Path, *, arch: str = "x86_64") -> TestPlan:
+def _plan(tmp_path: Path, *, arch: str = "x86_64") -> QemuTestPlan:
     kernel = tmp_path / ("Image" if arch == "arm64" else "bzImage")
     kernel.write_bytes(b"arm64-image" if arch == "arm64" else b"MZ\x00\x00kernel")
     source = tmp_path / "repro"
     source.mkdir()
     (source / "repro.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
-    return TestPlan(
+    return QemuTestPlan(
         target_arch=arch, boot_kernel_path=str(kernel), reproducer_dir=str(source),
         reproducer=UserspaceReproducer(source_dir=str(source), source_files=["repro.c"], entry_source="repro.c", output_binary="trigger"),
         execution_steps=[ExecutionStep(type="run_binary", path="bin/trigger")],

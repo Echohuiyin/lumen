@@ -33,6 +33,9 @@ sessions/
 
 # test / runtime artifacts
 _test_tmp.txt
+.semcode.db/
+runtime/
+syzfetch-cases/
 outputs/
 runtime/qemu-ssh/
 knowledge_base/

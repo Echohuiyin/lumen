@@ -1,7 +1,6 @@
 """Persistent QEMU guest lifecycle and SSH-based reproducer execution.
 
-This module is deliberately independent of the legacy one-shot initramfs
-runner.  A guest is identified by the exact boot kernel, rootfs, architecture,
+A guest is identified by the exact boot kernel, disk image, architecture,
 and QEMU recipe.  It is reused only while that identity is unchanged; a new
 kernel can therefore never inherit a previous case's guest state.
 """
@@ -19,6 +18,7 @@ import socket
 import subprocess
 import time
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 from uuid import uuid4
 
@@ -34,6 +34,8 @@ _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
                       "scheduler": "--switch", "filesystem": "--hdd", "network": "--netdev"}
 _FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request"}
+_DEFAULT_BOOT_TIMEOUT_SEC = 900
+_MAX_CONCURRENT_INSTANCES = 16
 
 
 @dataclass(frozen=True)
@@ -324,10 +326,11 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
 class PersistentQemuManager:
     """Own one architecture/kernel-specific QEMU guest and run a POC via SSH."""
 
-    def __init__(self, plan: TestPlan, *, runtime_root: Path | None = None, boot_timeout: int = 120):
+    def __init__(self, plan: TestPlan, *, runtime_root: Path | None = None, boot_timeout: int | None = None):
         self.plan = plan
         self.paths = persistent_qemu_paths(plan.target_arch, runtime_root=runtime_root)
-        self.boot_timeout = boot_timeout
+        requested_timeout = plan.qemu_recipe.timeout_sec if boot_timeout is None else boot_timeout
+        self.boot_timeout = _normalise_boot_timeout(requested_timeout)
 
     def _ssh_base(self, port: int) -> list[str]:
         return [
@@ -607,15 +610,42 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     return result
 
 
-def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root: Path | None = None) -> TestResultContract:
-    """Run one isolated userspace-C try-out and evaluate its serial call chain."""
+def _normalise_boot_timeout(value: int | None) -> int:
+    """Resolve QemuRecipe.timeout_sec and reject unsafe values."""
     try:
-        _validate_execution_steps(plan)
-    except ValueError as exc:
-        return TestResultContract(
-            status="blocked", code="BLOCKED_EXECUTION_PLAN", attempts=attempt,
-            summary=str(exc), plan=plan,
+        timeout = int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("qemu_recipe.timeout_sec must be an integer") from exc
+    if timeout == 0:
+        return _DEFAULT_BOOT_TIMEOUT_SEC
+    if not 10 <= timeout <= 7200:
+        raise ValueError("qemu_recipe.timeout_sec must be 0 or in range 10..7200")
+    return timeout
+
+
+def _normalise_concurrent_instances(value: int | None) -> int:
+    try:
+        instances = int(value or 1)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("qemu_recipe.concurrent_instances must be an integer") from exc
+    if not 1 <= instances <= _MAX_CONCURRENT_INSTANCES:
+        raise ValueError(
+            f"qemu_recipe.concurrent_instances must be in range 1..{_MAX_CONCURRENT_INSTANCES}"
         )
+    return instances
+
+
+def _instance_runtime_root(runtime_root: Path | None, instance: int, count: int) -> Path | None:
+    if count == 1:
+        return runtime_root
+    base = runtime_root or DEFAULT_IMAGE_ROOT
+    return base / f"instance-{instance:02d}"
+
+
+def _run_single_persistent_qemu_test_plan(
+    plan: TestPlan, *, attempt: int, runtime_root: Path | None = None,
+) -> TestResultContract:
+    """Run one isolated userspace-C VM and evaluate its serial call chain."""
     manager = PersistentQemuManager(plan, runtime_root=runtime_root)
     steps: list[ToolStepResult] = []
     ensure, state = manager.ensure_running()
@@ -649,3 +679,55 @@ def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root:
     if matched:
         return TestResultContract(status="failed", code="FAILED_CALL_CHAIN_MISMATCH", attempts=attempt, summary="A target signal was observed but the post-start call chain did not satisfy the original-log oracle.", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, **causal, **chain)
     return TestResultContract(status="failed", code="FAILED_SIGNAL_NOT_FOUND", attempts=attempt, summary="No target fault signature was observed after the userspace reproducer started.", plan=plan, steps=steps, artifacts=artifacts, **chain)
+
+
+def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root: Path | None = None) -> TestResultContract:
+    """Run one try-out, honoring the declared timeout and VM concurrency."""
+    try:
+        _validate_execution_steps(plan)
+        instances = _normalise_concurrent_instances(plan.qemu_recipe.concurrent_instances)
+        _normalise_boot_timeout(plan.qemu_recipe.timeout_sec)
+    except ValueError as exc:
+        return TestResultContract(
+            status="blocked", code="BLOCKED_EXECUTION_PLAN", attempts=attempt,
+            summary=str(exc), plan=plan,
+        )
+    if instances == 1:
+        try:
+            return _run_single_persistent_qemu_test_plan(plan, attempt=attempt, runtime_root=runtime_root)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            return TestResultContract(status="blocked", code="BLOCKED_PERSISTENT_QEMU", attempts=attempt, summary=str(exc), plan=plan)
+
+    results: list[tuple[int, TestResultContract]] = []
+    with ThreadPoolExecutor(max_workers=instances, thread_name_prefix="lumen-qemu") as executor:
+        futures = {
+            executor.submit(
+                _run_single_persistent_qemu_test_plan,
+                plan,
+                attempt=attempt,
+                runtime_root=_instance_runtime_root(runtime_root, index, instances),
+            ): index
+            for index in range(1, instances + 1)
+        }
+        for future in as_completed(futures):
+            index = futures[future]
+            try:
+                results.append((index, future.result()))
+            except (OSError, ValueError, subprocess.SubprocessError) as exc:
+                results.append((index, TestResultContract(status="blocked", code="BLOCKED_PERSISTENT_QEMU", attempts=attempt, summary=str(exc), plan=plan)))
+    results.sort(key=lambda item: item[0])
+    winner = next((result for _, result in results if result.test_passed), None)
+    if winner is None:
+        # Preserve the most informative failure (a signal/call-chain mismatch
+        # is more useful than a VM setup failure), while retaining every
+        # instance artifact for diagnosis.
+        winner = max((result for _, result in results), key=lambda item: (bool(item.required_frames_found), bool(item.signal_after_start), item.status == "failed"))
+    winner.steps = [step for _, result in results for step in result.steps]
+    winner.artifacts = {
+        f"instance_{index:02d}_{key}": value
+        for index, result in results
+        for key, value in result.artifacts.items()
+    }
+    passed = [index for index, result in results if result.test_passed]
+    winner.summary = f"{len(passed)}/{instances} concurrent QEMU instances passed call-chain verification." if passed else f"{instances} concurrent QEMU instances completed without a consistent call-chain reproduction."
+    return winner

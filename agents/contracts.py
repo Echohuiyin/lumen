@@ -177,7 +177,9 @@ class TestPlan(BaseModel):
 
     target_arch: str = ""
     boot_kernel_path: str = ""
-    rootfs_mode: Literal["initramfs", "ext4"] = "initramfs"
+    # The persistent maintenance runner boots a disk image. Initramfs is not
+    # part of the supported contract and must never be silently synthesized.
+    rootfs_mode: Literal["ext4"] = "ext4"
     rootfs_path: str = ""
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
@@ -342,7 +344,7 @@ class KernelExpertOutput(BaseModel):
     change_from_previous_tryout: str = ""
     vmlinux_path: str = ""
     boot_kernel_path: str = ""
-    rootfs_mode: Literal["initramfs", "ext4"] = "ext4"
+    rootfs_mode: Literal["ext4"] = "ext4"
     rootfs_path: str = ""
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""

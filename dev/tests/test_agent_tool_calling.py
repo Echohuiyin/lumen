@@ -196,16 +196,18 @@ def test_test_expert():
     """测试 test_expert 的 QEMU 工具能力。"""
     print_header("[Test Expert] 测试 QEMU 工具能力")
 
-    from agents.qemu_tools import create_qemu_tools, check_qemu_available, create_initramfs
-    from agents.test_expert import _extract_kernel_path
+    from agents.input_artifacts import parse_input_artifacts
+    from agents.qemu_tools import create_qemu_tools, check_qemu_available
 
     config = load_config(CONFIG_PATH)
 
     # 测试 1: 工具创建
     tools = create_qemu_tools()
     tool_names = [t.name for t in tools]
-    has_required = all(n in tool_names for n in ["check_qemu_available", "create_initramfs", "boot_kernel"])
+    has_required = all(n in tool_names for n in ["check_qemu_available", "create_ext4_rootfs", "boot_kernel"])
     print_result("QEMU工具创建", has_required, f"tools={tool_names}")
+    assert has_required
+    assert "create_initramfs" not in tool_names
 
     # 测试 2: QEMU 可用性检查
     qemu_result = check_qemu_available()
@@ -220,14 +222,22 @@ def test_test_expert():
     ]
 
     for input_text, expected in test_inputs:
-        path = _extract_kernel_path(input_text)
+        artifacts = parse_input_artifacts(input_text, validate_paths=False)
+        path = artifacts.boot_kernel_path or artifacts.vmlinux_path or None
         ok = (path == expected) if expected else (path is None)
         print_result(f"kernel提取: {input_text[:30]}", ok, f"path={path}")
+        assert ok
 
     # 测试 4: LLM 工具调用（如果QEMU可用）
     if qemu_available:
         agent_config = config.get("agents", {}).get("test_expert", {})
         default_config = config.get("default", {})
+        backend = agent_config.get("backend") or default_config.get("backend", "anthropic")
+        api_key = agent_config.get("api_key") or default_config.get("api_key", "")
+        if backend in {"openai", "anthropic", "http"} and not api_key:
+            print_result("LLM工具调用", True, "SKIP: no API credentials configured")
+            return True
+
         llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="test_expert")
 
         has_bind_tools = hasattr(llm, "bind_tools")

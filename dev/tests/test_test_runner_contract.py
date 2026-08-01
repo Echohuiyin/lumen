@@ -12,7 +12,7 @@ import tempfile
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from agents.contracts import DetectionSignals, QemuRecipe, TestPlan, model_to_dict
+from agents.contracts import DetectionSignals, QemuRecipe, TestPlan as QemuTestPlan, model_to_dict
 from agents.test_runner import _match_serial_signals, _warning_precedes_panic, run_qemu_test_plan
 from llm_config import load_config
 
@@ -22,7 +22,7 @@ def test_missing_arch_blocks_without_guessing():
         f.write(b"MZ\x00\x00")
         f.flush()
         result = run_qemu_test_plan(
-            TestPlan(target_arch="", boot_kernel_path=f.name),
+            QemuTestPlan(target_arch="", boot_kernel_path=f.name),
             attempt=1,
         )
     assert result.code == "BLOCKED_NO_TARGET_ARCH"
@@ -32,7 +32,7 @@ def test_missing_arch_blocks_without_guessing():
 
 def test_missing_kernel_is_terminal_blocker():
     result = run_qemu_test_plan(
-        TestPlan(target_arch="x86_64", boot_kernel_path="/tmp/missing-bzImage"),
+        QemuTestPlan(target_arch="x86_64", boot_kernel_path="/tmp/missing-bzImage"),
         attempt=1,
     )
     assert result.code == "BLOCKED_BOOT_KERNEL_MISSING"
@@ -44,7 +44,7 @@ def test_elf_vmlinux_rejected_before_qemu():
         f.write(b"\x7fELF")
         f.flush()
         result = run_qemu_test_plan(
-            TestPlan(target_arch="x86_64", boot_kernel_path=f.name),
+            QemuTestPlan(target_arch="x86_64", boot_kernel_path=f.name),
             attempt=1,
         )
     assert result.code == "BLOCKED_NOT_BOOTABLE_KERNEL"
@@ -60,7 +60,7 @@ def test_legacy_config_name_falls_back_to_config_json():
 
 def test_contract_serializes_to_dict():
     result = run_qemu_test_plan(
-        TestPlan(target_arch="", boot_kernel_path=""),
+        QemuTestPlan(target_arch="", boot_kernel_path=""),
         attempt=1,
     )
     data = model_to_dict(result)
@@ -167,8 +167,8 @@ def test_qemu_recipe_defaults_are_backward_compatible():
 
 
 def test_test_plan_rootfs_defaults_are_backward_compatible():
-    plan = TestPlan()
-    assert plan.rootfs_mode == "initramfs"
+    plan = QemuTestPlan()
+    assert plan.rootfs_mode == "ext4"
     assert plan.rootfs_path == ""
     assert plan.rootfs_size_mb == 128
 
