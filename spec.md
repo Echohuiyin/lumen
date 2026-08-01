@@ -169,6 +169,7 @@ runtime_timeout_sec
 ```text
 fault_signatures[]
 required_frames[]
+required_frame_alternatives[][]
 required_frame_order[]
 target_subsystems[]
 target_objects[]
@@ -259,7 +260,7 @@ QEMU 成功启动
 AND guest 内 C reproducer 编译成功
 AND REPRO_START 已出现
 AND 目标故障信号出现在 START 之后
-AND 原始日志要求的关键帧全部出现
+AND 原始日志要求的关键帧全部出现（候选帧组每组至少出现一个）
 AND 关键帧顺序满足 required_frame_order
 AND 目标子系统或对象上下文一致
 AND Test Expert 原理复核未否决

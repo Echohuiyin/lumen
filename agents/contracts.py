@@ -139,6 +139,11 @@ class CallChainOracle(BaseModel):
 
     fault_signatures: list[str] = Field(default_factory=list)
     required_frames: list[str] = Field(default_factory=list)
+    # Mutually exclusive evidence-backed frames for one call-chain position.
+    # A group is satisfied when at least one member is present; members must
+    # not be treated as independent mandatory frames.  This is needed for
+    # source-level branches such as session_put versus session_destroy.
+    required_frame_alternatives: list[list[str]] = Field(default_factory=list)
     required_frame_order: list[list[str]] = Field(default_factory=list)
     target_subsystems: list[str] = Field(default_factory=list)
     target_objects: list[str] = Field(default_factory=list)
