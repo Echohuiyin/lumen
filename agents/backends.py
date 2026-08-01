@@ -4,8 +4,6 @@ import re
 import shlex
 import subprocess
 import tempfile
-from dataclasses import dataclass
-from threading import Lock
 import time
 import uuid
 from pathlib import Path
@@ -594,14 +592,6 @@ class AnthropicBackend:
         return result
 
 
-@dataclass(frozen=True)
-class ClaudeModelProfile:
-    """One Claude settings/model slot in the kernel-expert model pool."""
-
-    name: str
-    settings_path: str = ""
-    model: str = ""
-
 class ClaudeCodeBackend:
     """LLM backend that drives the Claude Code CLI as a mature code agent.
 
@@ -621,10 +611,6 @@ class ClaudeCodeBackend:
         settings_file: str = "",
         semcode_mcp: dict | None = None,
         disable_skills: bool = False,
-        model_pool: list[dict | str] | None = None,
-        quota_preflight: bool = False,
-        quota_preflight_timeout: int = 15,
-        quota_cooldown_seconds: int = 300,
     ):
         self._cli_command = cli_command
         self._cli_timeout = cli_timeout
@@ -633,14 +619,6 @@ class ClaudeCodeBackend:
         self._max_turns = max_turns
         self._settings_file = settings_file
         self._disable_skills = disable_skills
-        pool = [model_pool] if isinstance(model_pool, dict) else model_pool
-        self._model_pool_config = list(pool) if pool else None
-        self._quota_preflight = bool(quota_preflight)
-        self._quota_preflight_timeout = max(1, int(quota_preflight_timeout))
-        self._quota_cooldown_seconds = max(0, int(quota_cooldown_seconds))
-        self._pool_lock = Lock()
-        self._pool_cursor = 0
-        self._unavailable_until: dict[str, float] = {}
         # Inline MCP server config for semcode, e.g.
         # {"command": "/path/to/semcode-mcp", "args": ["-d", "/path/to/.semcode.db"]}
         # When set, the backend writes a temp mcp config file in CLI format
@@ -785,150 +763,6 @@ class ClaudeCodeBackend:
             candidates.append(path)
         return candidates
 
-    def _model_profiles(self) -> list[ClaudeModelProfile]:
-        """Build the configured model pool, filtering missing settings files."""
-        configured = self._model_pool_config
-        if isinstance(configured, dict):
-            configured = [configured]
-
-        profiles: list[ClaudeModelProfile] = []
-        if configured:
-            for index, item in enumerate(configured):
-                if isinstance(item, str):
-                    raw_path = item
-                    name = ""
-                    model = self._model
-                elif isinstance(item, dict):
-                    raw_path = (
-                        item.get("settings_file")
-                        or item.get("settings_path")
-                        or item.get("path")
-                        or ""
-                    )
-                    name = str(item.get("name") or "")
-                    model = str(item.get("model") or item.get("model_name") or self._model)
-                else:
-                    continue
-                settings_path = os.path.expanduser(os.path.expandvars(str(raw_path).strip()))
-                if settings_path and not os.path.isfile(settings_path):
-                    continue
-                if not name:
-                    name = Path(settings_path).name if settings_path else f"profile-{index + 1}"
-                profiles.append(ClaudeModelProfile(name=name, settings_path=settings_path, model=model))
-
-        # Backward compatibility: an ordered settings_file list is itself a
-        # model pool. This keeps GLM first and the default account as the
-        # quota fallback when no explicit model_pool is configured.
-        if not profiles:
-            profiles = [
-                ClaudeModelProfile(
-                    name=Path(path).name,
-                    settings_path=path,
-                    model=self._model,
-                )
-                for path in self._settings_candidates()
-            ]
-        if not profiles:
-            profiles = [ClaudeModelProfile(name="default", model=self._model)]
-        return profiles
-
-    @staticmethod
-    def _profile_key(profile: ClaudeModelProfile) -> str:
-        """Return a non-secret identity for cooldown bookkeeping."""
-        return f"{profile.name}\x1f{profile.settings_path}"
-
-    def _ordered_model_profiles(self) -> list[ClaudeModelProfile]:
-        """Return profiles in round-robin order for the next analysis."""
-        profiles = self._model_profiles()
-        with self._pool_lock:
-            start = self._pool_cursor % len(profiles)
-            self._pool_cursor = (start + 1) % len(profiles)
-        return profiles[start:] + profiles[:start]
-
-    def _profile_in_cooldown(self, profile: ClaudeModelProfile) -> bool:
-        key = self._profile_key(profile)
-        now = time.monotonic()
-        with self._pool_lock:
-            until = self._unavailable_until.get(key, 0.0)
-            if until and until <= now:
-                self._unavailable_until.pop(key, None)
-                return False
-            return until > now
-
-    def _mark_profile_unavailable(self, profile: ClaudeModelProfile) -> None:
-        if self._quota_cooldown_seconds <= 0:
-            return
-        with self._pool_lock:
-            self._unavailable_until[self._profile_key(profile)] = (
-                time.monotonic() + self._quota_cooldown_seconds
-            )
-
-    def _quota_preflight_profile(
-        self,
-        profile: ClaudeModelProfile,
-        *,
-        workdir: str = "",
-    ) -> bool:
-        """Run a bounded, tool-free CLI probe before assigning a profile.
-
-        The probe deliberately uses one turn and no project tools. A failed
-        probe is treated as unavailable for this cooldown window, so a
-        broken/empty account cannot consume the full kernel analysis budget.
-        Probe output is never logged because provider responses can contain
-        credential or account details.
-        """
-        if not self._quota_preflight:
-            return True
-        if self._profile_in_cooldown(profile):
-            return False
-
-        command = shlex.split(self._cli_command)
-        if not command:
-            self._mark_profile_unavailable(profile)
-            return False
-        cmd = command + [
-            "-p",
-            "Quota preflight only. Reply with OK. Do not inspect files or use tools.",
-            "--output-format",
-            "json",
-            "--no-session-persistence",
-            "--max-turns",
-            "1",
-            "--permission-mode",
-            self._permission_mode,
-            "--model",
-            profile.model or self._model,
-            "--tools",
-            "",
-            "--disable-slash-commands",
-        ]
-        if profile.settings_path:
-            cmd.extend(["--settings", profile.settings_path])
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=workdir or None,
-                capture_output=True,
-                text=True,
-                timeout=self._quota_preflight_timeout,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            self._mark_profile_unavailable(profile)
-            return False
-
-        failed = result.returncode != 0
-        if not failed and result.stdout.strip():
-            try:
-                failed = bool(json.loads(result.stdout).get("is_error"))
-            except (TypeError, ValueError):
-                failed = True
-        elif not result.stdout.strip():
-            failed = True
-        if failed:
-            self._mark_profile_unavailable(profile)
-            return False
-        return True
-
     @staticmethod
     def _is_quota_exhaustion(error: BaseException) -> bool:
         """Recognize provider-credit failures that are safe to fail over."""
@@ -941,55 +775,26 @@ class ClaudeCodeBackend:
         return any(marker in text for marker in markers)
 
     def invoke(self, messages: list[BaseMessage], *, workdir: str = "", add_dirs: list[str] | None = None) -> AIMessage:
-        """Assign one available model in round-robin order.
+        """Invoke Claude Code, failing over to the next settings file on quota exhaustion."""
+        candidates = self._settings_candidates()
+        # Keep the historical behavior when no settings file is available:
+        # Claude Code then uses its own default settings/environment.
+        if not candidates:
+            return self._invoke_once(messages, workdir=workdir, add_dirs=add_dirs, settings_path="")
 
-        A preflight probe can skip exhausted accounts before the expensive
-        analysis. If an account still reports an explicit quota error during
-        analysis, the next profile is tried, preserving GLM -> default
-        settings failover semantics.
-        """
-        profiles = self._ordered_model_profiles()
-        last_quota_error: RuntimeError | None = None
-        for profile in profiles:
-            if not self._quota_preflight_profile(profile, workdir=workdir):
-                continue
+        for index, settings_path in enumerate(candidates):
             try:
-                return self._invoke_profile(
+                return self._invoke_once(
                     messages,
-                    profile,
                     workdir=workdir,
                     add_dirs=add_dirs,
+                    settings_path=settings_path,
                 )
             except RuntimeError as exc:
-                if not self._is_quota_exhaustion(exc):
+                if index + 1 >= len(candidates) or not self._is_quota_exhaustion(exc):
                     raise
-                self._mark_profile_unavailable(profile)
-                last_quota_error = exc
-
-        if last_quota_error is not None:
-            raise last_quota_error
-        raise RuntimeError(
-            "Claude Code model pool exhausted: no profile passed quota preflight"
-        )
-
-    def _invoke_profile(
-        self,
-        messages: list[BaseMessage],
-        profile: ClaudeModelProfile,
-        *,
-        workdir: str = "",
-        add_dirs: list[str] | None = None,
-    ) -> AIMessage:
-        kwargs = {
-            "workdir": workdir,
-            "add_dirs": add_dirs,
-            "settings_path": profile.settings_path,
-        }
-        # Keep compatibility with test doubles and callers that override
-        # _invoke_once with the historical keyword-only signature.
-        if profile.model and profile.model != self._model:
-            kwargs["model"] = profile.model
-        return self._invoke_once(messages, **kwargs)
+        # The loop always returns or raises; this keeps type-checkers honest.
+        raise RuntimeError("Claude Code settings failover exhausted")
 
     def _invoke_once(
         self,
@@ -998,7 +803,6 @@ class ClaudeCodeBackend:
         workdir: str = "",
         add_dirs: list[str] | None = None,
         settings_path: str = "",
-        model: str = "",
     ) -> AIMessage:
         system_parts: list[str] = []
         user_parts: list[str] = []
@@ -1018,7 +822,7 @@ class ClaudeCodeBackend:
             "-p", user_prompt,
             "--output-format", "stream-json" if _STREAM_JSON else "json",
             "--permission-mode", self._permission_mode,
-            "--model", model or self._model,
+            "--model", self._model,
             "--max-turns", str(self._max_turns),
         ]
         if _STREAM_JSON:

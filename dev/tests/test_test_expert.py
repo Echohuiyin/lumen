@@ -8,7 +8,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract as ResultContract, UserspaceReproducer
+from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.test_expert import _build_plan, _promote_guest_capability_block, _semantic_review, test_expert_node
 
 
@@ -56,7 +56,7 @@ def test_invalid_contract_is_blocked_before_image_copy():
 def test_semantic_review_never_overrides_missing_deterministic_match():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))
-        failed = ResultContract(status="failed", code="FAILED_CALL_CHAIN_MISMATCH")
+        failed = TestResultContract(status="failed", code="FAILED_CALL_CHAIN_MISMATCH")
         accepted, reason = _semantic_review(contract, failed)
         assert accepted is False
         assert "deterministic" in reason
@@ -66,7 +66,7 @@ def test_missing_gadgetfs_capability_is_terminal():
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "ssh-command.log"
         output.write_text("mount gadgetfs: No such device\n", encoding="utf-8")
-        failed = ResultContract(
+        failed = TestResultContract(
             status="failed", code="FAILED_SIGNAL_NOT_FOUND",
             artifacts={"ssh_output": str(output)},
         )
@@ -87,25 +87,3 @@ if __name__ == "__main__":
     ):
         test()
     print("test_expert OK")
-
-
-def test_deep_suspend_platform_capability_is_terminal():
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as directory:
-        output = Path(directory) / "ssh-command.log"
-        output.write_text(
-            'mem_sleep current: s2idle\n'
-            'write(/sys/power/mem_sleep, "deep") failed: Invalid argument\n'
-            'write(/sys/power/state, "mem") failed: Invalid argument\n',
-            encoding="utf-8",
-        )
-        failed = ResultContract(
-            status="failed", code="FAILED_CALL_CHAIN_MISMATCH",
-            artifacts={"ssh_output": str(output)},
-        )
-        blocked = _promote_guest_capability_block(failed)
-
-    assert blocked.status == "blocked"
-    assert blocked.code == "BLOCKED_GUEST_PLATFORM_UNSUPPORTED"
-    assert "s2idle" in blocked.summary

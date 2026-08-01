@@ -27,21 +27,6 @@
       "max_turns": 900,
       "disable_skills": true,
       "settings_file": "${LUMEN_CLAUDE_SETTINGS_PRIORITY:-${HOME}/.claude/settings.json_GLM,${HOME}/.claude/settings.json}",
-      "model_pool": [
-        {
-          "name": "glm",
-          "settings_file": "${HOME}/.claude/settings.json_GLM",
-          "model": "sonnet"
-        },
-        {
-          "name": "default",
-          "settings_file": "${HOME}/.claude/settings.json",
-          "model": "sonnet"
-        }
-      ],
-      "quota_preflight": true,
-      "quota_preflight_timeout": 15,
-      "quota_cooldown_seconds": 300,
       "semcode_mcp": {
         "command": "${LUMEN_SEMCODE_MCP:-${LUMEN_PROJECT_ROOT:-.}/Analysis-SKILL/tools/semcode/target/release/semcode-mcp}",
         "args": []
