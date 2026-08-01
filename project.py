@@ -81,6 +81,9 @@ INPUT_FILE_FIELDS = {
     "reproducer_path",
     "qemu_extra_cmdline",
     "qemu_recipe",
+    # Preserve bounded, human-authored maintenance constraints (for example
+    # a required userspace ABI sequence) in the Kernel Expert prompt.
+    "maintenance_notes",
 }
 
 

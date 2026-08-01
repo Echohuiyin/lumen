@@ -7,3 +7,4 @@ kernel_source: /path/to/linux
 rootfs: ./test_case/debian.img
 reproducer: ./test_case/repro.syz
 qemu_extra_cmdline: panic_on_warn=1
+maintenance_notes: Keep the reproducer in userspace C only; describe any required pressure or fault-injection sequence here.
