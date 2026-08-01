@@ -12,6 +12,7 @@ from agents.kernel_expert import _resolve_primary_log_path
 from agents.llm_display import set_session_dir
 from agents.tool_expert import _make_tool_result
 from agents.validator import _validate_input_by_rules, validator_node
+from project import parse_input_file
 
 
 def test_empty_input_blocks():
@@ -197,6 +198,37 @@ def test_parse_input_artifacts_degrades_for_non_linux_source_dir():
 
     assert contract.status == "degraded"
     assert any("does not look like a Linux source tree" in warning for warning in contract.warnings)
+
+
+def test_parse_input_file_preserves_e2e_artifact_fields():
+    """The main entry point must pass all declared E2E assets to the workflow."""
+    with tempfile.TemporaryDirectory() as tmp:
+        input_file = Path(tmp) / "input.txt"
+        input_file.write_text(
+            "\n".join([
+                "Bug Promote: WARNING in arm64_case",
+                "log: /tmp/console.log",
+                "report: /tmp/report.txt",
+                "reproducer: /tmp/repro.c",
+                "syz_repro: /tmp/repro.syz",
+                "kernel_config: /tmp/kernel.config",
+                "kernel_source: /tmp/linux",
+                "boot_kernel: /tmp/Image",
+                "vmlinux: /tmp/vmlinux",
+                "rootfs: /tmp/debian.img",
+                "expected_kernel_commit: deadbeef",
+            ])
+            + "\n",
+            encoding="utf-8",
+        )
+
+        fields = parse_input_file(str(input_file))
+
+    assert fields["reproducer"] == "/tmp/repro.c"
+    assert fields["rootfs"] == "/tmp/debian.img"
+    assert fields["report"] == "/tmp/report.txt"
+    assert fields["kernel_config"] == "/tmp/kernel.config"
+    assert fields["expected_kernel_commit"] == "deadbeef"
 
 
 if __name__ == "__main__":

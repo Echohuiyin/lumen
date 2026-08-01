@@ -99,6 +99,47 @@ def _blocked_attempt(*, code: str, summary: str, tryout: int, artifacts: dict[st
     )
 
 
+def _promote_guest_capability_block(result: TestResultContract) -> TestResultContract:
+    """Turn an explicit guest ABI/configuration failure into a terminal block.
+
+    A missing target subsystem is not a call-chain mismatch: retrying the same
+    image ten times cannot make ``mount(2)`` provide a disabled filesystem.
+    Keep the raw SSH artifact and stop the Kernel/Test loop with an auditable
+    reason instead of spending the retry budget on identical failures.
+    """
+    if result.status != "failed" or result.code != "FAILED_SIGNAL_NOT_FOUND":
+        return result
+
+    evidence: list[tuple[str, str, str]] = []
+    for key in ("ssh_output", "serial_log"):
+        raw_path = str(result.artifacts.get(key, "") or "")
+        if not raw_path:
+            continue
+        try:
+            text = Path(raw_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        evidence.append((key, raw_path, text))
+
+    # ``mount gadgetfs: No such device`` is the canonical signature when the
+    # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
+    # Restrict promotion to an explicit gadgetfs/USB ABI failure so an
+    # unrelated boot-time message cannot suppress legitimate try-outs.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        if "gadgetfs" in lowered and "no such device" in lowered:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_CAPABILITY_MISSING"
+            result.summary = (
+                "Guest rejected the gadgetfs userspace ABI (No such device); "
+                "the booted kernel lacks the required gadgetfs/UDC capability."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+    return result
+
+
 def _semantic_review(contract: KernelExpertOutput, result: TestResultContract) -> tuple[bool, str]:
     """Conservative Test Expert review; deterministic evidence remains primary."""
     if not result.call_chain_consistent:
@@ -170,6 +211,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                     _build_plan(contract), attempt=tryout, runtime_root=runtime_root,
                 )
                 result.artifacts.update(image_artifacts)
+                result = _promote_guest_capability_block(result)
                 result.call_chain_consistent = bool(result.test_passed)
                 result.principle_consistent, result.semantic_review_reason = _semantic_review(contract, result)
                 result.test_passed = bool(result.call_chain_consistent and result.principle_consistent)

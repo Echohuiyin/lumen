@@ -69,16 +69,26 @@ def resolve_project_path(path: str) -> Path:
 INPUT_FILE_FIELDS = {
     "Bug Promote",
     "vmcore",
+    "vmcore_path",
     "vmlinux",
+    "vmlinux_path",
     "log",
+    "log_path",
     "boot_kernel",
+    "boot_kernel_path",
     "kernel_source",
-    # Runtime artifacts and recipe constraints are part of the maintenance
-    # input contract and must reach the structured workflow state.
+    "kernel_source_path",
     "rootfs",
     "rootfs_path",
+    "report",
     "reproducer",
     "reproducer_path",
+    "syz_repro",
+    "kernel_config",
+    "target_arch",
+    "expected_kernel_commit",
+    # Runtime artifacts and recipe constraints are part of the maintenance
+    # input contract and must reach the structured workflow state.
     "qemu_extra_cmdline",
     "qemu_recipe",
     # Preserve bounded, human-authored maintenance constraints (for example
@@ -96,7 +106,12 @@ def parse_input_file(file_path: str) -> dict[str, str]:
         vmcore: <path>
         vmlinux: <path>
         log: <path>
+        report: <path>
+        reproducer: <userspace C reproducer path>
+        syz_repro: <syz repro path>
+        kernel_config: <.config path>
         boot_kernel: <path>
+        rootfs: <disk image path>
         kernel_source: <path>
 
     Lines starting with ``#`` are ignored.  Leading/trailing whitespace is
