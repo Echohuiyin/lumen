@@ -610,7 +610,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     ]
     required_groups.extend(alternative_groups)
 
-    positions: dict[str, int] = {
+    seen_positions: dict[str, int] = {
         frame: next(
             (index for index, line in enumerate(window) if frame_seen(line, frame)),
             -1,
@@ -619,7 +619,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         for frame in group
     }
     for group in required_groups:
-        found = [frame for frame in group if positions.get(frame, -1) >= 0]
+        found = [frame for frame in group if seen_positions.get(frame, -1) >= 0]
         if found:
             result["required_frames_found"].extend(found)
         else:
@@ -627,14 +627,65 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
                 group[0] if len(group) == 1 else " or ".join(group)
             )
 
+    # Diagnostic printk lines can name a frame before the actual stack.  They
+    # remain valid evidence for frame presence, but must not affect ordering.
+    # Use the first Call Trace block after the reproduction marker so printk
+    # positions cannot be mixed with stack positions.
+    trace_start = next(
+        (index for index, line in enumerate(window)
+         if re.search(r"\bCall Trace:", line, flags=re.IGNORECASE)),
+        -1,
+    )
+    if trace_start >= 0:
+        trace_end = len(window)
+        for index in range(trace_start + 1, len(window)):
+            if re.search(
+                r"\b(?:Allocated by task|Freed by task|The buggy address)",
+                window[index],
+                flags=re.IGNORECASE,
+            ):
+                trace_end = index
+                break
+        ordering_window = [
+            line for line in window[trace_start + 1:trace_end]
+            if not re.search(r"\]\s+\?", line)
+        ]
+    else:
+        # Conservative fallback for logs without a labelled Call Trace.
+        ordering_window = [
+            line for line in window
+            if "vcan0:" not in line.lower()
+            and not re.search(r"\]\s+\?", line)
+        ]
+
+    order_frames = {
+        frame
+        for group in required_groups
+        for frame in group
+    }
+    order_frames.update(
+        frame
+        for pair in oracle.required_frame_order
+        if len(pair) == 2
+        for frame in pair
+    )
+    order_positions: dict[str, int] = {
+        frame: next(
+            (index for index, line in enumerate(ordering_window)
+             if frame_seen(line, frame)),
+            -1,
+        )
+        for frame in order_frames
+    }
+
     def group_position(frame: str) -> int:
         """Return the position of a frame or its satisfied alternative."""
-        direct = positions.get(frame, -1)
+        direct = order_positions.get(frame, -1)
         if direct >= 0:
             return direct
         for group in alternative_groups:
             if frame in group:
-                hits = [positions.get(member, -1) for member in group]
+                hits = [order_positions.get(member, -1) for member in group]
                 hits = [position for position in hits if position >= 0]
                 if hits:
                     return min(hits)

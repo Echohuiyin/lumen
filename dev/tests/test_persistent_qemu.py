@@ -132,6 +132,31 @@ def test_call_chain_accepts_leaf_to_caller_stack_orientation(tmp_path):
     assert match["frame_order_direction"] == "reverse"
 
 
+def test_call_chain_order_uses_trace_not_printk_or_question_mark_frames(tmp_path):
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_frames = ["leaf", "mid", "caller"]
+    plan.call_chain_oracle.required_frame_order = [
+        ["leaf", "mid"],
+        ["mid", "can_receive"],
+        ["can_receive", "caller"],
+    ]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "vcan0: mid: diagnostic printk before the stack",
+        "BUG: target fault",
+        "[   1.0] Call Trace:",
+        "[   1.1]  leaf+0x1/0x2",
+        "[   1.2]  ? caller+0x1/0x2",
+        "[   1.3]  mid+0x1/0x2",
+        "[   1.4]  can_receive+0x1/0x2",
+        "[   1.5]  caller+0x1/0x2",
+        "[   1.6]  ret_from_fork+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
 def test_call_chain_accepts_one_member_of_an_alternative_group(tmp_path):
     plan = _plan(tmp_path)
     plan.call_chain_oracle.required_frames = [

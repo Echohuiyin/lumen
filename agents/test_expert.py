@@ -64,6 +64,33 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
     return {"base_image": str(image_source), "attempt_image": str(attempt.image), "runtime_root": str(runtime_root)}
 
 
+def _build_detection_signals(
+    kernel_contract: dict,
+    expected_signal: str,
+) -> DetectionSignals:
+    """Build serial detection signals for legacy callers and contracts.
+
+    Current Test Expert contracts carry fault signatures in the call-chain
+    oracle.  Older unit callers still pass a plain contract dictionary and
+    expected signal; retain a conservative, non-panic fallback for that API.
+    """
+    raw = kernel_contract.get("detection_signals") if kernel_contract else None
+    if isinstance(raw, dict):
+        try:
+            return DetectionSignals(**raw)
+        except Exception:
+            pass
+    if expected_signal.strip():
+        return DetectionSignals(serial_signals=[expected_signal])
+    return DetectionSignals(serial_signals=[
+        "BUG:",
+        "KASAN",
+        "WARNING:",
+        "hung_task",
+        "blocked for more than",
+    ])
+
+
 def _build_plan(contract: KernelExpertOutput) -> TestPlan:
     reproducer = contract.reproducer
     steps = [*contract.pressure_requirements, *contract.fault_injection_requirements]
@@ -107,7 +134,10 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     Keep the raw SSH artifact and stop the Kernel/Test loop with an auditable
     reason instead of spending the retry budget on identical failures.
     """
-    if result.status != "failed" or result.code != "FAILED_SIGNAL_NOT_FOUND":
+    if result.status != "failed" or result.code not in {
+        "FAILED_SIGNAL_NOT_FOUND",
+        "FAILED_CALL_CHAIN_MISMATCH",
+    }:
         return result
 
     evidence: list[tuple[str, str, str]] = []
@@ -125,6 +155,30 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
     # Restrict promotion to an explicit gadgetfs/USB ABI failure so an
     # unrelated boot-time message cannot suppress legitimate try-outs.
+    # Deep suspend needs a PSCI system-suspend implementation.  A QEMU
+    # virt guest can boot correctly yet expose only s2idle; in that case
+    # the userspace ABI returns EINVAL before ct_kernel_exit is reachable.
+    # This is a platform capability block, not a reproducer mismatch.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        deep_suspend_unavailable = (
+            "mem_sleep" in lowered
+            and ("invalid argument" in lowered or "could not select deep" in lowered)
+        ) or (
+            "/sys/power/state" in lowered
+            and "invalid argument" in lowered
+        )
+        if deep_suspend_unavailable:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_PLATFORM_UNSUPPORTED"
+            result.summary = (
+                "Guest exposes only s2idle/does not implement the PSCI deep "
+                "suspend ABI; ct_kernel_exit cannot be reached by this QEMU platform."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     for key, raw_path, text in evidence:
         lowered = text.lower()
         if "gadgetfs" in lowered and "no such device" in lowered:
