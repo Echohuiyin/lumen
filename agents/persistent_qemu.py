@@ -571,7 +571,18 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     lines = log_content.splitlines()
     start = next((index for index, line in enumerate(lines) if marker in line), -1)
     if start < 0:
-        result["missing_frames"] = list(oracle.required_frames)
+        alternatives = [
+            [str(frame).strip() for frame in group if str(frame).strip()]
+            for group in oracle.required_frame_alternatives
+        ]
+        alternative_members = {frame for group in alternatives for frame in group}
+        result["missing_frames"] = [
+            frame for frame in oracle.required_frames
+            if frame not in alternative_members
+        ] + [
+            group[0] if len(group) == 1 else " or ".join(group)
+            for group in alternatives
+        ]
         return result
     window = lines[start + 1:]
     def frame_seen(line: str, frame: str) -> bool:
@@ -581,19 +592,57 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         pattern = rf"(?<![A-Za-z0-9_]){re.escape(frame)}(?![A-Za-z0-9_])"
         return re.search(pattern, line, flags=re.IGNORECASE) is not None
 
-    lower_window = "\n".join(window).lower()
-    for frame in oracle.required_frames:
-        if any(frame_seen(line, frame) for line in window):
-            result["required_frames_found"].append(frame)
-        else:
-            result["missing_frames"].append(frame)
-    positions = {
-        frame: next((index for index, line in enumerate(window) if frame_seen(line, frame)), -1)
-        for frame in oracle.required_frames
+    # ``required_frames`` is retained for backward compatibility, while
+    # ``required_frame_alternatives`` describes mutually exclusive branches
+    # at one call-chain position (for example session_put OR
+    # session_destroy).  Remove alternative members from the singleton
+    # groups so a branch is not accidentally treated as two mandatory frames.
+    alternative_groups = [
+        [str(frame).strip() for frame in group if str(frame).strip()]
+        for group in oracle.required_frame_alternatives
+    ]
+    alternative_members = {
+        frame for group in alternative_groups for frame in group
     }
+    required_groups: list[list[str]] = [
+        [frame] for frame in oracle.required_frames
+        if frame not in alternative_members
+    ]
+    required_groups.extend(alternative_groups)
+
+    positions: dict[str, int] = {
+        frame: next(
+            (index for index, line in enumerate(window) if frame_seen(line, frame)),
+            -1,
+        )
+        for group in required_groups
+        for frame in group
+    }
+    for group in required_groups:
+        found = [frame for frame in group if positions.get(frame, -1) >= 0]
+        if found:
+            result["required_frames_found"].extend(found)
+        else:
+            result["missing_frames"].append(
+                group[0] if len(group) == 1 else " or ".join(group)
+            )
+
+    def group_position(frame: str) -> int:
+        """Return the position of a frame or its satisfied alternative."""
+        direct = positions.get(frame, -1)
+        if direct >= 0:
+            return direct
+        for group in alternative_groups:
+            if frame in group:
+                hits = [positions.get(member, -1) for member in group]
+                hits = [position for position in hits if position >= 0]
+                if hits:
+                    return min(hits)
+        return -1
+
     pairs = [pair for pair in oracle.required_frame_order if len(pair) == 2]
     forward = all(
-        positions.get(pair[0], -1) < positions.get(pair[1], -1)
+        group_position(pair[0]) < group_position(pair[1])
         for pair in pairs
     )
     # Kernel reports commonly print a stack from the faulting leaf toward
@@ -602,7 +651,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     # not two different reproductions.  Accept either complete orientation,
     # but never accept a partial or scrambled sequence.
     reverse = all(
-        positions.get(pair[1], -1) < positions.get(pair[0], -1)
+        group_position(pair[1]) < group_position(pair[0])
         for pair in pairs
     )
     result["frame_order_matched"] = not result["missing_frames"] and (forward or reverse)

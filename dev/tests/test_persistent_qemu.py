@@ -132,6 +132,30 @@ def test_call_chain_accepts_leaf_to_caller_stack_orientation(tmp_path):
     assert match["frame_order_direction"] == "reverse"
 
 
+def test_call_chain_accepts_one_member_of_an_alternative_group(tmp_path):
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_frames = [
+        "j1939_sock_pending_del", "j1939_session_put", "j1939_session_destroy",
+        "j1939_xtp_rx_abort_one",
+    ]
+    plan.call_chain_oracle.required_frame_alternatives = [[
+        "j1939_session_put", "j1939_session_destroy",
+    ]]
+    plan.call_chain_oracle.required_frame_order = [[
+        "j1939_xtp_rx_abort_one", "j1939_session_put",
+    ]]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+        "j1939_sock_pending_del",
+        "j1939_session_destroy",
+        "j1939_xtp_rx_abort_one",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
 if __name__ == "__main__":
     import tempfile
     for test in (

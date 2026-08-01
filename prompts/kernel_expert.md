@@ -56,6 +56,11 @@ The contract must describe how Test Expert can distinguish a true maintenance re
 
 - `fault_signatures`: specific original-log signatures;
 - `required_frames`: named frames that must occur;
+- `required_frame_alternatives`: mutually exclusive evidence-backed frames
+  for one position in the chain (for example
+  `["j1939_session_put", "j1939_session_destroy"]`); one member satisfies
+  the position and the members must not be treated as independent required
+  frames;
 - `required_frame_order`: required ordering of critical frames;
 - `target_subsystems` and `target_objects`;
 - `allowed_wrapper_frames`: optional architecture/exception wrappers.
@@ -88,6 +93,7 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`.
   "call_chain_oracle": {
     "fault_signatures": ["..."],
     "required_frames": ["..."],
+    "required_frame_alternatives": [],
     "required_frame_order": [["frame_a", "frame_b"]],
     "target_subsystems": ["..."],
     "target_objects": ["..."],
