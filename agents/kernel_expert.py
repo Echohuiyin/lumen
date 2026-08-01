@@ -419,6 +419,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"- vmlinux_path: {input_artifacts.get('vmlinux_path', 'N/A')}\n"
         f"- boot_kernel_path: {input_artifacts.get('boot_kernel_path', input_artifacts.get('vmlinux_path', 'N/A'))}\n\n"
         f"- rootfs_path: {input_artifacts.get('rootfs_path', 'N/A')}\n\n"
+        f"- qemu_extra_cmdline: {input_artifacts.get('qemu_extra_cmdline', 'N/A')}\n\n"
         f"- 原始日志路径（第一手证据，按需直接读取，禁止以专家摘要替代）: {original_log_path or 'N/A（vmcore 日志提取失败或未提供）'}\n\n"
         f"- 原始复现器路径（仅作 ABI/调用序列参考，必须重写为用户态 C）: {input_artifacts.get('reproducer_path', 'N/A')}\n\n"
         f"## 工具专家结果文件（按需直接读取；不要以路径外的摘要替代原文）\n"
@@ -1144,6 +1145,12 @@ def _enrich_kernel_contract_from_runtime(
         data["boot_kernel_path"] = str(input_artifacts.get("boot_kernel_path", "") or "")
     if not data.get("rootfs_path"):
         data["rootfs_path"] = str(input_artifacts.get("rootfs_path", "") or "")
+    qemu_extra_cmdline = str(input_artifacts.get("qemu_extra_cmdline", "") or "").strip()
+    if qemu_extra_cmdline:
+        recipe = dict(data.get("qemu_recipe") or {})
+        if not str(recipe.get("extra_cmdline") or "").strip():
+            recipe["extra_cmdline"] = qemu_extra_cmdline
+            data["qemu_recipe"] = recipe
 
     repro = dict(data.get("reproducer") or {})
     source_dir = str(repro.get("source_dir") or "")

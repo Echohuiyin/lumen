@@ -73,6 +73,14 @@ INPUT_FILE_FIELDS = {
     "log",
     "boot_kernel",
     "kernel_source",
+    # Runtime artifacts and recipe constraints are part of the maintenance
+    # input contract and must reach the structured workflow state.
+    "rootfs",
+    "rootfs_path",
+    "reproducer",
+    "reproducer_path",
+    "qemu_extra_cmdline",
+    "qemu_recipe",
 }
 
 
@@ -109,7 +117,8 @@ def parse_input_file(file_path: str) -> dict[str, str]:
             # Do not expand environment variables for this field.
             fields[key] = value if key == "kernel_source" else _resolve_env_vars(value)
 
-    # Return only recognised fields so unknown keys don't leak through.
+    # Return only recognised fields so unknown keys don't leak through.  The
+    # runtime fields above are intentionally retained for Test Expert.
     return {k: v for k, v in fields.items() if k in INPUT_FILE_FIELDS}
 
 

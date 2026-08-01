@@ -28,6 +28,22 @@ def _extract_labeled_path(text: str, labels: list[str]) -> tuple[str, str]:
     return "", ""
 
 
+def _extract_labeled_value(text: str, labels: list[str]) -> tuple[str, str]:
+    """Extract a non-path value from an explicit ``label: value`` line.
+
+    Runtime recipe values may contain several space-separated tokens, so they
+    must not go through the path parser (which intentionally stops at the
+    first whitespace).  Anchoring to the beginning of a line also avoids
+    accidentally treating prose or JSON fragments as declarations.
+    """
+    for label in labels:
+        pattern = rf"(?im)^\s*{re.escape(label)}\s*[：:]\s*(.+?)\s*$"
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1).strip().strip("`'\""), label
+    return "", ""
+
+
 def _extract_target_arch(text: str) -> tuple[str, str]:
     lowered = text.lower()
     patterns = [
@@ -158,6 +174,9 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     rootfs_path, rootfs_label = _extract_labeled_path(
         text, ["rootfs", "rootfs_path", "root filesystem", "disk image", "disk"]
     )
+    qemu_extra_cmdline, qemu_extra_label = _extract_labeled_value(
+        text, ["qemu_extra_cmdline", "qemu recipe extra cmdline", "extra_cmdline"]
+    )
     kernel_source_path, source_label = _extract_labeled_path(
         text,
         [
@@ -189,6 +208,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "vmlinux_path": (vmlinux_path, vmlinux_label),
         "boot_kernel_path": (boot_kernel_path, boot_label),
         "rootfs_path": (rootfs_path, rootfs_label),
+        "qemu_extra_cmdline": (qemu_extra_cmdline, qemu_extra_label),
         "kernel_source_path": (kernel_source_path, source_label),
         "log_path": (log_path, log_label),
         "reproducer_path": (reproducer_path, reproducer_label),
@@ -215,7 +235,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "reproducer_path": "file",
         }
         for field, (value, _) in fields.items():
-            if value:
+            if value and field in expected_kinds:
                 _validate_path_artifact(
                     field=field,
                     raw_path=value,
@@ -237,6 +257,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         vmlinux_path=vmlinux_path,
         boot_kernel_path=boot_kernel_path,
         rootfs_path=rootfs_path,
+        qemu_extra_cmdline=qemu_extra_cmdline,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
         log_path=log_path,
