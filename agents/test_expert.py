@@ -389,12 +389,19 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     # mismatch; a different controller or peer is required.
     for key, raw_path, text in evidence:
         lowered = text.lower()
-        sco_unavailable = re.search(
-            r"\bsco_connect_attempts\s*=\s*[1-9][0-9]*"
-            r".*?\bsuccesses\s*=\s*0\b"
-            r".*?\berrors\s*=\s*[1-9][0-9]*",
-            lowered,
-            flags=re.DOTALL,
+        sco_unavailable = (
+            re.search(
+                r"\bsco_connect_attempts\s*=\s*[1-9][0-9]*"
+                r".*?\bsuccesses\s*=\s*0\b"
+                r".*?\berrors\s*=\s*[1-9][0-9]*",
+                lowered,
+                flags=re.DOTALL,
+            )
+            or re.search(
+                r"\bsco\b[^\n]*(?:no route to host|network is unreachable|"
+                r"no such device|operation not supported|connection refused)",
+                lowered,
+            )
         )
         if sco_unavailable:
             result.status = "blocked"
