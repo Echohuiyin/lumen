@@ -355,6 +355,24 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
             return result
 
+    # OCFS2 move-extents diagnostics require a writable OCFS2 mount.  A plain
+    # ext4 QEMU rootfs cannot provide that filesystem ABI; retrying the same
+    # image cannot change the visible mount set, so stop before spending the
+    # remaining try-outs on an identical capability failure.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        if "no writable ocfs2 mount" in lowered:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_OCFS2_MOUNT_MISSING"
+            result.summary = (
+                "Guest has no writable OCFS2 mount for the move-extents ABI; "
+                "provide an OCFS2-formatted writable disk or mount fixture "
+                "before retrying this maintenance case."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     # ``mount gadgetfs: No such device`` is the canonical signature when the
     # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
     # Bluetooth SCO diagnostics can run normally while the guest has no HCI
