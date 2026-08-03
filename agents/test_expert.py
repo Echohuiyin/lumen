@@ -546,24 +546,30 @@ def _augment_kernel_feedback(result: TestResultContract) -> str:
     feedback = str(result.kernel_feedback or result.summary or "").strip()
     if result.test_passed:
         return feedback
-    serial_path = str((result.artifacts or {}).get("serial_log", "") or "").strip()
-    if not serial_path:
+    runtime_text: list[str] = []
+    for artifact_name in ("serial_log", "ssh_output"):
+        runtime_path = str((result.artifacts or {}).get(artifact_name, "") or "").strip()
+        if not runtime_path:
+            continue
+        try:
+            text = Path(runtime_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        marker_at = text.find("LUMEN_REPRO_START:")
+        if marker_at >= 0:
+            text = text[marker_at:]
+        runtime_text.append(text)
+    if not runtime_text:
         return feedback
-    try:
-        serial = Path(serial_path).read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return feedback
-    marker_at = serial.find("LUMEN_REPRO_START:")
-    if marker_at >= 0:
-        serial = serial[marker_at:]
     evidence_re = re.compile(
         r"(?:segfault|kasan|j1939|lumen_guest_component_missing|"
         r"cannot|failed|error|warning|bug:|no such|abort|connection exists|"
-        r"unknown parameter|invalid(?:\s+\S+){0,3}|resource busy)",
+        r"unknown parameter|invalid(?:\s+\S+){0,3}|resource busy|"
+        r"lumen_diagnostic_[a-z0-9_]+)",
         re.IGNORECASE,
     )
     evidence: list[str] = []
-    for line in serial.splitlines():
+    for line in "\n".join(runtime_text).splitlines():
         text = line.strip()
         if not text or not evidence_re.search(text):
             continue

@@ -46,9 +46,15 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
         "[  1.3] ocfs2: Invalid cluster_stack option\n",
         encoding="utf-8",
     )
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_DIAGNOSTIC_NO_OCFS2_MOUNT: no mounted OCFS2 filesystem was available\n",
+        encoding="utf-8",
+    )
     result = TestResultContract(
         status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
-        kernel_feedback="revise trigger", artifacts={"serial_log": str(serial)},
+        kernel_feedback="revise trigger",
+        artifacts={"serial_log": str(serial), "ssh_output": str(ssh_output)},
     )
 
     feedback = _augment_kernel_feedback(result)
@@ -58,6 +64,7 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     assert "j1939_xtp_rx_rts_session_active" in feedback
     assert "Unknown parameter 'local'" in feedback
     assert "Invalid cluster_stack option" in feedback
+    assert "LUMEN_DIAGNOSTIC_NO_OCFS2_MOUNT" in feedback
     assert "boot noise" not in feedback
 
 
