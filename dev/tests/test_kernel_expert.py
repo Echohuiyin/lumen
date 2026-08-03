@@ -58,6 +58,10 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert '"type":"run_pressure"' in prompt
     assert '"type":"fault_injection"' in prompt
     assert "These steps must remain structured JSON" in prompt
+    assert "Userspace correctness gate" in prompt
+    assert "guest-process SIGSEGV" in prompt
+    assert "userspace undefined behavior" in prompt
+    assert "never relabel a userspace crash as a kernel pass" in prompt
     assert "do not repeat them through interactive MCP" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
     assert '"source_files": ["diagnostic_test.c"]' in prompt
