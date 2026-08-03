@@ -230,3 +230,19 @@ def test_empty_settings_configuration_never_discovers_global(monkeypatch):
     assert backend._settings_candidates() == []
     with pytest.raises(RuntimeError, match="implicit global settings"):
         backend._model_profiles()
+
+def test_codex_does_not_inherit_default_provider_model(tmp_path):
+    backend = get_llm_with_config(
+        {
+            "backend": "codex",
+            "runtime_home": str(tmp_path / "runtime-home"),
+            "project_root": str(tmp_path),
+            "project_skills_dir": str(tmp_path / ".agents" / "skills"),
+            "semcode_mcp": {"command": "/bin/true", "args": []},
+        },
+        default_config={"backend": "anthropic", "model_name": "deepseek-v4-flash"},
+        agent_name="kernel_expert",
+    )
+
+    assert isinstance(backend, CodexBackend)
+    assert backend._model == ""

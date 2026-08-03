@@ -15,7 +15,10 @@ from agents.kernel_expert import (
     _enrich_kernel_contract_from_runtime,
     _kernel_contract_ready_for_test,
     _pin_semcode_mcp_to_source,
+    _materialize_primary_log,
+    _materialize_semcode_evidence,
     _read_primary_log_text,
+    _codex_case_text,
     _validate_kernel_contract_artifacts,
 )
 
@@ -44,8 +47,24 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     prompt = (PROJECT_ROOT / "prompts" / "kernel_expert.md").read_text(encoding="utf-8")
     assert "Linux kernel maintenance" in prompt
     assert "userspace C" in prompt
-    assert "kernel modules" in prompt
-    assert "Test Expert, not you" in prompt
+    assert "in-kernel extension" in prompt
+    assert "Test Expert owns" in prompt
+    assert '"source_files": ["repro.c"]' not in prompt
+    assert '"source_files": ["diagnostic_test.c"]' in prompt
+
+
+def test_codex_case_text_uses_maintenance_language():
+    text = _codex_case_text(
+        "Bug Promote: title; maintenance diagnosis only, not vulnerability research. "
+        "reproducer: /tmp/repro.c; fresh userspace C trigger; do not write a kernel module"
+    )
+    assert "Authorized maintenance regression case:" in text
+    assert "original ABI sample:" in text
+    assert "withheld by the benchmark" in text
+    assert "/tmp/repro.c" not in text
+    assert "new userspace C regression test" in text
+    assert "in-kernel extension" in text
+    assert "vulnerability research" not in text
 
 
 def test_structured_kernel_contract_round_trips_without_module_build():
@@ -114,6 +133,34 @@ def test_primary_log_reader_preserves_first_hand_source_frames(tmp_path):
     log.write_text("Call Trace: j1939_sock_pending_del+0x1a/0x40\n", encoding="utf-8")
     assert "j1939_sock_pending_del+0x1a" in _read_primary_log_text(str(log))
     assert _read_primary_log_text(str(tmp_path / "missing.log")) == ""
+
+
+def test_primary_log_is_materialized_inside_codex_workspace(tmp_path):
+    source = tmp_path / "source-crash.log"
+    source.write_text("Call Trace: exact_frame+0x1\n", encoding="utf-8")
+    output = tmp_path / "session"
+    output.mkdir()
+
+    copied = _materialize_primary_log(output, str(source))
+
+    assert copied == str((output / "original-crash.log").resolve())
+    assert Path(copied).read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
+
+
+def test_semcode_evidence_file_preserves_commit_and_blocked_state(tmp_path):
+    output = tmp_path / "session"
+    output.mkdir()
+    path = _materialize_semcode_evidence(
+        output,
+        source_path="/missing/linux",
+        expected_commit="deadbeef" * 5,
+        command="",
+        args=[],
+        evidence_text="RIP: target_frame+0x10/0x20",
+    )
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["status"] == "blocked"
+    assert data["expected_kernel_commit"] == "deadbeef" * 5
 
 
 def test_declared_qemu_cmdline_is_preserved_when_model_has_other_recipe(tmp_path):

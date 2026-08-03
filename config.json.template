@@ -24,6 +24,7 @@
       "cli_timeout": 14400,
       "model": "${LUMEN_CODEX_MODEL:-}",
       "reasoning_effort": "${LUMEN_CODEX_REASONING_EFFORT:-high}",
+      "service_tier": "${LUMEN_CODEX_SERVICE_TIER:-}",
       "sandbox_mode": "workspace-write",
       "approval_policy": "never",
       "runtime_home": "${LUMEN_CODEX_RUNTIME_HOME:-${LUMEN_PROJECT_ROOT:-.}/runtime/codex-home}",

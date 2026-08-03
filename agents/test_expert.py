@@ -8,6 +8,7 @@ maintenance reproduction.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import os
 import re
 import shutil
@@ -53,6 +54,25 @@ def _attempt_runtime_root(session_dir: str, tryout: int) -> Path:
     return root / "tryouts" / f"tryout-{tryout:02d}" / "qemu-ssh"
 
 
+_IMAGE_DIGEST_CACHE: dict[tuple[str, int, int], str] = {}
+
+
+def _sha256_file(path: Path) -> str:
+    """Hash an image once per size/mtime so ten try-outs stay bounded."""
+    stat = path.stat()
+    key = (str(path), int(stat.st_size), int(stat.st_mtime_ns))
+    cached = _IMAGE_DIGEST_CACHE.get(key)
+    if cached:
+        return cached
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    value = digest.hexdigest()
+    _IMAGE_DIGEST_CACHE[key] = value
+    return value
+
+
 def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -> dict[str, str]:
     """Copy the declared case image into an isolated try-out directory."""
     base = persistent_qemu_paths(arch)
@@ -67,15 +87,26 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
     if source_image:
         sibling_key = image_source.parent / base.ssh_key.name
         if not sibling_key.is_file():
-            raise FileNotFoundError(
-                f"declared rootfs has no co-located SSH key: {image_source}; "
-                f"expected {sibling_key}"
-            )
-        key_source = sibling_key
+            # Benchmark asset export may copy the deployment image without
+            # its key sidecar.  Reuse the deployment key only after proving
+            # the two raw images are byte-identical; never mix keys for a
+            # merely similar or independently built rootfs.
+            if not base.image.is_file() or _sha256_file(image_source) != _sha256_file(base.image):
+                raise FileNotFoundError(
+                    f"declared rootfs has no co-located SSH key and is not "
+                    f"byte-identical to configured base image: {image_source}; "
+                    f"expected {sibling_key}"
+                )
+            key_source = base.ssh_key
+            key_resolution = "deployment-default-byte-identical-image"
+        else:
+            key_source = sibling_key
+            key_resolution = "case-co-located"
     else:
         key_source = base.ssh_key
         if not key_source.is_file():
             raise FileNotFoundError(f"base SSH key is missing: {key_source}")
+        key_resolution = "deployment-base"
     attempt.image.parent.mkdir(parents=True, exist_ok=True)
     # Preserve sparse holes in the base image.  ``shutil.copy2`` expands the
     # 2-GiB sparse guest image to its logical size, which exhausts the host
@@ -97,6 +128,7 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
         "runtime_root": str(runtime_root),
         "ssh_key_source": str(key_source),
         "attempt_ssh_key": str(attempt.ssh_key),
+        "ssh_key_resolution": key_resolution,
     }
 
 

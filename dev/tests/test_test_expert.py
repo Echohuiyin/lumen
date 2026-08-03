@@ -106,6 +106,43 @@ def test_declared_rootfs_uses_co_located_ssh_key(tmp_path, monkeypatch):
     assert Path(artifacts["attempt_ssh_key"]).read_text(encoding="utf-8") == "case-specific-key\n"
 
 
+def test_byte_identical_declared_rootfs_reuses_deployment_key(tmp_path, monkeypatch):
+    custom_dir = tmp_path / "case-root"
+    custom_dir.mkdir()
+    image = custom_dir / "debian.img"
+    image.write_bytes(b"same-image-bytes")
+
+    base_dir = tmp_path / "base" / "x86_64"
+    base_dir.mkdir(parents=True)
+    base_image = base_dir / "debian.img"
+    base_image.write_bytes(b"same-image-bytes")
+    default_key = base_dir / "lumen_qemu_ed25519"
+    default_key.write_text("deployment-default-key\n", encoding="utf-8")
+    base = PersistentQemuPaths(
+        arch="x86_64", image=base_image, ssh_key=default_key,
+        runtime_dir=base_dir / "runtime",
+    )
+
+    def fake_paths(arch, *, runtime_root=None):
+        if runtime_root is None:
+            return base
+        attempt_dir = Path(runtime_root) / "x86_64"
+        return PersistentQemuPaths(
+            arch="x86_64", image=attempt_dir / "debian.img",
+            ssh_key=attempt_dir / "lumen_qemu_ed25519",
+            runtime_dir=attempt_dir / "runtime",
+        )
+
+    monkeypatch.setattr("agents.test_expert.persistent_qemu_paths", fake_paths)
+    artifacts = _copy_base_image(
+        arch="x86_64", runtime_root=tmp_path / "attempt", source_image=str(image),
+    )
+
+    assert Path(artifacts["ssh_key_source"]) == default_key.resolve()
+    assert artifacts["ssh_key_resolution"] == "deployment-default-byte-identical-image"
+    assert Path(artifacts["attempt_ssh_key"]).read_text(encoding="utf-8") == "deployment-default-key\n"
+
+
 def test_declared_rootfs_without_co_located_ssh_key_is_blocked(tmp_path, monkeypatch):
     custom_dir = tmp_path / "case-root"
     custom_dir.mkdir()

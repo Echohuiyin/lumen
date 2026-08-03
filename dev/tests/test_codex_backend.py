@@ -34,6 +34,7 @@ def _fixture(tmp_path: Path) -> tuple[CodexBackend, Path, Path, Path]:
         cli_command="codex",
         cli_timeout=30,
         reasoning_effort="high",
+        service_tier="priority",
         runtime_home=str(runtime_home),
         project_root=str(project),
         project_skills_dir=str(project / ".agents" / "skills"),
@@ -73,10 +74,19 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
     assert "--add-dir" not in cmd, "kernel source must remain read-only"
     assert "mcp_servers.semcode.required=true" in cmd
+    assert 'service_tier="priority"' in cmd
     assert captured["kwargs"]["env"]["HOME"] == str(runtime_home)
     assert captured["kwargs"]["env"]["CODEX_HOME"] == str(runtime_home / ".codex")
     assert "Use only repository skills" in captured["kwargs"]["input"]
     assert str(project) in next(item for item in cmd if item.startswith("mcp_servers.semcode.cwd="))
+    skills_link = workdir / ".agents"
+    assert skills_link.is_dir()
+    assert not skills_link.is_symlink()
+    assert (skills_link / "skills" / "kernel-analysis" / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == (project / ".agents" / "skills" / "kernel-analysis" / "SKILL.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_codex_jsonl_parser_uses_last_agent_message():

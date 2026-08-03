@@ -1424,6 +1424,7 @@ class CodexBackend:
         cli_timeout: int = 14400,
         model: str = "",
         reasoning_effort: str = "",
+        service_tier: str = "",
         sandbox_mode: str = "workspace-write",
         approval_policy: str = "never",
         runtime_home: str = "",
@@ -1438,6 +1439,7 @@ class CodexBackend:
         self._cli_timeout = int(cli_timeout)
         self._model = model
         self._reasoning_effort = reasoning_effort
+        self._service_tier = service_tier
         self._sandbox_mode = sandbox_mode
         self._approval_policy = approval_policy
         self._runtime_home = runtime_home
@@ -1493,6 +1495,36 @@ class CodexBackend:
                 f"Codex project_skills_dir must stay inside project_root: {skills_dir}"
             ) from exc
         return project_root, runtime_home, codex_home, skills_dir
+
+    @staticmethod
+    def _ensure_project_skills_link(workdir: Path, project_root: Path) -> None:
+        """Materialize project skills inside the Codex workdir.
+
+        Codex's ``workspace-write`` sandbox treats a symlink from the session
+        directory to the repository as an out-of-workspace boundary.  That
+        prevented both skill discovery and writes to a userspace diagnostic
+        source.  Copy only the repository ``.agents/skills`` tree into the
+        session instead; the target kernel checkout is still read-only and is
+        accessed exclusively through the required Semcode MCP server.
+        """
+        source = (project_root / ".agents").resolve()
+        if not source.is_dir():
+            raise RuntimeError(f"Codex project skills root is missing: {source}")
+        link = workdir / ".agents"
+        if link.is_symlink():
+            link.unlink()
+        if link.exists():
+            if not link.is_dir():
+                raise RuntimeError(f"Codex workdir .agents is not a directory: {link}")
+            if not (link / "skills").is_dir():
+                raise RuntimeError(f"Codex workdir .agents/skills is missing: {link}")
+            return
+        try:
+            shutil.copytree(source / "skills", link / "skills", symlinks=False)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Codex could not materialize project skills in workdir: {link}"
+            ) from exc
 
     def _resolve_mcp_command(self, project_root: Path) -> tuple[str, list[str]]:
         command_value = str(self._semcode_mcp.get("command") or "").strip()
@@ -1560,6 +1592,8 @@ class CodexBackend:
             cmd.extend(["--model", self._model])
         if self._reasoning_effort:
             cmd.extend(["-c", f"model_reasoning_effort={json.dumps(self._reasoning_effort)}"])
+        if self._service_tier:
+            cmd.extend(["-c", f"service_tier={json.dumps(self._service_tier)}"])
         cmd.extend([
             "--disable", "plugins",
             "--disable", "apps",
@@ -1592,6 +1626,7 @@ class CodexBackend:
                 "Codex workdir must stay inside project_root so repository skills are discoverable: "
                 f"{workdir_path}"
             ) from exc
+        self._ensure_project_skills_link(workdir_path, project_root)
 
         system_parts: list[str] = []
         user_parts: list[str] = []

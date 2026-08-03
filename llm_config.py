@@ -150,8 +150,9 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
         return CodexBackend(
             cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "codex"),
             cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 14400)),
-            model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", ""),
+            model=agent_config.get("model") or agent_config.get("model_name") or "",
             reasoning_effort=agent_config.get("reasoning_effort") or defaults.get("reasoning_effort", ""),
+            service_tier=agent_config.get("service_tier") or defaults.get("service_tier", ""),
             sandbox_mode=agent_config.get("sandbox_mode") or defaults.get("sandbox_mode", "workspace-write"),
             approval_policy=agent_config.get("approval_policy") or defaults.get("approval_policy", "never"),
             runtime_home=agent_config.get("runtime_home") or defaults.get("runtime_home", ""),

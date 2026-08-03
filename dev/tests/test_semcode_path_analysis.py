@@ -69,7 +69,12 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "linux"
     source.mkdir()
     (source / ".semcode.db").mkdir()
+    (source / "base.c").write_text("int base(void) { return 0; }\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "add", "base.c"],
+        check=True,
+    )
     subprocess.run(
         ["git", "-C", str(source), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
          "commit", "--allow-empty", "-qm", "fixture"],
@@ -157,7 +162,7 @@ def test_semcode_blocks_when_target_object_is_not_indexed(tmp_path):
     assert "not proven" in result["blocked_reason"]
 
 
-def test_kernel_source_is_pinned_to_target_head_without_copying_tree(tmp_path):
+def test_kernel_source_is_pinned_to_target_head_with_readable_tree(tmp_path):
     source, _ = _source_tree(tmp_path)
     target = subprocess.check_output(
         ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
@@ -180,6 +185,8 @@ def test_kernel_source_is_pinned_to_target_head_without_copying_tree(tmp_path):
     assert subprocess.check_output(
         ["git", "-C", pinned, "rev-parse", "HEAD"], text=True,
     ).strip() == target
+    assert (Path(pinned) / "base.c").is_file()
+    assert not (Path(pinned) / "later.c").is_file()
     assert (Path(pinned) / ".semcode.db").is_symlink()
 
 

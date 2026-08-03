@@ -87,9 +87,9 @@ def resolve_kernel_source_for_commit(
 
     A shared checkout may be at a newer HEAD while a benchmark row points at
     an older commit.  Semcode's git-aware calls are correct only when the
-    repository passed to the MCP server is itself pinned; a lightweight
-    ``--no-checkout`` worktree gives every session that invariant without
-    copying the kernel files or database.
+    repository passed to the MCP server is itself pinned. The pinned worktree
+    must be fully checked out because Kernel Expert reads the C source directly;
+    the Semcode database remains shared through a symlink.
     """
     source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
     target = str(expected_kernel_commit or "").strip().lower()
@@ -136,7 +136,7 @@ def resolve_kernel_source_for_commit(
     else:
         try:
             completed = subprocess.run(
-                ["git", "-C", source, "worktree", "add", "--detach", "--no-checkout",
+                ["git", "-C", source, "worktree", "add", "--detach",
                  str(worktree), target],
                 capture_output=True, text=True, timeout=120, check=False,
             )
