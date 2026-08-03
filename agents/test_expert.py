@@ -541,6 +541,43 @@ def _semantic_review(contract: KernelExpertOutput, result: TestResultContract) -
     return True, "observed post-start call chain satisfies the Kernel Expert oracle and root-cause context"
 
 
+def _augment_kernel_feedback(result: TestResultContract) -> str:
+    """Add bounded post-start runtime evidence to the next Kernel turn."""
+    feedback = str(result.kernel_feedback or result.summary or "").strip()
+    if result.test_passed:
+        return feedback
+    serial_path = str((result.artifacts or {}).get("serial_log", "") or "").strip()
+    if not serial_path:
+        return feedback
+    try:
+        serial = Path(serial_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return feedback
+    marker_at = serial.find("LUMEN_REPRO_START:")
+    if marker_at >= 0:
+        serial = serial[marker_at:]
+    evidence_re = re.compile(
+        r"(?:segfault|kasan|j1939|lumen_guest_component_missing|"
+        r"cannot|failed|error|warning|bug:|no such|abort|connection exists)",
+        re.IGNORECASE,
+    )
+    evidence: list[str] = []
+    for line in serial.splitlines():
+        text = line.strip()
+        if not text or not evidence_re.search(text):
+            continue
+        if text not in evidence:
+            evidence.append(text[:320])
+        if len(evidence) >= 8:
+            break
+    if not evidence:
+        return feedback
+    summary = "Runtime evidence: " + " | ".join(evidence)
+    if summary in feedback:
+        return feedback
+    return f"{feedback}\n{summary}".strip()
+
+
 def _format_attempt(result: TestResultContract) -> str:
     lines = [
         f"TEST STATUS: {result.status}",
@@ -625,6 +662,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                             result.code = "FAILED_CALL_CHAIN_MISMATCH_AFTER_10_TRYOUTS"
                         elif not result.kernel_feedback:
                             result.kernel_feedback = "Review missing/reordered frames and revise the userspace trigger or declared injection plan."
+                    result.kernel_feedback = _augment_kernel_feedback(result)
 
     text = _format_attempt(result)
     with open(output_file, "w", encoding="utf-8") as handle:

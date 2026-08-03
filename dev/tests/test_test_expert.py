@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.persistent_qemu import PersistentQemuPaths
-from agents.test_expert import _attempt_runtime_root, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
+from agents.test_expert import _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
 
 
 def _contract(root: Path) -> KernelExpertOutput:
@@ -33,6 +33,27 @@ def _contract(root: Path) -> KernelExpertOutput:
             output_binary="lumen-repro", run_args=["--once"],
         ),
     )
+
+
+def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
+    serial = tmp_path / "serial.log"
+    serial.write_text(
+        "boot noise\n"
+        "LUMEN_REPRO_START:case:path\n"
+        "[  1.0] lumen-diagnostic[1]: segfault in libc.so.6\n"
+        "[  1.1] vcan0: j1939_xtp_rx_rts_session_active: connection exists\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="revise trigger", artifacts={"serial_log": str(serial)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "segfault" in feedback
+    assert "j1939_xtp_rx_rts_session_active" in feedback
+    assert "boot noise" not in feedback
 
 
 def test_test_plan_compiles_userspace_source_inside_guest():
