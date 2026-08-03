@@ -703,6 +703,14 @@ def _tool_expert_node_impl(state: MaintenanceWorkflowState) -> dict:
 ⚠️ 注意: {file_status}，无法执行 crash 工具分析。
 请基于已有文本信息进行初步分析，并说明需要的补充信息。"""
 
+            supplied_report, report_path = _read_declared_text_artifact(
+                state, "crash_report_path"
+            )
+            if supplied_report:
+                user_content += (
+                    f"\n\nFIRST_HAND_CRASH_REPORT ({report_path}):\n"
+                    f"{supplied_report}\n"
+                )
             response = call_llm_with_display(
                 expert_name, "分析中", llm,
                 [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
