@@ -17,6 +17,7 @@ from agents.contracts import KernelExpertOutput
 from agents.kernel_expert import _apply_semcode_path_analysis
 from agents.semcode_path_analysis import (
     SemcodeFunction,
+    resolve_kernel_commit,
     resolve_kernel_source_for_commit,
     verify_semcode_target,
     analyze_uaf_paths,
@@ -119,6 +120,22 @@ def test_semcode_event_graph_calculates_deltas_and_declares_boundaries(tmp_path)
 
 
 
+def test_semcode_resolves_unique_abbreviated_commit_to_full_sha(tmp_path):
+    source, executable = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    abbreviated = target[:39]
+    result = verify_semcode_target(
+        kernel_source_path=str(source), expected_kernel_commit=abbreviated,
+        semcode_command=str(executable), client=_FixedSemcodeClient(target),
+    )
+    assert result["status"] == "ok"
+    assert result["resolved_commit"] == target
+    assert result["evidence"][0]["expected_commit"] == target
+    assert result["evidence"][0]["declared_commit"] == abbreviated
+
+
 def test_semcode_scope_uses_declared_target_commit(tmp_path):
     source, executable = _source_tree(tmp_path)
     target = subprocess.check_output(
@@ -131,6 +148,17 @@ def test_semcode_scope_uses_declared_target_commit(tmp_path):
     )
     assert result.status == "ok"
     assert result.scope.kernel_commit == target
+
+
+def test_kernel_commit_rejects_unresolvable_prefix(tmp_path):
+    source, _ = _source_tree(tmp_path)
+    result = verify_semcode_target(
+        kernel_source_path=str(source), expected_kernel_commit="deadbee",
+        semcode_command="/bin/true",
+        client=object(),
+    )
+    assert result["status"] == "blocked"
+    assert "cannot uniquely resolve" in result["blocked_reason"]
 
 
 def test_semcode_requires_explicit_entry_point_and_never_falls_back(tmp_path):

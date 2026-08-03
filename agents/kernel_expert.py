@@ -112,6 +112,7 @@ from agents.semcode_path_analysis import (
     analyze_uaf_paths,
     extract_semcode_entry_points,
     render_semcode_analysis_context,
+    resolve_kernel_commit,
     resolve_kernel_source_for_commit,
     verify_semcode_target,
 )
@@ -783,6 +784,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             workspace_root=str(session_dir or ""),
         )
         input_artifacts["kernel_source_path"] = kernel_source_path
+        # Normalize an abbreviated input prefix to the exact full commit before
+        # it reaches Semcode, Codex evidence, or the durable contract.
+        expected_kernel_commit = resolve_kernel_commit(
+            semcode_source_path, expected_kernel_commit,
+        )
     except Exception as exc:
         return _blocked_source_verification({
             "status": "blocked",

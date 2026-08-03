@@ -77,6 +77,48 @@ class SemcodePathAnalysisError(RuntimeError):
     """A semcode dependency/protocol failure that must block P2 analysis."""
 
 
+def resolve_kernel_commit(
+    kernel_source_path: str,
+    expected_kernel_commit: str,
+) -> str:
+    """Resolve a declared full or abbreviated commit to its unique full SHA.
+
+    Input rows may carry a 7-40 character Git object-id prefix. Git rev-parse
+    verify proves that the prefix resolves to exactly one commit in the
+    declared repository. The full 40-character object id is returned so later
+    Semcode queries and durable contracts use the same immutable snapshot;
+    absent or ambiguous prefixes stay blocked and never fall back to HEAD.
+    """
+    source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
+    declared = str(expected_kernel_commit or "").strip().lower()
+    if not source or not Path(source).is_dir():
+        raise SemcodePathAnalysisError(f"kernel_source does not exist: {source}")
+    if not re.fullmatch(r"[0-9a-f]{7,40}", declared):
+        raise SemcodePathAnalysisError(
+            "expected_kernel_commit must be a 7-40 character hexadecimal "
+            f"git object id: {expected_kernel_commit}"
+        )
+    try:
+        completed = subprocess.run(
+            ["git", "-C", source, "rev-parse", "--verify", f"{declared}^{{commit}}"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SemcodePathAnalysisError(f"cannot resolve kernel commit: {exc}") from exc
+    resolved = completed.stdout.strip().lower()
+    if (
+        completed.returncode != 0
+        or not re.fullmatch(r"[0-9a-f]{40}", resolved)
+        or not resolved.startswith(declared)
+    ):
+        detail = (completed.stderr or completed.stdout).strip()[-300:]
+        raise SemcodePathAnalysisError(
+            f"kernel source cannot uniquely resolve expected commit {declared}: "
+            f"{detail or 'git returned no commit'}"
+        )
+    return resolved
+
+
 def resolve_kernel_source_for_commit(
     kernel_source_path: str,
     expected_kernel_commit: str,
@@ -92,24 +134,9 @@ def resolve_kernel_source_for_commit(
     the Semcode database remains shared through a symlink.
     """
     source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
-    target = str(expected_kernel_commit or "").strip().lower()
     if not source or not Path(source).is_dir():
         raise SemcodePathAnalysisError(f"kernel_source does not exist: {source}")
-    if not re.fullmatch(r"[0-9a-f]{40}", target):
-        raise SemcodePathAnalysisError(
-            f"expected_kernel_commit is not a full 40-character SHA: {expected_kernel_commit}"
-        )
-    try:
-        resolved = subprocess.run(
-            ["git", "-C", source, "rev-parse", "--verify", f"{target}^{{commit}}"],
-            capture_output=True, text=True, timeout=20, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SemcodePathAnalysisError(f"cannot resolve kernel commit: {exc}") from exc
-    if resolved.returncode != 0 or resolved.stdout.strip().lower() != target:
-        raise SemcodePathAnalysisError(
-            f"kernel source does not contain expected commit {target}"
-        )
+    target = resolve_kernel_commit(source, expected_kernel_commit)
     try:
         head = _git_head(source)
     except SemcodePathAnalysisError:
@@ -429,35 +456,18 @@ def verify_semcode_target(
     returns evidence for the durable contract; callers must block on failure.
     """
     source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
-    target = str(expected_kernel_commit or "").strip().lower()
+    declared_target = str(expected_kernel_commit or "").strip().lower()
     if not source or not Path(source).is_dir():
         return {"status": "blocked", "blocked_reason": f"kernel_source does not exist: {source}"}
-    if not target:
+    if not declared_target:
         return {
             "status": "blocked",
             "blocked_reason": "expected_kernel_commit is required for source verification",
         }
-    if not re.fullmatch(r"[0-9a-f]{40}", target):
-        return {
-            "status": "blocked",
-            "blocked_reason": f"expected_kernel_commit is not a full 40-character SHA: {expected_kernel_commit}",
-        }
     try:
-        completed = subprocess.run(
-            ["git", "-C", source, "rev-parse", "--verify", f"{target}^{{commit}}"],
-            capture_output=True, text=True, timeout=20, check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return {"status": "blocked", "blocked_reason": f"cannot verify kernel commit: {exc}"}
-    resolved = completed.stdout.strip().lower()
-    if completed.returncode != 0 or resolved != target:
-        return {
-            "status": "blocked",
-            "blocked_reason": (
-                f"kernel source does not contain expected commit {target}; "
-                f"git resolved {resolved or '<none>'}"
-            ),
-        }
+        target = resolve_kernel_commit(source, declared_target)
+    except SemcodePathAnalysisError as exc:
+        return {"status": "blocked", "blocked_reason": str(exc)}
 
     semcode = client or SemcodeMcpClient(
         command=semcode_command,
@@ -504,10 +514,12 @@ def verify_semcode_target(
         }
     return {
         "status": "ok",
+        "resolved_commit": target,
         "evidence": [{
             "kind": "semcode_source_verification",
             "kernel_source": source,
             "expected_commit": target,
+            "declared_commit": declared_target,
             "git_object_verified": True,
             "indexed_branch": indexed_branch,
             "indexed_tip_prefix": indexed_tip,
@@ -581,12 +593,14 @@ def analyze_uaf_paths(
                 verification["blocked_reason"],
                 evidence=verification.get("evidence", []),
             )
-        kernel_commit = expected_kernel_commit
+        kernel_commit = str(
+            verification.get("resolved_commit") or expected_kernel_commit
+        ).strip().lower()
         semcode = client or SemcodeMcpClient(
             command=semcode_command,
             args=semcode_args,
             kernel_source_path=normalized_semcode_source,
-            git_sha=expected_kernel_commit,
+            git_sha=kernel_commit,
         )
         batch_finder = getattr(semcode, "find_functions", None)
         if callable(batch_finder):
