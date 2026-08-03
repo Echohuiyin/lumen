@@ -240,6 +240,20 @@ def test_missing_guest_compiler_is_terminal():
     assert "gcc" in blocked.summary
 
 
+def test_missing_target_usb_device_is_terminal():
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "ssh-command.log"
+        output.write_text("diagnostic: target USB device not observed\n", encoding="utf-8")
+        failed = TestResultContract(
+            status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+            artifacts={"ssh_output": str(output)},
+        )
+        blocked = _promote_guest_capability_block(failed)
+    assert blocked.status == "blocked"
+    assert blocked.code == "BLOCKED_GUEST_USB_DEVICE_MISSING"
+    assert "USB" in blocked.summary
+
+
 def test_missing_guest_kvm_is_terminal():
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "ssh-command.log"

@@ -331,6 +331,24 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
         )
         result.kernel_feedback = result.summary
         result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+    # A userspace USB diagnostic can run successfully yet report that the
+    # required target device was never enumerated. This is a QEMU hardware/
+    # emulation capability block, not a call-chain mismatch; retrying the same
+    # machine cannot create the missing Technisat interface.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        if "target usb device not observed" in lowered or "target usb device not found" in lowered:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_USB_DEVICE_MISSING"
+            result.summary = (
+                "The guest did not enumerate the required target USB device; "
+                "provide a matching QEMU USB emulation or pass-through device "
+                "before retrying this maintenance case."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     # ``mount gadgetfs: No such device`` is the canonical signature when the
     # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
     # Restrict promotion to an explicit gadgetfs/USB ABI failure so an
