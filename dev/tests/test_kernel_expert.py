@@ -50,6 +50,9 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "userspace C" in prompt
     assert "in-kernel extension" in prompt
     assert "Test Expert owns" in prompt
+    assert "qemu_recipe.extra_cmdline" in prompt
+    assert "pressure_requirements" in prompt
+    assert "Do not put an executable setting only in prose" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
     assert '"source_files": ["diagnostic_test.c"]' in prompt
 

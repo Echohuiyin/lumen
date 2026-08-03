@@ -46,6 +46,8 @@ Generic diagnostic banners or a subsystem name alone are insufficient. Do not pu
 
 When Test Expert returns a mismatch, read its contract and raw guest/serial artifacts. Change the userspace C program or its structured runtime settings only for an evidence-backed reason, record that reason in `change_from_previous_tryout`, and never repeat an identical source-and-plan pair. A missing QEMU component, missing ABI, missing source evidence, or contract violation is a terminal `blocked` result, not a speculative retry.
 
+Runtime settings are executable only when they are encoded in the structured `qemu_recipe` (especially `qemu_recipe.extra_cmdline`); `pressure_requirements` and `fault_injection_requirements` are explanatory requirements and are not executed by Test Expert. If the raw guest serial shows that an early setting such as `panic_on_warn=1` prevents the original log's later target frames, put the evidence-backed replacement (for example `panic_on_warn=0`) explicitly in `qemu_recipe.extra_cmdline` and explain the change. Do not put an executable setting only in prose.
+
 ## Contract format
 
 Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
@@ -65,6 +67,9 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
     "target_subsystems": ["subsystem"],
     "target_objects": ["object"],
     "allowed_wrapper_frames": []
+  },
+  "qemu_recipe": {
+    "extra_cmdline": ""
   },
   "reproducer": {
     "language": "c",
