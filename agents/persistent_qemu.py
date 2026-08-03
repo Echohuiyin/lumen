@@ -114,6 +114,27 @@ _PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
 _FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request"}
 _DEFAULT_BOOT_TIMEOUT_SEC = 900
 _MAX_CONCURRENT_INSTANCES = 16
+_TERMINAL_BOOT_MARKERS = (
+    "Kernel panic - not syncing:",
+    "Attempted to kill init!",
+    "Unable to mount root fs",
+    "VFS: Cannot open root device",
+    "No working init found",
+)
+
+
+def _terminal_boot_failure(serial_log: Path) -> str:
+    """Return a terminal boot marker, if the guest can no longer accept SSH."""
+    try:
+        content = serial_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    # Keep the check bounded: boot logs can grow during long-running guests.
+    tail = content[-256 * 1024:]
+    for marker in _TERMINAL_BOOT_MARKERS:
+        if marker in tail:
+            return marker
+    return ""
 
 
 @dataclass(frozen=True)
@@ -511,6 +532,25 @@ class PersistentQemuManager:
                 return ToolStepResult(
                     name="ensure_persistent_qemu", status="failed", message="QEMU exited before SSH became ready.",
                     artifacts={"serial_log": str(self.paths.serial_log), "qemu_log": str(self.paths.qemu_log)},
+                ), state
+            terminal_marker = _terminal_boot_failure(self.paths.serial_log)
+            if terminal_marker:
+                stopped = self.shutdown()
+                artifacts = {
+                    "serial_log": str(self.paths.serial_log),
+                    "qemu_log": str(self.paths.qemu_log),
+                }
+                if stopped.status != "ok":
+                    artifacts["shutdown_error"] = stopped.message
+                return ToolStepResult(
+                    name="ensure_persistent_qemu",
+                    status="blocked",
+                    message=(
+                        "QEMU reached a terminal boot failure before SSH became ready: "
+                        f"{terminal_marker}"
+                    ),
+                    artifacts=artifacts,
+                    error=terminal_marker,
                 ), state
             if self._ssh_ready(ssh_port):
                 return ToolStepResult(

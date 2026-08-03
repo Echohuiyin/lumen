@@ -15,6 +15,7 @@ from agents.contracts import CallChainOracle, DetectionSignals, ExecutionStep, Q
 from agents.persistent_qemu import (
     PersistentQemuManager,
     _check_call_chain_match,
+    _terminal_boot_failure,
     _render_execution_script,
     build_qemu_command,
     persistent_qemu_paths,
@@ -182,6 +183,12 @@ def test_missing_guest_artifacts_are_blocked_without_reuse(tmp_path):
     result = run_persistent_qemu_test_plan(_plan(tmp_path), attempt=1, runtime_root=tmp_path / "guests")
     assert result.status == "blocked"
     assert result.code == "BLOCKED_PERSISTENT_QEMU"
+
+
+def test_terminal_boot_panic_is_detected_before_ssh_timeout(tmp_path):
+    serial = tmp_path / "serial.log"
+    serial.write_text("boot\nKernel panic - not syncing: Attempted to kill init!\n", encoding="utf-8")
+    assert _terminal_boot_failure(serial) == "Kernel panic - not syncing:"
 
 
 def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
