@@ -1543,6 +1543,10 @@ class CodexBackend:
         args = [os.path.expandvars(os.path.expanduser(str(item))) for item in self._semcode_mcp.get("args", [])]
         return command, args
 
+    def _interactive_mcp_disabled(self) -> bool:
+        """Return whether deterministic evidence is intentionally authoritative."""
+        return bool(self._semcode_mcp.get("disabled"))
+
     @staticmethod
     def _parse_jsonl(stdout: str) -> str:
         final_text = ""
@@ -1572,7 +1576,9 @@ class CodexBackend:
         command = shlex.split(self._cli_command)
         if not command:
             raise RuntimeError("Codex CLI command is empty")
-        mcp_command, mcp_args = self._resolve_mcp_command(project_root)
+        mcp_disabled = self._interactive_mcp_disabled()
+        if not mcp_disabled:
+            mcp_command, mcp_args = self._resolve_mcp_command(project_root)
         cmd = command + [
             "--ask-for-approval", self._approval_policy,
             "exec",
@@ -1594,16 +1600,15 @@ class CodexBackend:
             cmd.extend(["-c", f"model_reasoning_effort={json.dumps(self._reasoning_effort)}"])
         if self._service_tier:
             cmd.extend(["-c", f"service_tier={json.dumps(self._service_tier)}"])
-        cmd.extend([
-            "--disable", "plugins",
-            "--disable", "apps",
-            "--disable", "multi_agent",
-            "-c", f"mcp_servers.semcode.command={json.dumps(mcp_command)}",
-            "-c", f"mcp_servers.semcode.args={json.dumps(mcp_args)}",
-            "-c", f"mcp_servers.semcode.cwd={json.dumps(str(project_root))}",
-            "-c", "mcp_servers.semcode.required=true",
-            "-",
-        ])
+        cmd.extend(["--disable", "plugins", "--disable", "apps", "--disable", "multi_agent"])
+        if not mcp_disabled:
+            cmd.extend([
+                "-c", f"mcp_servers.semcode.command={json.dumps(mcp_command)}",
+                "-c", f"mcp_servers.semcode.args={json.dumps(mcp_args)}",
+                "-c", f"mcp_servers.semcode.cwd={json.dumps(str(project_root))}",
+                "-c", "mcp_servers.semcode.required=true",
+            ])
+        cmd.append("-")
         return cmd
 
     def invoke(

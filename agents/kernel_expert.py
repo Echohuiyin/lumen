@@ -667,7 +667,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     if source_verification.get("status") != "ok":
         return _blocked_source_verification(source_verification)
 
-    llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="kernel_expert")
     system_prompt = load_prompt_from_file(
         agent_config.get("prompt_file", "prompts/kernel_expert.md")
     )
@@ -731,6 +730,31 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         # absolute durable-session paths are intentionally not readable from
         # the isolated workdir.
         evidence_files.append(("semcode-evidence.json", semcode_evidence_path))
+    semcode_evidence_complete = False
+    if semcode_evidence_path:
+        try:
+            semcode_payload = json.loads(
+                Path(semcode_evidence_path).read_text(encoding="utf-8")
+            )
+            semcode_evidence_complete = bool(
+                semcode_payload.get("status") == "ok"
+                and semcode_payload.get("entries")
+                and not semcode_payload.get("failures")
+            )
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            semcode_evidence_complete = False
+    llm_agent_config = dict(agent_config)
+    if semcode_evidence_complete:
+        # The deterministic adapter already queried the exact commit.  Do
+        # not start Codex's interactive MCP client for the same complete
+        # evidence: on ARM64 Codex 0.146 it can hang after the result arrives.
+        # A blocked/partial adapter result keeps the required MCP path intact.
+        llm_agent_config["semcode_mcp"] = {"disabled": True}
+    llm = get_llm_with_config(
+        llm_agent_config,
+        default_config=default_config,
+        agent_name="kernel_expert",
+    )
     path_analysis_required = _requires_path_analysis(
         state.get("user_input", ""),
         "\n".join(str(item.get("analysis_output", "")) for item in expert_results),

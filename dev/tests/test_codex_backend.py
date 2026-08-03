@@ -89,6 +89,16 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     )
 
 
+def test_codex_backend_can_use_complete_deterministic_evidence_without_mcp(tmp_path):
+    backend, project, workdir, _runtime_home = _fixture(tmp_path)
+    backend._semcode_mcp = {"disabled": True}
+
+    command = backend._build_command(workdir=workdir, project_root=project)
+
+    assert command[-1] == "-"
+    assert not any(item.startswith("mcp_servers.semcode.") for item in command)
+
+
 def test_codex_jsonl_parser_uses_last_agent_message():
     stream = "\n".join(
         [
