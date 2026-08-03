@@ -337,7 +337,13 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     # machine cannot create the missing Technisat interface.
     for key, raw_path, text in evidence:
         lowered = text.lower()
-        if "target usb device not observed" in lowered or "target usb device not found" in lowered:
+        target_device_missing = (
+            "target usb device not observed" in lowered
+            or "target usb device not found" in lowered
+            or ("/dev/dvb/" in lowered and "no such file" in lowered)
+            or ("/dev/bus/usb/" in lowered and "no such file" in lowered)
+        )
+        if target_device_missing:
             result.status = "blocked"
             result.code = "BLOCKED_GUEST_USB_DEVICE_MISSING"
             result.summary = (
