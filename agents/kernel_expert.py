@@ -75,7 +75,7 @@ def _stage_codex_evidence(
                 in_trace = False
                 markers = (
                     "Unable to handle", "KASAN:", "Internal error:",
-                    "pc :", "lr :", "Call trace:",
+                    "WARNING:", "pc :", "lr :", "Call trace:",
                 )
                 for line in lines:
                     if "Call trace:" in line:

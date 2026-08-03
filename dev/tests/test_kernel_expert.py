@@ -119,6 +119,7 @@ def test_codex_evidence_extract_keeps_call_chain_and_drops_operational_noise(tmp
     case = tmp_path / "case"
     case.mkdir()
     (case / "report.txt").write_text(
+        "WARNING: drivers/mtd/mtdcore.c:719 at add_mtd_device+0x56c/0x14cc\n"
         "Unable to handle kernel paging request\n"
         "CPU: 0 Comm: syz.0.1\n"
         "Call trace:\n"
@@ -137,6 +138,7 @@ def test_codex_evidence_extract_keeps_call_chain_and_drops_operational_noise(tmp
         [("original.log", str(log)), ("tool_expert_1.txt", str(tool))],
     )
     staged = (tmp_path / "workdir" / "evidence" / "original.log").read_text()
+    assert "WARNING: drivers/mtd/mtdcore.c:719" in staged
     assert "target_entry" in staged and "target_release" in staged
     assert "syz" not in staged.lower()
     assert "ioctl" not in (tmp_path / "workdir" / "evidence" / "tool_expert_1.txt").read_text().lower()
