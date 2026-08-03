@@ -60,6 +60,24 @@ def test_call_chain_accepts_fault_leaf_from_rip_before_trace(tmp_path):
     assert match["frame_order_matched"] is True
 
 
+
+def test_call_chain_ignores_duplicate_rip_after_end_trace(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["diFree+0x13d/0x2dc0", "jfs_evict_inode+0x2c3/0x360"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] RIP: 0010:diFree+0x143/0x2d70",
+        "[   1.1] Call Trace:",
+        "[   1.2]  jfs_evict_inode+0x2c3/0x360",
+        "[   1.3] ---[ end trace abc ]---",
+        "[   1.4] RIP: 0010:diFree+0x143/0x2d70",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
 def test_call_chain_uses_trace_leaf_when_rip_repeats_it(tmp_path):
     """A duplicate RIP leaf must not reverse caller-to-leaf ordering."""
     plan = _plan(tmp_path)

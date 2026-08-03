@@ -873,6 +873,13 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
                 ):
                     trace_end = index
                     break
+                # Oops reports often repeat the RIP/register block immediately
+                # after the closing marker.  Keep that duplicate out of the
+                # preceding trace so it cannot move the fault leaf after its
+                # callers and create a false order mismatch.
+                if re.search(r"end\s+trace", window[index], flags=re.IGNORECASE):
+                    trace_end = index
+                    break
                 if re.search(r"\bCall Trace:", window[index], flags=re.IGNORECASE):
                     trace_end = index
                     break
