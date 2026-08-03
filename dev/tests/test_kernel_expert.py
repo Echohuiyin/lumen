@@ -135,6 +135,25 @@ def test_codex_evidence_extract_keeps_call_chain_and_drops_operational_noise(tmp
     assert "ioctl" not in (tmp_path / "workdir" / "evidence" / "tool_expert_1.txt").read_text().lower()
 
 
+def test_codex_evidence_preserves_semcode_json(tmp_path):
+    source = tmp_path / "semcode-evidence.json"
+    payload = {
+        "status": "ok",
+        "expected_kernel_commit": "a" * 40,
+        "entries": [{"function": "add_mtd_device", "result": "exact source"}],
+        "note": "do not use source-text fallback",
+    }
+    source.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    _stage_codex_evidence(
+        tmp_path / "workdir",
+        [("semcode-evidence.json", str(source))],
+    )
+
+    staged = tmp_path / "workdir" / "evidence" / "semcode-evidence.json"
+    assert json.loads(staged.read_text(encoding="utf-8")) == payload
+
+
 def test_contract_rejects_module_metadata_in_c_source_set():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))

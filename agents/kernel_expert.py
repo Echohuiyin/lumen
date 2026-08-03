@@ -87,6 +87,12 @@ def _stage_codex_evidence(
                     if in_trace and "end trace" in line:
                         break
                 raw = "\n".join(selected) + "\n"
+            elif name == "semcode-evidence.json":
+                # This is deterministic, exact-commit evidence. Preserve it
+                # byte-for-byte; applying the generic risk-line filter would
+                # silently remove JSON fields that the Kernel Expert needs.
+                destination.write_text(raw, encoding="utf-8")
+                continue
             else:
                 raw = "\n".join(
                     line for line in raw.splitlines()
@@ -720,6 +726,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         args=list(semcode_config.get("args", []) or []),
         evidence_text=semcode_evidence_text,
     )
+    if semcode_evidence_path:
+        # Stage deterministic adapter output inside the Codex sandbox;
+        # absolute durable-session paths are intentionally not readable from
+        # the isolated workdir.
+        evidence_files.append(("semcode-evidence.json", semcode_evidence_path))
     path_analysis_required = _requires_path_analysis(
         state.get("user_input", ""),
         "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
@@ -762,7 +773,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"- expected_kernel_commit: {expected_kernel_commit or 'N/A'}\n"
         f"- Semcode source verification: {json.dumps(source_verification, ensure_ascii=False)}\n"
         f"- Semcode 查询约束：每次查询必须显式传入 git_sha={expected_kernel_commit or '<missing>'}；缺少目标提交的索引时必须 blocked，禁止查询默认 HEAD 或改用 grep/源码 fallback。\n\n"
-        f"- session-local exact Semcode evidence (read this before interactive MCP): {semcode_evidence_path or 'N/A'}\n\n"
+        f"- Codex-visible exact Semcode evidence (read this before interactive MCP): {'evidence/semcode-evidence.json' if semcode_evidence_path else 'N/A'}\n\n"
         f"- rootfs_path: {input_artifacts.get('rootfs_path', 'N/A')}\n\n"
         "- guest runtime settings: Test Expert owns QEMU settings; use only "
         "the structured case contract when settings are declared\n\n"
@@ -788,6 +799,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         "## Evidence directory\n"
         "Inspect every file under evidence/ before concluding; record unknowns instead of guessing."
     )
+    if semcode_evidence_path:
+        user_content += (
+            "\n\nRead evidence/semcode-evidence.json before interactive MCP. "
+            "It contains deterministic exact-commit Semcode results; do not replace it with source-text or grep fallback."
+        )
     if semcode_path_analysis is not None:
         user_content += "\n\n" + render_semcode_analysis_context(semcode_path_analysis)
 
