@@ -73,18 +73,34 @@ def _stage_codex_evidence(
                 lines = raw.splitlines()
                 selected: list[str] = []
                 in_trace = False
-                markers = (
-                    "Unable to handle", "KASAN:", "Internal error:",
-                    "WARNING:", "pc :", "lr :", "Call trace:",
+                # Kernel reports use both title-case and upper-case spellings
+                # across architectures and kernel generations.  Matching only
+                # the lower-case "Call trace:" spelling silently reduced many
+                # complete crash reports to a blank evidence file, so the
+                # Kernel Expert could not distinguish a real source/log issue
+                # from an evidence-staging bug.
+                marker_pattern = re.compile(
+                    r"(?:unable\s+to\s+handle|kasan:|internal\s+error:|"
+                    r"warning:|pc\s*:|lr\s*:|rip\s*:|oops:|bug:|#pf:|"
+                    r"kernel\s+panic|call\s+trace:|end\s+trace)",
+                    re.IGNORECASE,
                 )
                 for line in lines:
-                    if "Call trace:" in line:
+                    if re.search(r"call\s+trace:", line, re.IGNORECASE):
                         in_trace = True
-                    if any(marker in line for marker in markers) or in_trace:
-                        if risk_pattern.search(line) or line.startswith(("CPU:", "Modules linked")):
+                    is_marker = bool(marker_pattern.search(line))
+                    if is_marker or in_trace:
+                        # Keep exact crash signatures and call-chain lines;
+                        # only discard known host metadata that is not part of
+                        # the oracle.  Filtering trace lines by the generic
+                        # operational-risk regex can remove legitimate frame
+                        # names and make a complete report look truncated.
+                        if line.startswith(("CPU:", "Modules linked")):
+                            continue
+                        if not in_trace and not is_marker and risk_pattern.search(line):
                             continue
                         selected.append(line)
-                    if in_trace and "end trace" in line:
+                    if in_trace and re.search(r"end\s+trace", line, re.IGNORECASE):
                         break
                 raw = "\n".join(selected) + "\n"
             elif name == "semcode-evidence.json":

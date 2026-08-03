@@ -397,3 +397,32 @@ def test_declared_runtime_paths_override_model_case_paths(tmp_path):
     assert enriched.vmlinux_path == str(declared_vmlinux)
     assert enriched.boot_kernel_path == str(declared_boot)
     assert enriched.rootfs_path == str(declared_rootfs)
+
+
+def test_codex_evidence_extracts_uppercase_crash_signatures(tmp_path):
+    case = tmp_path / "case"
+    case.mkdir()
+    log = case / "crash.log"
+    log.write_text(
+        "BUG: kernel NULL pointer dereference, address: 0000000000000000\n"
+        "Oops: 0000 [#1] SMP NOPTI\n"
+        "RIP: 0010:target_fault+0x1/0x2\n"
+        "Call Trace:\n"
+        " target_syscall_frame+0x3/0x4\n"
+        " target_release+0x5/0x6\n"
+        "---[ end trace 000 ]---\n",
+        encoding="utf-8",
+    )
+
+    _stage_codex_evidence(
+        tmp_path / "workdir",
+        [("original.log", str(log))],
+    )
+
+    staged = (tmp_path / "workdir" / "evidence" / "original.log").read_text()
+    assert "BUG: kernel NULL pointer dereference" in staged
+    assert "Oops: 0000" in staged
+    assert "RIP: 0010:target_fault" in staged
+    assert "Call Trace:" in staged
+    assert "target_syscall_frame" in staged
+    assert "target_release" in staged
