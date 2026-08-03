@@ -62,6 +62,13 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "guest-process SIGSEGV" in prompt
     assert "userspace undefined behavior" in prompt
     assert "never relabel a userspace crash as a kernel pass" in prompt
+    assert "Source-guarded trigger design" in prompt
+    assert "guard predicates" in prompt
+    assert "transmit versus receive" in prompt
+    assert "socket-owned TX/session object" in prompt
+    assert "such as `sendto`" in prompt
+    assert "Preserve observable identifiers" in prompt
+    assert "generic load, random frames" in prompt
     assert "do not repeat them through interactive MCP" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
     assert '"source_files": ["diagnostic_test.c"]' in prompt
