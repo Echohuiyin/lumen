@@ -141,7 +141,8 @@ def _get_output_dir() -> Path:
         d = _session_dir
         d.mkdir(parents=True, exist_ok=True)
         return d
-    return Path("/tmp/lumen_outputs")
+    configured = os.environ.get("LUMEN_OUTPUT_DIR", "").strip()
+    return Path(configured).expanduser() if configured else Path("/tmp/lumen_outputs")
 
 
 def _get_persist_base_dir() -> Path:

@@ -14,9 +14,15 @@ from pathlib import Path
 from typing import Any
 
 
+def _session_root() -> Path:
+    """Return the configured durable root for workflow session artifacts."""
+    configured = os.environ.get("LUMEN_SESSION_ROOT", "").strip()
+    return Path(configured).expanduser() if configured else Path("sessions")
+
+
 def create_session_dir(session_id: str) -> Path:
     """Create and return a session directory, writing initial metadata."""
-    session_dir = Path("sessions") / session_id
+    session_dir = _session_root() / session_id
     session_dir.mkdir(parents=True, exist_ok=True)
 
     metadata: dict[str, Any] = {

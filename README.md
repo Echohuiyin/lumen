@@ -131,6 +131,12 @@ machine:
   contract leaves `qemu_recipe.smp` empty (default: `2`; explicit contract
   values always win). This is useful for older kernels that cannot boot
   reliably with secondary CPUs under QEMU.
+- `LUMEN_SESSION_ROOT`: durable workflow session-artifact root (default:
+  `<project>/sessions`). Set it to a writable scratch filesystem when the
+  project filesystem is constrained; the session ID layout is preserved.
+- `LUMEN_OUTPUT_DIR`: non-session expert-output root (default:
+  `/tmp/lumen_outputs`). This is useful for tests and one-off diagnostics on
+  hosts where `/tmp` is backed by a full project volume.
 
 The runner validates these values before starting QEMU and keeps the original
 userspace-C and call-chain contracts unchanged.
