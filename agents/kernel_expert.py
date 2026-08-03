@@ -514,6 +514,62 @@ _SEM_CODE_FRAME_RE = re.compile(
     r"(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"
     r"\+0x[0-9a-fA-F]+"
 )
+_SEM_CODE_DIRECT_CALL_RE = re.compile(
+    r"(?m)^\s*→\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)\s*$"
+)
+_SEM_CODE_BODY_CALL_RE = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z0-9_]+)*)\s*\("
+)
+_C_CONTROL_WORDS = {
+    "if", "else", "for", "while", "do", "switch", "case", "return",
+    "sizeof", "typeof", "typeof_member", "offsetof",
+}
+
+
+def _semcode_evidence_is_complete(payload: dict) -> bool:
+    """Return whether deterministic evidence covers the fault entry's callees.
+
+    A non-empty Semcode response is not necessarily complete: a frame lookup
+    can succeed while omitting the callee that contains the actual access. In
+    that case Codex must keep the required interactive MCP path available so
+    it can query the exact checkout instead of treating a partial index as
+    authoritative. We scope this check to the first (fault-entry) result to
+    avoid requiring every implementation helper mentioned by infrastructure
+    frames such as process_one_work.
+    """
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("status") != "ok" or payload.get("failures"):
+        return False
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries:
+        return False
+    entry_names = {
+        str(item.get("function", "")).strip()
+        for item in entries
+        if isinstance(item, dict) and str(item.get("function", "")).strip()
+    }
+    first = entries[0]
+    if not isinstance(first, dict):
+        return False
+    result = str(first.get("result", "") or "")
+    if not result.strip() or "function not found" in result.lower():
+        return False
+    calls_start = result.find("\nCalls:")
+    if calls_start < 0:
+        return True
+    calls_text = result[calls_start:]
+    called_by_start = calls_text.find("\nCalled By:")
+    if called_by_start >= 0:
+        calls_text = calls_text[:called_by_start]
+    direct_callees = set(_SEM_CODE_DIRECT_CALL_RE.findall(calls_text))
+    body_start = result.find("\nBody:")
+    if body_start >= 0:
+        body_calls = set(_SEM_CODE_BODY_CALL_RE.findall(result[body_start:]))
+        body_calls.difference_update(_C_CONTROL_WORDS)
+        body_calls.discard(str(first.get("function", "")).strip())
+        direct_callees.update(body_calls)
+    return direct_callees.issubset(entry_names)
 
 # Kernel reports also spell out inlined frames as ``pc : symbol path:line``
 # and as source-backed Call trace lines without an offset.  Keep these
@@ -789,11 +845,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             semcode_payload = json.loads(
                 Path(semcode_evidence_path).read_text(encoding="utf-8")
             )
-            semcode_evidence_complete = bool(
-                semcode_payload.get("status") == "ok"
-                and semcode_payload.get("entries")
-                and not semcode_payload.get("failures")
-            )
+            semcode_evidence_complete = _semcode_evidence_is_complete(semcode_payload)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             semcode_evidence_complete = False
     llm_agent_config = dict(agent_config)

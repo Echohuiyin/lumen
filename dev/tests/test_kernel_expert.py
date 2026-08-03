@@ -17,6 +17,7 @@ from agents.kernel_expert import (
     _pin_semcode_mcp_to_source,
     _materialize_primary_log,
     _materialize_semcode_evidence,
+    _semcode_evidence_is_complete,
     _resolve_primary_log_path,
     _read_primary_log_text,
     _codex_case_text,
@@ -265,6 +266,38 @@ def test_semcode_evidence_captures_inline_frames_and_rejects_indexing(tmp_path, 
     assert data["status"] == "blocked"
     assert any(entry["function"] == "fpsimd_restore_current_state" for entry in data["entries"])
     assert any(failure["function"] == "task_fpsimd_load" for failure in data["failures"])
+
+
+def test_partial_semcode_evidence_keeps_interactive_mcp_available():
+    partial = {
+        "status": "ok",
+        "entries": [{
+            "function": "technisat_usb2_rc_query",
+            "result": (
+                "Function: technisat_usb2_rc_query\n"
+                "Calls: 2 functions\n"
+                "Called by: 0 functions\n"
+                "Body:\n"
+                "static int technisat_usb2_rc_query(struct dvb_usb_device *d) {\n"
+                "  technisat_usb2_get_ir(d);\n"
+                "  technisat_usb2_set_led(d, 1, 0);\n"
+                "}\n"
+            ),
+        }],
+        "failures": [],
+    }
+    assert not _semcode_evidence_is_complete(partial)
+
+    complete = {
+        **partial,
+        "entries": partial["entries"] + [
+            {"function": "technisat_usb2_get_ir", "result": "Function: technisat_usb2_get_ir"},
+            {"function": "technisat_usb2_set_led", "result": "Function: technisat_usb2_set_led"},
+        ],
+    }
+    assert _semcode_evidence_is_complete(complete)
+
+
 
 
 def test_declared_qemu_cmdline_is_preserved_when_model_has_other_recipe(tmp_path):
