@@ -231,8 +231,25 @@ def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
             order.append(pair_list)
     data["required_frame_order"] = order
     return _model_validate(CallChainOracle, data)
+_UNRESOLVED_REPRODUCER_ARG_RE = re.compile(r"<[^>\r\n]+>")
+
+
+def _unresolved_reproducer_args(reproducer: UserspaceReproducer) -> list[str]:
+    return [
+        str(arg)
+        for arg in reproducer.run_args
+        if _UNRESOLVED_REPRODUCER_ARG_RE.search(str(arg))
+    ]
+
+
 def _build_plan(contract: KernelExpertOutput) -> TestPlan:
     reproducer = contract.reproducer
+    unresolved_args = _unresolved_reproducer_args(reproducer)
+    if unresolved_args:
+        raise ValueError(
+            "unresolved reproducer argument placeholder(s): "
+            + ", ".join(sorted(set(unresolved_args)))
+        )
     oracle = _strict_call_chain_oracle(contract)
     steps = [*contract.pressure_requirements, *contract.fault_injection_requirements]
     steps.append(ExecutionStep(
@@ -438,32 +455,43 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
             )
         else:
             try:
-                runtime_root = _attempt_runtime_root(state.get("session_dir", ""), tryout)
-                image_artifacts = _copy_base_image(
-                    arch=contract.target_arch,
-                    runtime_root=runtime_root,
-                    source_image=contract.rootfs_path,
+                plan = _build_plan(contract)
+            except ValueError as exc:
+                message = str(exc)
+                code = (
+                    "BLOCKED_UNRESOLVED_REPRODUCER_ARGUMENT"
+                    if "unresolved reproducer argument" in message
+                    else "BLOCKED_INVALID_EXECUTION_PLAN"
                 )
-            except (OSError, ValueError) as exc:
-                result = _blocked_attempt(code="BLOCKED_BASE_IMAGE_MISSING", summary=str(exc), tryout=tryout)
+                result = _blocked_attempt(code=code, summary=message, tryout=tryout)
             else:
-                result = run_persistent_qemu_test_plan(
-                    _build_plan(contract), attempt=tryout, runtime_root=runtime_root,
-                )
-                result.artifacts.update(image_artifacts)
-                result = _promote_guest_capability_block(result)
-                result.call_chain_consistent = bool(result.test_passed)
-                result.principle_consistent, result.semantic_review_reason = _semantic_review(contract, result)
-                result.test_passed = bool(result.call_chain_consistent and result.principle_consistent)
-                if result.call_chain_consistent and not result.principle_consistent:
-                    result.status = "failed"
-                    result.code = "FAILED_SEMANTIC_CALL_CHAIN_REVIEW"
-                    result.summary = result.semantic_review_reason
-                if not result.test_passed and result.status not in {"blocked", "skipped"}:
-                    if tryout >= maximum:
-                        result.code = "FAILED_CALL_CHAIN_MISMATCH_AFTER_10_TRYOUTS"
-                    elif not result.kernel_feedback:
-                        result.kernel_feedback = "Review missing/reordered frames and revise the userspace trigger or declared injection plan."
+                try:
+                    runtime_root = _attempt_runtime_root(state.get("session_dir", ""), tryout)
+                    image_artifacts = _copy_base_image(
+                        arch=contract.target_arch,
+                        runtime_root=runtime_root,
+                        source_image=contract.rootfs_path,
+                    )
+                except (OSError, ValueError) as exc:
+                    result = _blocked_attempt(code="BLOCKED_BASE_IMAGE_MISSING", summary=str(exc), tryout=tryout)
+                else:
+                    result = run_persistent_qemu_test_plan(
+                        plan, attempt=tryout, runtime_root=runtime_root,
+                    )
+                    result.artifacts.update(image_artifacts)
+                    result = _promote_guest_capability_block(result)
+                    result.call_chain_consistent = bool(result.test_passed)
+                    result.principle_consistent, result.semantic_review_reason = _semantic_review(contract, result)
+                    result.test_passed = bool(result.call_chain_consistent and result.principle_consistent)
+                    if result.call_chain_consistent and not result.principle_consistent:
+                        result.status = "failed"
+                        result.code = "FAILED_SEMANTIC_CALL_CHAIN_REVIEW"
+                        result.summary = result.semantic_review_reason
+                    if not result.test_passed and result.status not in {"blocked", "skipped"}:
+                        if tryout >= maximum:
+                            result.code = "FAILED_CALL_CHAIN_MISMATCH_AFTER_10_TRYOUTS"
+                        elif not result.kernel_feedback:
+                            result.kernel_feedback = "Review missing/reordered frames and revise the userspace trigger or declared injection plan."
 
     text = _format_attempt(result)
     with open(output_file, "w", encoding="utf-8") as handle:

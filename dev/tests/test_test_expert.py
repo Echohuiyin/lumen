@@ -45,6 +45,17 @@ def test_test_plan_compiles_userspace_source_inside_guest():
         assert plan.call_chain_oracle.required_frames == ["target_frame"]
 
 
+def test_unresolved_reproducer_arguments_are_blocked_before_qemu(tmp_path):
+    contract = _contract(tmp_path)
+    contract.reproducer.run_args = ["--bind-path", "<validated-driver-bind-path>"]
+    try:
+        _build_plan(contract)
+    except ValueError as exc:
+        assert "unresolved reproducer argument placeholder" in str(exc)
+    else:
+        raise AssertionError("unresolved guest argument must not reach QEMU")
+
+
 def test_inline_source_frames_are_not_required_as_runtime_frames(tmp_path):
     contract = _contract(tmp_path)
     contract.original_call_chain = [
