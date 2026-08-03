@@ -355,6 +355,23 @@ def test_missing_guest_ocfs2_mount_is_terminal():
     assert "OCFS2" in blocked.summary
 
 
+def test_missing_guest_ocfs2_tools_are_terminal():
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "ssh-command.log"
+        output.write_text(
+            "mkfs.ocfs2 is not installed in the guest\n"
+            "diagnostic prerequisites unavailable; no kernel claim\n",
+            encoding="utf-8",
+        )
+        failed = TestResultContract(
+            status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+            artifacts={"ssh_output": str(output)},
+        )
+        blocked = _promote_guest_capability_block(failed)
+    assert blocked.status == "blocked"
+    assert blocked.code == "BLOCKED_GUEST_OCFS2_MOUNT_MISSING"
+
+
 def test_missing_guest_sve_is_terminal():
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "ssh-command.log"

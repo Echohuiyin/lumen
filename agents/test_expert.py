@@ -361,7 +361,15 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
     # remaining try-outs on an identical capability failure.
     for key, raw_path, text in evidence:
         lowered = text.lower()
-        if "no writable ocfs2 mount" in lowered:
+        ocfs2_mount_missing = (
+            "no writable ocfs2 mount" in lowered
+            or "mkfs.ocfs2 is not installed" in lowered
+            or (
+                "diagnostic prerequisites unavailable" in lowered
+                and "ocfs2" in lowered
+            )
+        )
+        if ocfs2_mount_missing:
             result.status = "blocked"
             result.code = "BLOCKED_GUEST_OCFS2_MOUNT_MISSING"
             result.summary = (
