@@ -300,6 +300,37 @@ def test_partial_semcode_evidence_keeps_interactive_mcp_available():
 
 
 
+def test_semcode_evidence_retries_cold_index(tmp_path, monkeypatch):
+    class FakeClient:
+        calls = 0
+
+        def __init__(self, **_kwargs):
+            pass
+
+        def _call_many(self, requests):
+            type(self).calls += 1
+            if self.calls == 1:
+                return ["Database is currently being indexed"] * len(requests)
+            return ["Function: task_fpsimd_load (git SHA: " + "a" * 40 + ")"] * len(requests)
+
+    monkeypatch.setattr("agents.kernel_expert.SemcodeMcpClient", FakeClient)
+    monkeypatch.setattr("agents.kernel_expert.time.sleep", lambda _seconds: None)
+    output = tmp_path / "session"
+    output.mkdir()
+    path = _materialize_semcode_evidence(
+        output,
+        source_path="/tmp/linux",
+        expected_commit="a" * 40,
+        command="semcode-mcp",
+        args=[],
+        evidence_text="pc : task_fpsimd_load arch/arm64/kernel/fpsimd.c:370 [inline]\n",
+    )
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert FakeClient.calls == 2
+    assert data["status"] == "ok"
+    assert not data["failures"]
+
+
 def test_declared_qemu_cmdline_is_preserved_when_model_has_other_recipe(tmp_path):
     contract = _contract(tmp_path)
     data = model_to_dict(contract)

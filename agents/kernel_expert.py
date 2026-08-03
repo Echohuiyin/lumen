@@ -591,6 +591,23 @@ _SEM_CODE_INDEXING_MARKERS = (
     "background indexing hasn't started",
     "database indexing failed",
 )
+try:
+    _SEM_CODE_RETRY_ATTEMPTS = max(
+        1, int(os.environ.get("LUMEN_SEMCODE_RETRY_ATTEMPTS", "3"))
+    )
+except (TypeError, ValueError):
+    _SEM_CODE_RETRY_ATTEMPTS = 3
+try:
+    _SEM_CODE_RETRY_WAIT_SECONDS = max(
+        0.0, float(os.environ.get("LUMEN_SEMCODE_RETRY_WAIT_SECONDS", "15"))
+    )
+except (TypeError, ValueError):
+    _SEM_CODE_RETRY_WAIT_SECONDS = 15.0
+
+
+def _semcode_indexing_response(result: object) -> bool:
+    result_text = str(result or "").lower()
+    return any(marker in result_text for marker in _SEM_CODE_INDEXING_MARKERS)
 
 
 def _materialize_semcode_evidence(
@@ -639,12 +656,27 @@ def _materialize_semcode_evidence(
             )
             batch_call = getattr(client, "_call_many", None)
             if callable(batch_call):
-                results = batch_call([
-                    ("find_function", {"name": name}) for name in names
-                ])
+                requests = [("find_function", {"name": name}) for name in names]
+                results = list(batch_call(requests))
+                # The MCP server may return the first batch result while its
+                # background index is still warming. Retry only the missing
+                # functions one at a time so already-resolved evidence is not
+                # repeatedly queried and the server can finish initialization.
+                for index, result in enumerate(results):
+                    if not _semcode_indexing_response(result):
+                        continue
+                    request = [requests[index]]
+                    for attempt in range(_SEM_CODE_RETRY_ATTEMPTS):
+                        single = list(batch_call(request))
+                        if single:
+                            results[index] = single[0]
+                        if not _semcode_indexing_response(results[index]):
+                            break
+                        if attempt + 1 < _SEM_CODE_RETRY_ATTEMPTS:
+                            time.sleep(_SEM_CODE_RETRY_WAIT_SECONDS)
                 for name, result in zip(names, results):
                     result_text = str(result or "")
-                    if any(marker in result_text.lower() for marker in _SEM_CODE_INDEXING_MARKERS):
+                    if _semcode_indexing_response(result_text):
                         failures.append({"function": name, "error": result_text})
                     else:
                         entries.append({"function": name, "result": result_text})
@@ -654,7 +686,7 @@ def _materialize_semcode_evidence(
                     try:
                         result = client._call("find_function", {"name": name})
                         result_text = str(result or "")
-                        if any(marker in result_text.lower() for marker in _SEM_CODE_INDEXING_MARKERS):
+                        if _semcode_indexing_response(result_text):
                             failures.append({"function": name, "error": result_text})
                         else:
                             entries.append({"function": name, "result": result_text})
