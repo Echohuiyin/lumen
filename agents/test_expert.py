@@ -342,6 +342,29 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
             return result
 
+    # KVM/VGIC maintenance cases need a nested KVM device inside the guest.
+    # QEMU's arm64 virt machine may boot normally while exposing no
+    # /dev/kvm; retrying the same image cannot exercise the KVM userspace ABI.
+    # Match only an explicit open(/dev/kvm) capability error so unrelated KVM
+    # boot messages do not suppress a legitimate userspace try-out.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        kvm_unavailable = re.search(
+            r"open\(/dev/kvm\).*?(?:no such file|not found|operation not permitted|permission denied)",
+            lowered,
+            flags=re.DOTALL,
+        )
+        if kvm_unavailable:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_KVM_UNAVAILABLE"
+            result.summary = (
+                "Guest does not expose a usable /dev/kvm device; the selected "
+                "QEMU platform cannot exercise the nested KVM/VGIC userspace ABI."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     for key, raw_path, text in evidence:
         lowered = text.lower()
         if "gadgetfs" in lowered and "no such device" in lowered:
