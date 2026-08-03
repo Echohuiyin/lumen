@@ -231,6 +231,42 @@ def test_semcode_evidence_file_preserves_commit_and_blocked_state(tmp_path):
     assert data["expected_kernel_commit"] == "deadbeef" * 5
 
 
+def test_semcode_evidence_captures_inline_frames_and_rejects_indexing(tmp_path, monkeypatch):
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def _call_many(self, requests):
+            assert any(arguments["name"] == "task_fpsimd_load" for _, arguments in requests)
+            return [
+                (
+                    "Database is currently being indexed (Analyzing files). Please wait"
+                    if arguments["name"] == "task_fpsimd_load"
+                    else "Function: fpsimd_restore_current_state (git SHA: " + "a" * 40 + ")"
+                )
+                for _, arguments in requests
+            ]
+
+    monkeypatch.setattr("agents.kernel_expert.SemcodeMcpClient", FakeClient)
+    output = tmp_path / "session"
+    output.mkdir()
+    path = _materialize_semcode_evidence(
+        output,
+        source_path="/tmp/linux",
+        expected_commit="a" * 40,
+        command="semcode-mcp",
+        args=[],
+        evidence_text=(
+            "pc : task_fpsimd_load arch/arm64/kernel/fpsimd.c:370 [inline]\n"
+            " fpsimd_restore_current_state+0x4cc/0x708 arch/arm64/kernel/fpsimd.c:1746\n"
+        ),
+    )
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    assert data["status"] == "blocked"
+    assert any(entry["function"] == "fpsimd_restore_current_state" for entry in data["entries"])
+    assert any(failure["function"] == "task_fpsimd_load" for failure in data["failures"])
+
+
 def test_declared_qemu_cmdline_is_preserved_when_model_has_other_recipe(tmp_path):
     contract = _contract(tmp_path)
     data = model_to_dict(contract)

@@ -515,6 +515,27 @@ _SEM_CODE_FRAME_RE = re.compile(
     r"\+0x[0-9a-fA-F]+"
 )
 
+# Kernel reports also spell out inlined frames as ``pc : symbol path:line``
+# and as source-backed Call trace lines without an offset.  Keep these
+# patterns narrow enough to avoid treating prose identifiers as Semcode
+# symbols, while still capturing the actual inline warning function.
+_SEM_CODE_PC_LR_FRAME_RE = re.compile(
+    r"(?m)^\s*(?:pc|lr)\s*:\s*"
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"
+    r"(?=\s+(?:[A-Za-z0-9_.-]+/)+[^\s:]+:\d+|\+0x)"
+)
+_SEM_CODE_TRACE_FRAME_RE = re.compile(
+    r"(?m)^\s+"
+    r"([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"
+    r"(?=\s+(?:[A-Za-z0-9_.-]+/)+[^\s:]+:\d+|\+0x)"
+)
+_SEM_CODE_INDEXING_MARKERS = (
+    "database is currently being indexed",
+    "database is empty",
+    "background indexing hasn't started",
+    "database indexing failed",
+)
+
 
 def _materialize_semcode_evidence(
     output_dir: Path,
@@ -535,10 +556,17 @@ def _materialize_semcode_evidence(
     source-text or model fallback.
     """
     names: list[str] = []
-    for match in _SEM_CODE_FRAME_RE.finditer(evidence_text or ""):
-        name = match.group(1)
-        if name not in names:
-            names.append(name)
+    for pattern in (
+        _SEM_CODE_FRAME_RE,
+        _SEM_CODE_PC_LR_FRAME_RE,
+        _SEM_CODE_TRACE_FRAME_RE,
+    ):
+        for match in pattern.finditer(evidence_text or ""):
+            name = match.group(1)
+            if name not in names:
+                names.append(name)
+            if len(names) >= 32:
+                break
         if len(names) >= 32:
             break
     evidence_path = Path(output_dir) / "semcode-evidence.json"
@@ -558,16 +586,22 @@ def _materialize_semcode_evidence(
                 results = batch_call([
                     ("find_function", {"name": name}) for name in names
                 ])
-                entries.extend(
-                    {"function": name, "result": result}
-                    for name, result in zip(names, results)
-                )
+                for name, result in zip(names, results):
+                    result_text = str(result or "")
+                    if any(marker in result_text.lower() for marker in _SEM_CODE_INDEXING_MARKERS):
+                        failures.append({"function": name, "error": result_text})
+                    else:
+                        entries.append({"function": name, "result": result_text})
             else:
                 # Compatibility for injected clients that predate the batch API.
                 for name in names:
                     try:
                         result = client._call("find_function", {"name": name})
-                        entries.append({"function": name, "result": result})
+                        result_text = str(result or "")
+                        if any(marker in result_text.lower() for marker in _SEM_CODE_INDEXING_MARKERS):
+                            failures.append({"function": name, "error": result_text})
+                        else:
+                            entries.append({"function": name, "result": result_text})
                     except Exception as exc:
                         failures.append({"function": name, "error": str(exc)})
         except Exception as exc:
@@ -578,7 +612,7 @@ def _materialize_semcode_evidence(
             "error": "no source, commit, Semcode command, or stack frames available",
         })
     payload = {
-        "status": "ok" if entries else "blocked",
+        "status": "ok" if entries and not failures else "blocked",
         "kernel_source": str(source_path or ""),
         "expected_kernel_commit": str(expected_commit or ""),
         "query_method": "Lumen Semcode MCP adapter; every query includes git_sha",
