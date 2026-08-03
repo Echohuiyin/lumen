@@ -48,6 +48,8 @@ When Test Expert returns a mismatch, read its contract and raw guest/serial arti
 
 Runtime settings are executable only when they are encoded in the structured `qemu_recipe` (especially `qemu_recipe.extra_cmdline`); `pressure_requirements` and `fault_injection_requirements` are explanatory requirements and are not executed by Test Expert. If the raw guest serial shows that an early setting such as `panic_on_warn=1` prevents the original log's later target frames, put the evidence-backed replacement (for example `panic_on_warn=0`) explicitly in `qemu_recipe.extra_cmdline` and explain the change. Do not put an executable setting only in prose.
 
+When evidence requires controlled pressure or fault injection, use the allow-listed `ExecutionStep` objects in those two arrays; Test Expert executes them in order. A pressure step uses `{"type":"run_pressure","profile":"cpu|memory|io|scheduler|filesystem","workers":1,"seconds":30,"rationale":"..."}`. A kernel fault step uses `{"type":"fault_injection","profile":"failslab|fail_page_alloc|fail_futex|fail_function|fail_make_request","probability":1,"interval":1,"times":1,"space":0,"target":"","rationale":"..."}`. Other supported steps are `{"type":"write_sysctl","key":"kernel.example","value":"..."}` and `{"type":"wait","seconds":1}`. Use only values justified by the original log/source; do not invent a pressure or fault step merely to force a match. These steps must remain structured JSON, never shell text.
+
 ## Contract format
 
 Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
