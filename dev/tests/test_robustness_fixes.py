@@ -805,35 +805,29 @@ def test_opencode_backend_file_not_found(tmp_path, monkeypatch):
         b.invoke([HumanMessage(content="hi")], workdir=str(tmp_path))
 
 
-def test_opencode_backend_registered_in_llm_config():
-    """get_llm_with_config must return an OpenCodeBackend when
-    backend='opencode' is set in agent config."""
-    from agents.backends import OpenCodeBackend
+def test_opencode_backend_rejected_for_kernel_expert():
+    """Kernel Expert may not use OpenCode, even when explicitly configured."""
     from llm_config import get_llm_with_config
 
-    llm = get_llm_with_config(
-        {
-            "backend": "opencode",
-            "cli_command": "opencode",
-            "model": "csi-provider/GLM-5",
-            "agent_name": "lumen_kernel_expert",
-            "cli_timeout": 3600,
-        },
-        agent_name="kernel_expert",
-    )
-    assert isinstance(llm, OpenCodeBackend)
-    assert llm._cli_command == "opencode"
-    assert llm._model == "csi-provider/GLM-5"
-    assert llm._agent_name == "lumen_kernel_expert"
-    assert llm._cli_timeout == 3600
+    with pytest.raises(ValueError, match="must use the project-isolated Codex"):
+        get_llm_with_config(
+            {
+                "backend": "opencode",
+                "cli_command": "opencode",
+                "model": "csi-provider/GLM-5",
+                "agent_name": "lumen_kernel_expert",
+                "cli_timeout": 3600,
+            },
+            agent_name="kernel_expert",
+        )
 
 
-def test_opencode_backend_blocked_for_non_kernel_expert_agents():
-    """Only kernel_expert is permitted to use opencode backend (same gate
-    as claude_code). validator/pm/test_expert must be rejected."""
+def test_opencode_backend_blocked_for_all_automation_agents():
+    """OpenCode is not a permitted backend for the maintenance workflow."""
     from llm_config import validate_agent_backend
 
-    validate_agent_backend("kernel_expert", "opencode")  # ok
+    with pytest.raises(ValueError, match="must use the project-isolated Codex"):
+        validate_agent_backend("kernel_expert", "opencode")
 
     for agent in ["validator", "pm", "test_expert", "knowledge_base"]:
         with pytest.raises(ValueError, match="not permitted to use opencode"):

@@ -31,6 +31,36 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_ROOT = PROJECT_ROOT / "runtime" / "qemu-ssh"
 _SAFE_PAYLOAD_PATH = re.compile(r"^bin/[A-Za-z0-9][A-Za-z0-9._+-]*$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_SAFE_GUEST_WORKDIR = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._/-]*$")
+_SAFE_SSH_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*\$?$")
+
+
+def _configured_image_root() -> Path:
+    """Resolve the deployment-selected persistent QEMU image root."""
+    configured = os.environ.get("LUMEN_QEMU_IMAGE_ROOT", "").strip()
+    return Path(configured).expanduser().resolve() if configured else DEFAULT_IMAGE_ROOT
+
+
+def _guest_poc_root() -> str:
+    """Resolve and validate the guest-side scratch directory."""
+    configured = os.environ.get("LUMEN_QEMU_GUEST_WORKDIR", "").strip() or "/tmp/lumen-poc"
+    if (
+        configured == "/"
+        or ".." in Path(configured).parts
+        or not _SAFE_GUEST_WORKDIR.fullmatch(configured)
+    ):
+        raise ValueError(
+            "LUMEN_QEMU_GUEST_WORKDIR must be an absolute path without '..' or shell metacharacters"
+        )
+    return configured.rstrip("/")
+
+
+def _ssh_user() -> str:
+    """Resolve the guest account used by the provisioned SSH key."""
+    configured = os.environ.get("LUMEN_QEMU_SSH_USER", "").strip() or "root"
+    if len(configured) > 64 or not _SAFE_SSH_USER.fullmatch(configured):
+        raise ValueError("LUMEN_QEMU_SSH_USER is not a valid SSH account name")
+    return configured
 _PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
                       "scheduler": "--switch", "filesystem": "--hdd", "network": "--netdev"}
 _FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request"}
@@ -62,7 +92,7 @@ class PersistentQemuPaths:
 
 def persistent_qemu_paths(arch: str, *, runtime_root: Path | None = None) -> PersistentQemuPaths:
     normalized = _normalize_arch(arch)
-    root = runtime_root or DEFAULT_IMAGE_ROOT
+    root = runtime_root if runtime_root is not None else _configured_image_root()
     arch_root = root / normalized
     return PersistentQemuPaths(
         arch=normalized,
@@ -135,6 +165,16 @@ def _pid_is_live(pid: int) -> bool:
         os.kill(pid, 0)
     except OSError:
         return False
+    # ``kill(pid, 0)`` also succeeds for an unreaped child in zombie state.
+    # It is no longer a running QEMU and must not make a completed shutdown
+    # look like a leaked guest.
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+        state = stat.rsplit(")", 1)[-1].lstrip()[:1]
+        if state == "Z":
+            return False
+    except OSError:
+        pass
     return True
 
 
@@ -161,6 +201,16 @@ def _reserve_local_port() -> int:
 
 def _host_arch() -> str:
     return _normalize_arch(os.uname().machine)
+
+
+def _configured_qemu_smp() -> str:
+    """Resolve an explicit deployment default for kernels needing one vCPU."""
+    configured = os.environ.get("LUMEN_QEMU_DEFAULT_SMP", "").strip()
+    if not configured:
+        return "2"
+    if not configured.isdigit() or not 1 <= int(configured) <= 128:
+        raise ValueError("LUMEN_QEMU_DEFAULT_SMP must be an integer in 1..128")
+    return configured
 
 
 def _validate_execution_steps(plan: TestPlan) -> None:
@@ -198,10 +248,14 @@ def _validate_execution_steps(plan: TestPlan) -> None:
 def _render_execution_script(plan: TestPlan, marker: str) -> str:
     """Render runner-owned POSIX shell from allow-listed structured steps."""
     _validate_execution_steps(plan)
+    guest_root = _guest_poc_root()
+    guest_bin = f"{guest_root}/bin"
+    guest_reproducer = f"{guest_root}/reproducer"
     lines = [
         "#!/bin/sh", "set -eu", "PRESSURE_PIDS=",
         "trap '[ -z \"${PRESSURE_PIDS:-}\" ] || kill $PRESSURE_PIDS 2>/dev/null || true' EXIT",
-        "mkdir -p /tmp/lumen-poc/bin", "cd /tmp/lumen-poc/reproducer",
+        f"mkdir -p {shlex.quote(guest_bin)}",
+        f"cd {shlex.quote(guest_reproducer)}",
     ]
     reproducer = plan.reproducer
     if reproducer.language != "c" or reproducer.artifact_type != "userspace":
@@ -226,7 +280,7 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
     lines.extend([
         f"if ! command -v {shlex.quote(reproducer.compiler)} >/dev/null 2>&1; then printf '%s\\n' {shlex.quote(component_marker)} > /dev/console 2>/dev/null || true; printf '%s\\n' {shlex.quote(component_marker)} >&2; exit 125; fi",
         compile_command,
-        "cd /tmp/lumen-poc",
+        f"cd {shlex.quote(guest_root)}",
         f"echo {shlex.quote(marker)} > /dev/console",
     ])
     for step in plan.execution_steps:
@@ -269,7 +323,7 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
     arch = paths.arch
     recipe = plan.qemu_recipe
     memory = recipe.memory or _select_qemu_memory(plan.boot_kernel_path, "")
-    smp = recipe.smp or "2"
+    smp = recipe.smp or _configured_qemu_smp()
     host_matches_target = _host_arch() == arch
     kvm_available = host_matches_target and os.access("/dev/kvm", os.R_OK | os.W_OK)
 
@@ -332,13 +386,14 @@ class PersistentQemuManager:
         self.paths = persistent_qemu_paths(plan.target_arch, runtime_root=runtime_root)
         requested_timeout = plan.qemu_recipe.timeout_sec if boot_timeout is None else boot_timeout
         self.boot_timeout = _normalise_boot_timeout(requested_timeout)
+        self._process: subprocess.Popen | None = None
 
     def _ssh_base(self, port: int) -> list[str]:
         return [
             "ssh", "-i", str(self.paths.ssh_key), "-p", str(port),
             "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
             "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "ConnectTimeout=5", "root@127.0.0.1",
+            "-o", "ConnectTimeout=5", f"{_ssh_user()}@127.0.0.1",
         ]
 
     def _ssh_ready(self, port: int) -> bool:
@@ -397,11 +452,13 @@ class PersistentQemuManager:
             )
         finally:
             qemu_log.close()
+        self._process = process
         state = {"pid": process.pid, "ssh_port": ssh_port, "identity": identity, "acceleration": acceleration, "command": command}
         _write_state(self.paths.state_file, state)
         deadline = time.monotonic() + self.boot_timeout
         while time.monotonic() < deadline:
-            if not _pid_is_live(process.pid):
+            if process.poll() is not None:
+                self._process = None
                 return ToolStepResult(
                     name="ensure_persistent_qemu", status="failed", message="QEMU exited before SSH became ready.",
                     artifacts={"serial_log": str(self.paths.serial_log), "qemu_log": str(self.paths.qemu_log)},
@@ -428,6 +485,30 @@ class PersistentQemuManager:
     def shutdown(self) -> ToolStepResult:
         state = _read_state(self.paths.state_file)
         pid = int(state.get("pid", 0))
+        owned = self._process if self._process is not None and self._process.pid == pid else None
+        if owned is not None:
+            if owned.poll() is not None:
+                self._process = None
+                return ToolStepResult(name="shutdown_persistent_qemu", status="ok", message="Persistent QEMU already exited.")
+            owned.terminate()
+            try:
+                owned.wait(timeout=10)
+                self._process = None
+                return ToolStepResult(name="shutdown_persistent_qemu", status="ok", message="Persistent QEMU stopped.")
+            except subprocess.TimeoutExpired:
+                owned.kill()
+                try:
+                    owned.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    return ToolStepResult(
+                        name="shutdown_persistent_qemu", status="failed",
+                        message="QEMU did not exit after SIGTERM or SIGKILL.",
+                    )
+                self._process = None
+                return ToolStepResult(
+                    name="shutdown_persistent_qemu", status="ok",
+                    message="Persistent QEMU stopped after SIGKILL fallback.",
+                )
         if not _pid_is_live(pid):
             return ToolStepResult(name="shutdown_persistent_qemu", status="ok", message="No live QEMU process.")
         os.kill(pid, 15)
@@ -505,22 +586,24 @@ class PersistentQemuManager:
         if not port:
             return ToolStepResult(name="run_poc_over_ssh", status="blocked", message="Persistent QEMU state has no SSH port.")
         stage, marker = self._stage_poc()
-        remote = "/tmp/lumen-poc"
+        remote = _guest_poc_root()
         serial_offset = self.paths.serial_log.stat().st_size if self.paths.serial_log.exists() else 0
-        command = "rm -rf /tmp/lumen-poc && mkdir -p /tmp/lumen-poc"
+        quoted_remote = shlex.quote(remote)
+        command = f"rm -rf {quoted_remote} && mkdir -p {quoted_remote}"
         mkdir_result = subprocess.run([*self._ssh_base(port), command], capture_output=True, text=True, timeout=15)
         if mkdir_result.returncode != 0:
             return ToolStepResult(name="run_poc_over_ssh", status="failed", message="Failed to prepare remote POC directory.", error=mkdir_result.stderr[-1000:])
         upload = subprocess.run(
             ["scp", "-i", str(self.paths.ssh_key), "-P", str(port), "-r",
              "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "UserKnownHostsFile=/dev/null", f"{stage}/.", f"root@127.0.0.1:{remote}"],
+             "-o", "UserKnownHostsFile=/dev/null",
+             f"{stage}/.", f"{_ssh_user()}@127.0.0.1:{remote}"],
             capture_output=True, text=True, timeout=60,
         )
         if upload.returncode != 0:
             return ToolStepResult(name="run_poc_over_ssh", status="failed", message="Failed to upload POC over SSH.", error=upload.stderr[-1000:])
         executed_proc = subprocess.Popen(
-            [*self._ssh_base(port), "sh /tmp/lumen-poc/run.sh"],
+            [*self._ssh_base(port), f"sh {shlex.quote(remote + '/run.sh')}"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         deadline = time.monotonic() + 330
@@ -564,11 +647,27 @@ class PersistentQemuManager:
 def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     """Match original-log frames in the post-marker serial window only."""
     oracle = plan.call_chain_oracle
-    allowed_wrappers = {str(wrapper).strip() for wrapper in oracle.allowed_wrapper_frames if str(wrapper).strip()}
+
+    def _canonical_frame(frame: str) -> str:
+        """Compare symbols, not build-specific offsets or source annotations."""
+        value = str(frame).strip().lstrip("?* ")
+        # Kernel Expert may retain a source location beside a symbol, e.g.
+        # ``mempool_alloc_noprof mm/mempool.c:402``.  The serial stack only
+        # carries the symbol, so keep the raw contract untouched but compare
+        # its leading identifier.  This is deliberately lexical/config-driven
+        # and does not encode any case-specific function names.
+        value = re.split(r"\s+", value, maxsplit=1)[0]
+        return re.sub(r"\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?$", "", value, flags=re.IGNORECASE)
+
+    allowed_wrappers = {
+        _canonical_frame(wrapper)
+        for wrapper in oracle.allowed_wrapper_frames
+        if _canonical_frame(wrapper)
+    }
     original_chain = [
-        str(frame).strip()
+        _canonical_frame(frame)
         for frame in plan.original_call_chain
-        if str(frame).strip() and str(frame).strip() not in allowed_wrappers
+        if _canonical_frame(frame) and _canonical_frame(frame) not in allowed_wrappers
     ]
     result = {
         "required_frames_found": [], "missing_frames": [],
@@ -596,7 +695,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         # Avoid treating ``evict`` as present in the distinct symbol
         # ``jfs_evict_inode``.  Stack symbols are token-like identifiers;
         # boundaries make both presence and ordering deterministic.
-        pattern = rf"(?<![A-Za-z0-9_]){re.escape(frame)}(?![A-Za-z0-9_])"
+        pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
         return re.search(pattern, line, flags=re.IGNORECASE) is not None
 
     # ``required_frames`` is retained for backward compatibility, while
@@ -605,7 +704,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
     # session_destroy).  Remove alternative members from the singleton
     # groups so a branch is not accidentally treated as two mandatory frames.
     alternative_groups = [
-        [str(frame).strip() for frame in group if str(frame).strip()]
+        [_canonical_frame(frame) for frame in group if _canonical_frame(frame)]
         for group in oracle.required_frame_alternatives
     ]
     if original_chain:
@@ -618,8 +717,8 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         frame for group in alternative_groups for frame in group
     }
     required_groups: list[list[str]] = [
-        [frame] for frame in oracle.required_frames
-        if frame not in alternative_members
+        [_canonical_frame(frame)] for frame in oracle.required_frames
+        if _canonical_frame(frame) and _canonical_frame(frame) not in alternative_members
     ]
     required_groups.extend(alternative_groups)
     if original_chain:
@@ -628,109 +727,178 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
             + [group for group in required_groups if group[0] not in original_set]
         )
 
-    seen_positions: dict[str, int] = {
-        frame: next(
-            (index for index, line in enumerate(window) if frame_seen(line, frame)),
-            -1,
-        )
-        for group in required_groups
-        for frame in group
-    }
-    for group in required_groups:
-        found = [frame for frame in group if seen_positions.get(frame, -1) >= 0]
-        if found:
-            result["required_frames_found"].extend(found)
-        else:
-            result["missing_frames"].append(
-                group[0] if len(group) == 1 else " or ".join(group)
-            )
-
-    # Diagnostic printk lines can name a frame before the actual stack.  They
-    # remain valid evidence for frame presence, but must not affect ordering.
-    # Use the first Call Trace block after the reproduction marker so printk
-    # positions cannot be mixed with stack positions.
-    trace_start = next(
-        (index for index, line in enumerate(window)
-         if re.search(r"\bCall Trace:", line, flags=re.IGNORECASE)),
-        -1,
-    )
-    if trace_start >= 0:
-        trace_end = len(window)
-        for index in range(trace_start + 1, len(window)):
-            if re.search(
-                r"\b(?:Allocated by task|Freed by task|The buggy address)",
-                window[index],
-                flags=re.IGNORECASE,
-            ):
-                trace_end = index
-                break
-        ordering_window = [
-            line for line in window[trace_start + 1:trace_end]
-            if not re.search(r"\]\s+\?", line)
-        ]
-    else:
-        # Conservative fallback for logs without a labelled Call Trace.
-        ordering_window = [
-            line for line in window
-            if "vcan0:" not in line.lower()
-            and not re.search(r"\]\s+\?", line)
-        ]
-
     order_frames = {
         frame
         for group in required_groups
         for frame in group
     }
     order_frames.update(
-        frame
+        _canonical_frame(frame)
         for pair in oracle.required_frame_order
         if len(pair) == 2
         for frame in pair
+        if _canonical_frame(frame)
     )
-    order_positions: dict[str, int] = {
-        frame: next(
-            (index for index, line in enumerate(ordering_window)
-             if frame_seen(line, frame)),
-            -1,
-        )
-        for frame in order_frames
-    }
-
-    def group_position(frame: str) -> int:
-        """Return the position of a frame or its satisfied alternative."""
-        direct = order_positions.get(frame, -1)
-        if direct >= 0:
-            return direct
-        for group in alternative_groups:
-            if frame in group:
-                hits = [order_positions.get(member, -1) for member in group]
-                hits = [position for position in hits if position >= 0]
-                if hits:
-                    return min(hits)
-        return -1
-
-    pairs = [pair for pair in oracle.required_frame_order if len(pair) == 2]
+    pairs = [
+        [_canonical_frame(pair[0]), _canonical_frame(pair[1])]
+        for pair in oracle.required_frame_order
+        if len(pair) == 2 and _canonical_frame(pair[0]) and _canonical_frame(pair[1])
+    ]
     if original_chain:
         exact_pairs = [list(pair) for pair in zip(original_chain, original_chain[1:])]
-        pairs = exact_pairs + [
-            pair for pair in pairs
-            if pair not in exact_pairs
+        authoritative_positions = {
+            frame: index for index, frame in enumerate(original_chain)
+        }
+        # The original log is authoritative.  Once it supplies a complete
+        # chain, use only its exact adjacent edges for ordering.  Supplementary
+        # frames remain mandatory, but their LLM-authored order is intentionally
+        # ignored because it can be caller-to-leaf while the report is
+        # leaf-to-caller (or vice versa) and would contradict the evidence.
+        pairs = exact_pairs
+
+    def _trace_windows() -> list[list[str]]:
+        """Split the post-marker log into independent Call Trace blocks."""
+        starts = [
+            index for index, line in enumerate(window)
+            if re.search(r"\bCall Trace:", line, flags=re.IGNORECASE)
         ]
-    forward = all(
-        group_position(pair[0]) < group_position(pair[1])
-        for pair in pairs
+        if not starts:
+            # Conservative fallback for logs without a labelled Call Trace.
+            return [[
+                line for line in window
+                if "vcan0:" not in line.lower()
+                and not re.search(r"\]\s+\?", line)
+            ]]
+
+        blocks: list[list[str]] = []
+        for trace_start in starts:
+            trace_end = len(window)
+            for index in range(trace_start + 1, len(window)):
+                if re.search(r"</TASK>", window[index], flags=re.IGNORECASE):
+                    trace_end = index + 1
+                    break
+                if re.search(
+                    r"\b(?:Allocated by task|Freed by task|The buggy address)",
+                    window[index],
+                    flags=re.IGNORECASE,
+                ):
+                    trace_end = index
+                    break
+                if re.search(r"\bCall Trace:", window[index], flags=re.IGNORECASE):
+                    trace_end = index
+                    break
+            block = window[trace_start + 1:trace_end]
+            # Oops reports commonly put the faulting leaf in the RIP line
+            # immediately before ``Call Trace`` and start the trace at its
+            # caller. Keep that line attached to this trace block so the
+            # authoritative leaf-to-caller chain remains checkable.
+            rip_line = None
+            for index in range(trace_start - 1, -1, -1):
+                candidate = window[index]
+                if re.search(
+                    r"\bRIP:\s*(?:[0-9a-f]+:)?[A-Za-z_][A-Za-z0-9_.$]*"
+                    r"(?:\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?)?",
+                    candidate,
+                    flags=re.IGNORECASE,
+                ):
+                    rip_line = candidate
+                    break
+                if re.search(r"\b(?:Call Trace:|LUMEN_REPRO_START:)", candidate, flags=re.IGNORECASE):
+                    break
+            if rip_line is not None:
+                block.insert(0, rip_line)
+            blocks.append(block)
+        return blocks
+
+    def _evaluate_trace(trace_lines: list[str]) -> dict[str, Any]:
+        """Evaluate one stack without combining evidence from another stack."""
+        non_question_lines = [
+            line for line in trace_lines
+            if not re.search(r"\]\s+\?", line)
+        ]
+        # A faulting leaf can be printed only as a question-marked frame
+        # (for example ? strlen+... after a general-protection exception).
+        # Keep that line only when the evidence-backed original chain has no
+        # non-question occurrence in this same stack.
+        question_fallback_frames = {
+            frame for frame in original_chain
+            if not any(frame_seen(line, frame) for line in non_question_lines)
+        }
+        ordering_window = [
+            line for line in trace_lines
+            if not re.search(r"\]\s+\?", line)
+            or any(frame_seen(line, frame) for frame in question_fallback_frames)
+        ]
+        seen_positions: dict[str, int] = {
+            frame: next(
+                (index for index, line in enumerate(ordering_window)
+                 if frame_seen(line, frame)),
+                -1,
+            )
+            for group in required_groups
+            for frame in group
+        }
+        found_frames: list[str] = []
+        missing_frames: list[str] = []
+        for group in required_groups:
+            found = [frame for frame in group if seen_positions.get(frame, -1) >= 0]
+            if found:
+                found_frames.extend(found)
+            else:
+                missing_frames.append(
+                    group[0] if len(group) == 1 else " or ".join(group)
+                )
+
+        order_positions: dict[str, int] = {
+            frame: next(
+                (index for index, line in enumerate(ordering_window)
+                 if frame_seen(line, frame)),
+                -1,
+            )
+            for frame in order_frames
+        }
+
+        def group_position(frame: str) -> int:
+            """Return the position of a frame or its satisfied alternative."""
+            direct = order_positions.get(frame, -1)
+            if direct >= 0:
+                return direct
+            for group in alternative_groups:
+                if frame in group:
+                    hits = [order_positions.get(member, -1) for member in group]
+                    hits = [position for position in hits if position >= 0]
+                    if hits:
+                        return min(hits)
+            return -1
+
+        forward = all(
+            group_position(pair[0]) < group_position(pair[1])
+            for pair in pairs
+        )
+        # Kernel reports commonly print a stack from the faulting leaf toward
+        # its callers, while an LLM contract may express the same path from
+        # the entry point toward the fault.  Accept either complete orientation,
+        # but never accept a partial or scrambled sequence.
+        reverse = all(
+            group_position(pair[1]) < group_position(pair[0])
+            for pair in pairs
+        )
+        return {
+            "required_frames_found": found_frames,
+            "missing_frames": missing_frames,
+            "frame_order_matched": not missing_frames and (forward or reverse),
+            "frame_order_direction": "forward" if forward else ("reverse" if reverse else "mismatch"),
+        }
+
+    evaluations = [_evaluate_trace(block) for block in _trace_windows()]
+    # Prefer a complete single stack.  If no stack is complete, retain the
+    # most informative one for diagnostics; never merge frames across blocks.
+    complete = [item for item in evaluations if item["frame_order_matched"]]
+    chosen = complete[0] if complete else max(
+        evaluations,
+        key=lambda item: (len(item["required_frames_found"]), -len(item["missing_frames"])),
     )
-    # Kernel reports commonly print a stack from the faulting leaf toward
-    # its callers, while an LLM contract may express the same path from the
-    # entry point toward the fault.  These are the same ordered call chain,
-    # not two different reproductions.  Accept either complete orientation,
-    # but never accept a partial or scrambled sequence.
-    reverse = all(
-        group_position(pair[1]) < group_position(pair[0])
-        for pair in pairs
-    )
-    result["frame_order_matched"] = not result["missing_frames"] and (forward or reverse)
-    result["frame_order_direction"] = "forward" if forward else ("reverse" if reverse else "mismatch")
+    result.update(chosen)
     return result
 
 
@@ -762,7 +930,7 @@ def _normalise_concurrent_instances(value: int | None) -> int:
 def _instance_runtime_root(runtime_root: Path | None, instance: int, count: int) -> Path | None:
     if count == 1:
         return runtime_root
-    base = runtime_root or DEFAULT_IMAGE_ROOT
+    base = runtime_root if runtime_root is not None else _configured_image_root()
     return base / f"instance-{instance:02d}"
 
 

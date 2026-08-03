@@ -1,7 +1,10 @@
 """Offline contracts for isolated userspace-C QEMU try-outs."""
 
 from pathlib import Path
+import os
 import sys
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -38,6 +41,62 @@ def _plan(tmp_path: Path, *, arch: str = "x86_64") -> QemuTestPlan:
             required_frame_order=[], target_subsystems=["target_subsystem"],
         ),
     )
+
+
+def test_call_chain_accepts_fault_leaf_from_rip_before_trace(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf+0x13/0x20", "caller+0x22/0x40"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] RIP: 0010:leaf+0x14/0x30",
+        "[   1.1] Call Trace:",
+        "[   1.2]  caller+0x25/0x40",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_keeps_part_symbols_distinct(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["iput.part.0", "iput"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  iput.part.0+0x4d8/0x7b0",
+        "[   1.2]  iput+0x5c/0x80",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_qemu_default_smp_is_deployment_configurable(tmp_path, monkeypatch):
+    plan = _plan(tmp_path)
+    plan.qemu_recipe.smp = ""
+    paths = persistent_qemu_paths("x86_64", runtime_root=tmp_path / "guests")
+    paths.image.parent.mkdir(parents=True)
+    paths.image.write_bytes(b"rootfs")
+    monkeypatch.setenv("LUMEN_QEMU_DEFAULT_SMP", "1")
+    command, _ = build_qemu_command(plan, paths, ssh_port=10021)
+    assert command[command.index("-smp") + 1] == "1"
+    plan.qemu_recipe.smp = "2"
+    command, _ = build_qemu_command(plan, paths, ssh_port=10021)
+    assert command[command.index("-smp") + 1] == "2"
+
+
+@pytest.mark.parametrize("value", ["0", "129", "one", "1 2"])
+def test_qemu_default_smp_rejects_unsafe_values(tmp_path, monkeypatch, value):
+    plan = _plan(tmp_path)
+    plan.qemu_recipe.smp = ""
+    paths = persistent_qemu_paths("x86_64", runtime_root=tmp_path / "guests")
+    paths.image.parent.mkdir(parents=True)
+    paths.image.write_bytes(b"rootfs")
+    monkeypatch.setenv("LUMEN_QEMU_DEFAULT_SMP", value)
+    with pytest.raises(ValueError, match="LUMEN_QEMU_DEFAULT_SMP"):
+        build_qemu_command(plan, paths, ssh_port=10021)
 
 
 def test_x86_launch_recipe_uses_loopback_ssh_and_serial_log(tmp_path):
@@ -245,3 +304,190 @@ def test_shutdown_force_kills_stuck_qemu(tmp_path, monkeypatch):
     assert result.status == "ok"
     assert signals == [15, 9]
     assert "SIGKILL" in result.message
+
+
+def test_shutdown_reaps_manager_owned_qemu_without_pid_probe(tmp_path):
+    plan = _plan(tmp_path)
+    manager = PersistentQemuManager(plan, runtime_root=tmp_path / "guests")
+    manager.paths.state_file.parent.mkdir(parents=True, exist_ok=True)
+    manager.paths.state_file.write_text('{"pid": 4242}', encoding="utf-8")
+
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self):
+            self.returncode = None
+            self.terminated = False
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.terminated = True
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    process = FakeProcess()
+    manager._process = process
+
+    result = manager.shutdown()
+
+    assert result.status == "ok"
+    assert process.terminated is True
+    assert manager._process is None
+
+
+def test_call_chain_order_keeps_question_marked_fault_leaf(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["strlen", "audit_log", "caller"]
+    plan.call_chain_oracle.required_frames = ["caller"]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  ? strlen+0x2c/0x70",
+        "[   1.2]  audit_log+0x1/0x2",
+        "[   1.3]  caller+0x1/0x2",
+        "[   1.4]  </TASK>",
+        "[   1.5]  RIP: 0010:strlen+0x2c/0x70",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_order_ignores_reversed_duplicate_contract_pairs(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "mid", "caller"]
+    plan.call_chain_oracle.required_frames = ["leaf", "mid", "caller"]
+    plan.call_chain_oracle.required_frame_order = [
+        ["caller", "mid"],
+        ["mid", "leaf"],
+    ]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  leaf+0x1/0x2",
+        "[   1.2]  mid+0x1/0x2",
+        "[   1.3]  caller+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_ignores_non_adjacent_reversed_contract_pair(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "middle", "caller"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    plan.call_chain_oracle.required_frame_order = [["caller", "leaf"]]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  leaf+0x1/0x2",
+        "[   1.2]  middle+0x1/0x2",
+        "[   1.3]  caller+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_ignores_mixed_supplementary_order_edges(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "caller"]
+    plan.call_chain_oracle.required_frames = ["leaf", "caller", "supplement"]
+    plan.call_chain_oracle.required_frame_order = [["supplement", "caller"]]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  leaf+0x1/0x2",
+        "[   1.2]  caller+0x1/0x2",
+        "[   1.3]  supplement+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_selects_complete_later_trace_block(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "caller"]
+    plan.call_chain_oracle.required_frames = ["caller"]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  leaf+0x1/0x2",
+        "[   1.2]  </TASK>",
+        "intermediate diagnostic output",
+        "[   2.0] Call Trace:",
+        "[   2.1]  leaf+0x1/0x2",
+        "[   2.2]  caller+0x1/0x2",
+        "[   2.3]  </TASK>",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["required_frames_found"] == ["leaf", "caller"]
+    assert match["frame_order_matched"] is True
+
+def test_call_chain_matches_symbol_offsets_from_different_build(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["diFree+0x13d/0x2dc0", "jfs_evict_inode+0x2c9/0x370"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  diFree+0x143/0x2d70",
+        "[   1.2]  jfs_evict_inode+0x2c3/0x360",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_strips_source_location_annotations(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = [
+        "mempool_alloc_noprof mm/mempool.c:402",
+        "bch2_data_thread fs/bcachefs/chardev.c:315",
+    ]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  mempool_alloc_noprof+0x10/0x20",
+        "[   1.2]  bch2_data_thread+0x30/0x40",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["required_frames_found"] == [
+        "mempool_alloc_noprof", "bch2_data_thread",
+    ]
+    assert match["frame_order_matched"] is True
+
+
+def test_qemu_deployment_inputs_are_configurable(tmp_path, monkeypatch):
+    image_root = tmp_path / "qemu-images"
+    monkeypatch.setenv("LUMEN_QEMU_IMAGE_ROOT", str(image_root))
+    paths = persistent_qemu_paths("x86_64")
+    assert paths.image == image_root / "x86_64" / "debian.img"
+
+    plan = _plan(tmp_path)
+    monkeypatch.setenv("LUMEN_QEMU_SSH_USER", "lumen")
+    manager = PersistentQemuManager(plan, runtime_root=tmp_path / "runtime")
+    assert manager._ssh_base(10021)[-1] == "lumen@127.0.0.1"
+
+    monkeypatch.setenv("LUMEN_QEMU_GUEST_WORKDIR", "/var/tmp/lumen-poc")
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+    assert "mkdir -p /var/tmp/lumen-poc/bin" in script
+    assert "cd /var/tmp/lumen-poc/reproducer" in script
+    assert "cd /var/tmp/lumen-poc" in script
+
+
+@pytest.mark.parametrize("name", ["/", "relative/path", "/tmp/../escape", "/tmp/space dir"])
+def test_qemu_guest_workdir_rejects_unsafe_values(tmp_path, monkeypatch, name):
+    plan = _plan(tmp_path)
+    monkeypatch.setenv("LUMEN_QEMU_GUEST_WORKDIR", name)
+    with pytest.raises(ValueError, match="LUMEN_QEMU_GUEST_WORKDIR"):
+        _render_execution_script(plan, "LUMEN_REPRO_START:case:path")

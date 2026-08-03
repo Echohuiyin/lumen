@@ -13,7 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from agents.contracts import ToolExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_display, set_session_dir, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.rag_integration import get_rag_context_for_query
-from agents.semcode_path_analysis import create_semcode_tools
+from agents.semcode_path_analysis import create_semcode_tools, resolve_kernel_source_for_commit
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
 
@@ -387,6 +387,7 @@ def _run_tool_calling_analysis(
     expert_name: str,
     output_file: str,
     kernel_source_path: str = "",
+    expected_kernel_commit: str = "",
     semcode_config: dict | None = None,
     max_iterations: int = 15,
 ) -> tuple[AIMessage, list[dict], dict, list[str]]:
@@ -422,6 +423,7 @@ def _run_tool_calling_analysis(
                 command=str(semcode_cfg["command"]),
                 args=semcode_cfg.get("args", []) or [],
                 kernel_source_path=source_path,
+                expected_kernel_commit=expected_kernel_commit,
                 evidence_sink=evidence,
             ))
 
@@ -731,6 +733,19 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
 
         # === 工具调用路径 ===
         # 文件存在，创建 crash session 并执行工具调用循环
+        declared_source = (state.get("input_artifacts_contract") or {}).get("kernel_source_path", "")
+        expected_commit = (state.get("input_artifacts_contract") or {}).get("expected_kernel_commit", "")
+        preflight_errors: list[str] = []
+        try:
+            resolved_source = resolve_kernel_source_for_commit(
+                declared_source,
+                expected_commit,
+                workspace_root=str(state.get("session_dir") or ""),
+            )
+        except Exception as exc:
+            resolved_source = ""
+            preflight_errors.append(f"kernel source worktree unavailable: {exc}")
+
         response, evidence, evidence_artifacts, evidence_errors = _run_tool_calling_analysis(
             llm=llm,
             system_prompt=system_prompt,
@@ -740,10 +755,12 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
             vmlinux_path=vmlinux_path,  # 使用展开后的路径
             expert_name=expert_name,
             output_file=output_file,
-            kernel_source_path=(state.get("input_artifacts_contract") or {}).get("kernel_source_path", ""),
+            kernel_source_path=resolved_source,
+            expected_kernel_commit=expected_commit,
             semcode_config=expert_config.get("agent", {}).get("semcode_mcp") or {},
             max_iterations=15,
         )
+        evidence_errors = [*preflight_errors, *evidence_errors]
 
         return {
             "expert_results": [_make_tool_result(

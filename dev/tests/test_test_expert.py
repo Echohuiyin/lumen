@@ -1,6 +1,7 @@
 """Focused offline tests for the isolated Test Expert handoff."""
 
 from pathlib import Path
+import os
 import sys
 import tempfile
 
@@ -9,7 +10,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
-from agents.test_expert import _build_plan, _promote_guest_capability_block, _semantic_review, test_expert_node
+from agents.persistent_qemu import PersistentQemuPaths
+from agents.test_expert import _attempt_runtime_root, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
 
 
 def _contract(root: Path) -> KernelExpertOutput:
@@ -41,6 +43,102 @@ def test_test_plan_compiles_userspace_source_inside_guest():
         assert plan.execution_steps[-1].type == "run_binary"
         assert plan.execution_steps[-1].path == "bin/lumen-repro"
         assert plan.call_chain_oracle.required_frames == ["target_frame"]
+
+
+def test_inline_source_frames_are_not_required_as_runtime_frames(tmp_path):
+    contract = _contract(tmp_path)
+    contract.original_call_chain = [
+        "caller",
+        "inline_helper [static inline, inlined into caller]",
+        "leaf",
+    ]
+    contract.call_chain_oracle.required_frames = list(contract.original_call_chain)
+    plan = _build_plan(contract)
+    assert plan.original_call_chain == contract.original_call_chain
+    assert plan.call_chain_oracle.required_frames == ["caller", "leaf"]
+
+
+def test_qemu_runtime_root_is_configurable(tmp_path, monkeypatch):
+    scratch = tmp_path / "scratch"
+    session = tmp_path / "session-id"
+    monkeypatch.setenv("LUMEN_QEMU_RUNTIME_ROOT", str(scratch))
+
+    actual = _attempt_runtime_root(str(session), 3)
+
+    assert actual == scratch.resolve() / "session-id" / "tryouts" / "tryout-03" / "qemu-ssh"
+
+
+def test_declared_rootfs_uses_co_located_ssh_key(tmp_path, monkeypatch):
+    custom_dir = tmp_path / "case-root"
+    custom_dir.mkdir()
+    image = custom_dir / "debian.img"
+    image.write_bytes(b"sparse-image-placeholder")
+    sibling_key = custom_dir / "lumen_qemu_ed25519"
+    sibling_key.write_text("case-specific-key\n", encoding="utf-8")
+
+    base_dir = tmp_path / "base" / "x86_64"
+    base_dir.mkdir(parents=True)
+    base_image = base_dir / "debian.img"
+    base_image.write_bytes(b"base-image")
+    default_key = base_dir / "lumen_qemu_ed25519"
+    default_key.write_text("deployment-default-key\n", encoding="utf-8")
+    base = PersistentQemuPaths(
+        arch="x86_64", image=base_image, ssh_key=default_key,
+        runtime_dir=base_dir / "runtime",
+    )
+
+    def fake_paths(arch, *, runtime_root=None):
+        if runtime_root is None:
+            return base
+        attempt_dir = Path(runtime_root) / "x86_64"
+        return PersistentQemuPaths(
+            arch="x86_64", image=attempt_dir / "debian.img",
+            ssh_key=attempt_dir / "lumen_qemu_ed25519",
+            runtime_dir=attempt_dir / "runtime",
+        )
+
+    monkeypatch.setattr("agents.test_expert.persistent_qemu_paths", fake_paths)
+    artifacts = _copy_base_image(
+        arch="x86_64", runtime_root=tmp_path / "attempt", source_image=str(image),
+    )
+
+    assert Path(artifacts["ssh_key_source"]) == sibling_key.resolve()
+    assert Path(artifacts["attempt_ssh_key"]).read_text(encoding="utf-8") == "case-specific-key\n"
+
+
+def test_declared_rootfs_without_co_located_ssh_key_is_blocked(tmp_path, monkeypatch):
+    custom_dir = tmp_path / "case-root"
+    custom_dir.mkdir()
+    image = custom_dir / "debian.img"
+    image.write_bytes(b"sparse-image-placeholder")
+    base_dir = tmp_path / "base" / "x86_64"
+    base_dir.mkdir(parents=True)
+    base_image = base_dir / "debian.img"
+    base_image.write_bytes(b"base-image")
+    default_key = base_dir / "lumen_qemu_ed25519"
+    default_key.write_text("deployment-default-key\n", encoding="utf-8")
+    base = PersistentQemuPaths(
+        arch="x86_64", image=base_image, ssh_key=default_key,
+        runtime_dir=base_dir / "runtime",
+    )
+
+    def fake_paths(arch, *, runtime_root=None):
+        if runtime_root is None:
+            return base
+        attempt_dir = Path(runtime_root) / "x86_64"
+        return PersistentQemuPaths(
+            arch="x86_64", image=attempt_dir / "debian.img",
+            ssh_key=attempt_dir / "lumen_qemu_ed25519",
+            runtime_dir=attempt_dir / "runtime",
+        )
+
+    monkeypatch.setattr("agents.test_expert.persistent_qemu_paths", fake_paths)
+    try:
+        _copy_base_image(arch="x86_64", runtime_root=tmp_path / "attempt", source_image=str(image))
+    except FileNotFoundError as exc:
+        assert "co-located SSH key" in str(exc)
+    else:
+        raise AssertionError("a custom rootfs without its SSH key must not use an unrelated fallback")
 
 
 def test_invalid_contract_is_blocked_before_image_copy():

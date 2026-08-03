@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import tempfile
 from typing import Any, Iterable
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -49,6 +50,10 @@ _ENTRY_FIELD_RE = re.compile(
     r"""(?ix)\b(?:function|func|entry(?:[ _-]?point)?|frame|symbol|caller|callee)\b
         [\"'`]?\s*[:=]\s*[\"'`]?([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"""
 )
+_TITLE_ENTRY_RE = re.compile(
+    r"""(?ix)\btitle\s*[:=].*?\bin\s+([A-Za-z_][A-Za-z0-9_]*)"""
+)
+
 _STACK_FIELD_RE = re.compile(
     r"""(?ix)\b(?:top[_ -]?stack|stack[_ -]?(?:trace|frames?)|call[_ -]?trace)\b
         [\"'`]?\s*[:=]\s*\[([^\]]{0,2000})\]"""
@@ -60,9 +65,102 @@ _STACK_FRAME_RE = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)\+0x[0-9a-fA-F]+"
 )
 
+# These MCP tools resolve entities from a particular source snapshot.  Meta
+# tools describe the index itself and deliberately do not accept git_sha.
+_GIT_AWARE_TOOLS = {
+    "find_function", "find_calls", "find_callees", "find_callers",
+    "find_type", "find_callchain",
+}
+
 
 class SemcodePathAnalysisError(RuntimeError):
     """A semcode dependency/protocol failure that must block P2 analysis."""
+
+
+def resolve_kernel_source_for_commit(
+    kernel_source_path: str,
+    expected_kernel_commit: str,
+    *,
+    workspace_root: str = "",
+) -> str:
+    """Return a source checkout whose default HEAD is the declared commit.
+
+    A shared checkout may be at a newer HEAD while a benchmark row points at
+    an older commit.  Semcode's git-aware calls are correct only when the
+    repository passed to the MCP server is itself pinned; a lightweight
+    ``--no-checkout`` worktree gives every session that invariant without
+    copying the kernel files or database.
+    """
+    source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
+    target = str(expected_kernel_commit or "").strip().lower()
+    if not source or not Path(source).is_dir():
+        raise SemcodePathAnalysisError(f"kernel_source does not exist: {source}")
+    if not re.fullmatch(r"[0-9a-f]{40}", target):
+        raise SemcodePathAnalysisError(
+            f"expected_kernel_commit is not a full 40-character SHA: {expected_kernel_commit}"
+        )
+    try:
+        resolved = subprocess.run(
+            ["git", "-C", source, "rev-parse", "--verify", f"{target}^{{commit}}"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SemcodePathAnalysisError(f"cannot resolve kernel commit: {exc}") from exc
+    if resolved.returncode != 0 or resolved.stdout.strip().lower() != target:
+        raise SemcodePathAnalysisError(
+            f"kernel source does not contain expected commit {target}"
+        )
+    try:
+        head = _git_head(source)
+    except SemcodePathAnalysisError:
+        head = ""
+    if head.lower() == target:
+        return source
+
+    root = Path(workspace_root).expanduser() if workspace_root else Path(
+        os.environ.get("LUMEN_KERNEL_SOURCE_WORKTREE_ROOT", tempfile.gettempdir())
+    )
+    worktree = (root / "kernel-source-worktrees" / hashlib.sha256(
+        f"{source}\0{target}".encode("utf-8")
+    ).hexdigest()[:24]).resolve()
+    worktree.parent.mkdir(parents=True, exist_ok=True)
+    if worktree.exists():
+        try:
+            existing = _git_head(str(worktree))
+        except SemcodePathAnalysisError:
+            existing = ""
+        if existing.lower() != target:
+            raise SemcodePathAnalysisError(
+                f"existing kernel source worktree is not pinned to {target}: {worktree}"
+            )
+    else:
+        try:
+            completed = subprocess.run(
+                ["git", "-C", source, "worktree", "add", "--detach", "--no-checkout",
+                 str(worktree), target],
+                capture_output=True, text=True, timeout=120, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SemcodePathAnalysisError(f"cannot create pinned kernel worktree: {exc}") from exc
+        if completed.returncode != 0:
+            raise SemcodePathAnalysisError(
+                f"cannot create pinned kernel worktree {worktree}: "
+                f"{(completed.stderr or completed.stdout).strip()[-500:]}"
+            )
+
+    source_db = Path(source) / ".semcode.db"
+    target_db = worktree / ".semcode.db"
+    if not source_db.exists():
+        raise SemcodePathAnalysisError(f"semcode index missing: {source_db}")
+    if target_db.exists() or target_db.is_symlink():
+        if target_db.is_symlink() and target_db.resolve() == source_db.resolve():
+            return str(worktree)
+        raise SemcodePathAnalysisError(f"pinned worktree has an unexpected .semcode.db: {target_db}")
+    try:
+        target_db.symlink_to(source_db, target_is_directory=source_db.is_dir())
+    except OSError as exc:
+        raise SemcodePathAnalysisError(f"cannot bind Semcode index into {worktree}: {exc}") from exc
+    return str(worktree)
 
 
 class SemcodeFunctionInput(BaseModel):
@@ -70,9 +168,15 @@ class SemcodeFunctionInput(BaseModel):
 
 
 def create_semcode_tools(*, command: str, args: Iterable[str], kernel_source_path: str,
+                         expected_kernel_commit: str = "",
                          evidence_sink: list[dict[str, Any]] | None = None) -> list[StructuredTool]:
     """Expose bounded Semcode lookups to tool experts without exposing MCP/shell."""
-    client = SemcodeMcpClient(command=command, args=args, kernel_source_path=kernel_source_path)
+    client = SemcodeMcpClient(
+        command=command,
+        args=args,
+        kernel_source_path=kernel_source_path,
+        git_sha=expected_kernel_commit,
+    )
 
     def find_function(name: str) -> str:
         try:
@@ -188,11 +292,13 @@ class SemcodeMcpClient:
         command: str,
         args: Iterable[str],
         kernel_source_path: str,
+        git_sha: str = "",
         timeout_sec: int = 120,
     ) -> None:
         self.command = command
         self.args = tuple(args)
         self.kernel_source_path = kernel_source_path
+        self.git_sha = git_sha.strip()
         self.timeout_sec = timeout_sec
 
     def find_function(self, name: str) -> SemcodeFunction:
@@ -201,6 +307,13 @@ class SemcodeMcpClient:
         return _parse_semcode_function(function_text, calls_text, requested_name=name)
 
     def _call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        if tool_name in _GIT_AWARE_TOOLS:
+            if not self.git_sha:
+                raise SemcodePathAnalysisError(
+                    f"semcode {tool_name} requires an explicit expected kernel commit"
+                )
+            arguments = {**arguments, "git_sha": self.git_sha}
+
         db_path = Path(self.kernel_source_path) / ".semcode.db"
         command = [
             *shlex.split(self.command), *_without_database_args(self.args),
@@ -258,12 +371,119 @@ class SemcodeMcpClient:
         )
 
 
+def verify_semcode_target(
+    *,
+    kernel_source_path: str,
+    expected_kernel_commit: str,
+    semcode_command: str,
+    semcode_args: Iterable[str] = (),
+    client: Any | None = None,
+) -> dict[str, Any]:
+    """Prove that Semcode can answer against the requested kernel snapshot.
+
+    ``git_sha`` on an individual query is not sufficient: the MCP server can
+    silently answer from its default HEAD when that snapshot is absent from
+    the index.  The deployment therefore has to expose an indexed branch whose
+    tip is the exact requested commit.  This function is a read-only gate and
+    returns evidence for the durable contract; callers must block on failure.
+    """
+    source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
+    target = str(expected_kernel_commit or "").strip().lower()
+    if not source or not Path(source).is_dir():
+        return {"status": "blocked", "blocked_reason": f"kernel_source does not exist: {source}"}
+    if not target:
+        return {
+            "status": "blocked",
+            "blocked_reason": "expected_kernel_commit is required for source verification",
+        }
+    if not re.fullmatch(r"[0-9a-f]{40}", target):
+        return {
+            "status": "blocked",
+            "blocked_reason": f"expected_kernel_commit is not a full 40-character SHA: {expected_kernel_commit}",
+        }
+    try:
+        completed = subprocess.run(
+            ["git", "-C", source, "rev-parse", "--verify", f"{target}^{{commit}}"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"status": "blocked", "blocked_reason": f"cannot verify kernel commit: {exc}"}
+    resolved = completed.stdout.strip().lower()
+    if completed.returncode != 0 or resolved != target:
+        return {
+            "status": "blocked",
+            "blocked_reason": (
+                f"kernel source does not contain expected commit {target}; "
+                f"git resolved {resolved or '<none>'}"
+            ),
+        }
+
+    semcode = client or SemcodeMcpClient(
+        command=semcode_command,
+        args=semcode_args,
+        kernel_source_path=source,
+        git_sha=target,
+    )
+    try:
+        branches = semcode._call("list_branches", {})
+        indexing = semcode._call("indexing_status", {})
+    except (SemcodePathAnalysisError, AttributeError) as exc:
+        return {"status": "blocked", "blocked_reason": f"cannot verify Semcode target index: {exc}"}
+
+    branch_re = re.compile(
+        r"^[ \t]*(?P<branch>\S+)[ \t]+\((?P<tip>[0-9a-fA-F]{8,40})\)[ \t]*\n"
+        r"(?P<details>(?:[ \t]+.*\n?)*)",
+        re.MULTILINE,
+    )
+    indexed_branch = ""
+    indexed_tip = ""
+    indexed_details = ""
+    for match in branch_re.finditer(branches or ""):
+        tip = match.group("tip").lower()
+        if target.startswith(tip) and "Status: up-to-date" in match.group("details"):
+            indexed_branch = match.group("branch")
+            indexed_tip = tip
+            indexed_details = match.group("details").strip()
+            break
+    if not indexed_branch:
+        return {
+            "status": "blocked",
+            "blocked_reason": (
+                f"Semcode target commit {target} is not proven by an up-to-date indexed branch; "
+                "refusing default-HEAD or direct-source fallback"
+            ),
+            "evidence": [{
+                "kind": "semcode_source_verification",
+                "kernel_source": source,
+                "expected_commit": target,
+                "git_object_verified": True,
+                "indexed_branches": branches[:4000],
+                "indexing_status": indexing[:1000],
+            }],
+        }
+    return {
+        "status": "ok",
+        "evidence": [{
+            "kind": "semcode_source_verification",
+            "kernel_source": source,
+            "expected_commit": target,
+            "git_object_verified": True,
+            "indexed_branch": indexed_branch,
+            "indexed_tip_prefix": indexed_tip,
+            "indexed_branch_details": indexed_details,
+            "indexing_status": indexing[:1000],
+            "default_head": _git_head(source),
+        }],
+    }
+
+
 def analyze_uaf_paths(
     *,
     kernel_source_path: str,
     entry_points: Iterable[str],
     semcode_command: str,
     semcode_args: Iterable[str] = (),
+    expected_kernel_commit: str = "",
     object_type: str = "unknown-with-rationale: object type is not derivable from a bounded call graph",
     concurrency_model: str = "unknown-with-rationale: bounded analysis does not prove interleavings",
     client: Any | None = None,
@@ -285,6 +505,11 @@ def analyze_uaf_paths(
         return _blocked(f"semcode index missing: {db_path}")
     if not normalized_entries:
         return _blocked("semcode path analysis requires a function entry point from input or crash evidence")
+    expected_kernel_commit = expected_kernel_commit.strip()
+    if not expected_kernel_commit:
+        return _blocked(
+            "expected_kernel_commit is required; refusing Semcode default-HEAD resolution"
+        )
     if not semcode_command:
         return _blocked("semcode_mcp.command is not configured")
 
@@ -295,11 +520,24 @@ def analyze_uaf_paths(
         return _blocked(f"semcode executable is not executable: {resolved_command[0]}")
 
     try:
-        kernel_commit = _git_head(normalized_source)
+        verification = verify_semcode_target(
+            kernel_source_path=normalized_source,
+            expected_kernel_commit=expected_kernel_commit,
+            semcode_command=semcode_command,
+            semcode_args=semcode_args,
+            client=client,
+        )
+        if verification["status"] != "ok":
+            return _blocked(
+                verification["blocked_reason"],
+                evidence=verification.get("evidence", []),
+            )
+        kernel_commit = expected_kernel_commit
         semcode = client or SemcodeMcpClient(
             command=semcode_command,
             args=semcode_args,
             kernel_source_path=normalized_source,
+            git_sha=expected_kernel_commit,
         )
         functions = [semcode.find_function(entry) for entry in normalized_entries]
     except SemcodePathAnalysisError as exc:
@@ -323,7 +561,7 @@ def analyze_uaf_paths(
         "P2 traverses semcode direct callees only; transitive paths require a later bounded-depth expansion.",
         "Macro expansion, function pointers, callbacks and cross-subsystem aliasing are not proven by this event graph.",
     ]
-    evidence: list[dict[str, Any]] = []
+    evidence: list[dict[str, Any]] = [*verification.get("evidence", [])]
     for function in functions:
         generated, function_unresolved, function_evidence, function_limits = _paths_for_function(function)
         paths.extend(generated)
@@ -517,11 +755,12 @@ def _extract_identifiers(text: str) -> list[str]:
     """Extract kernel symbols from explicit and structured crash evidence."""
     value = text or ""
     explicit = _ENTRY_FIELD_RE.findall(value)
+    title_entries = _TITLE_ENTRY_RE.findall(value)
     structured_stack: list[str] = []
     for block in _STACK_FIELD_RE.findall(value):
         structured_stack.extend(_STACK_SYMBOL_RE.findall(block))
     stack = _STACK_FRAME_RE.findall(value)
-    return [*explicit, *structured_stack, *stack]
+    return [*explicit, *title_entries, *structured_stack, *stack]
 
 
 def _unique_identifiers(values: Iterable[str]) -> list[str]:
@@ -548,14 +787,14 @@ def _unique_text(values: Iterable[str]) -> list[str]:
 
 
 def _without_database_args(args: Iterable[str]) -> list[str]:
-    """Ignore MCP-configured database arguments; input.txt is the sole source."""
+    """Ignore MCP-configured index arguments; the declared source is authoritative."""
     cleaned: list[str] = []
     iterator = iter(args)
     for arg in iterator:
-        if arg == "-d":
+        if arg in ("-d", "--database", "--git-repo"):
             next(iterator, None)
             continue
-        if str(arg).startswith("--database="):
+        if str(arg).startswith("--database=") or str(arg).startswith("--git-repo="):
             continue
         cleaned.append(str(arg))
     return cleaned
@@ -586,8 +825,15 @@ def _stable_case_id(kernel_source_path: str, kernel_commit: str, entry_points: I
     return f"semcode-{hashlib.sha256(material.encode('utf-8')).hexdigest()[:16]}"
 
 
-def _blocked(reason: str) -> SemcodePathAnalysisResult:
+def _blocked(
+    reason: str,
+    *,
+    evidence: Iterable[dict[str, Any]] = (),
+) -> SemcodePathAnalysisResult:
     return SemcodePathAnalysisResult(
         status="blocked", blocked_reason=reason,
-        evidence=[{"kind": "semcode_event_graph", "status": "blocked", "reason": reason}],
+        evidence=[
+            {"kind": "semcode_event_graph", "status": "blocked", "reason": reason},
+            *list(evidence),
+        ],
     )

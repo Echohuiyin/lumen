@@ -35,6 +35,15 @@ def classify_error(exc: BaseException | str, *, operation: str = "operation") ->
             category="UNAVAILABLE", code="DEPENDENCY_UNAVAILABLE", message=f"{operation} dependency is unavailable",
             cause=message[:500], next_action="Install or configure the missing dependency, then rerun this node.",
         )
+    if any(marker in lowered for marker in (
+        "402", "payment required", "insufficient balance", "insufficient_quota",
+        "quota exhausted", "out of credits", "credit balance", "billing",
+    )):
+        return ErrorEnvelope(
+            category="PERMANENT", code="QUOTA_EXHAUSTED", message=f"{operation} provider quota is unavailable",
+            cause=message[:500],
+            next_action="Restore provider balance/quota, then rerun this operation; no model fallback is permitted.",
+        )
     if isinstance(exc, PermissionError) or "unauthorized" in lowered or "authentication" in lowered or " 401" in lowered:
         return ErrorEnvelope(
             category="PERMANENT", code="AUTHORIZATION_FAILED", message=f"{operation} authorization failed",

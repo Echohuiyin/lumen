@@ -9,10 +9,47 @@ from datetime import datetime
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_display, set_session_dir
-from agents.error_handling import classify_error
+from agents.error_handling import classify_error, error_to_evidence
 from llm_config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
 from graph.rn_state import MaintenanceWorkflowState
 from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
+
+
+def _blocked_knowledge_base_result(state: MaintenanceWorkflowState, error) -> dict:
+    """Return a terminal, auditable archive failure without synthetic content."""
+    evidence = error_to_evidence(error, operation="knowledge_base LLM summary")
+    payload = {
+        "status": "blocked",
+        "code": "BLOCKED_KNOWLEDGE_BASE_LLM",
+        "error": evidence,
+    }
+    artifact_path = ""
+    session_dir = str(state.get("session_dir", "") or "").strip()
+    if session_dir:
+        path = Path(session_dir).expanduser().resolve() / "knowledge_base_blocked.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            artifact_path = str(path)
+        except OSError:
+            # The provider error remains the source of truth; do not replace
+            # it with a second exception when the session directory is unwritable.
+            artifact_path = ""
+    cause = error.cause or error.message
+    next_action = error.next_action or "Restore the provider configuration and rerun."
+    final_response = (
+        "知识库归档已阻断，未生成或导入任何伪造摘要。\n"
+        f"状态: {payload['code']} ({error.category}/{error.code})\n"
+        f"原因: {cause}\n"
+        f"下一步: {next_action}"
+    )
+    if artifact_path:
+        final_response += f"\n错误证据: {artifact_path}"
+    return {
+        "knowledge_file": "",
+        "knowledge_base_contract": payload,
+        "final_response": final_response,
+    }
 
 
 def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
@@ -21,10 +58,15 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     config = state.get("config", {})
     agent_config = config.get("agents", {}).get("knowledge_base", {})
     default_config = config.get("default", {})
-    llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="knowledge_base")
-    system_prompt = load_prompt_from_file(
-        agent_config.get("prompt_file", "prompts/knowledge_base.md")
-    )
+    try:
+        llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="knowledge_base")
+        system_prompt = load_prompt_from_file(
+            agent_config.get("prompt_file", "prompts/knowledge_base.md")
+        )
+    except Exception as exc:
+        return _blocked_knowledge_base_result(
+            state, classify_error(exc, operation="knowledge_base configuration")
+        )
 
     # 汇总所有分析结果
     expert_results = state.get("expert_results", [])
@@ -86,13 +128,10 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         knowledge_content = response.content.strip()
     except Exception as e:
         # This is the terminal evidence-archive node. A model/API failure
-        # must remain a terminal failure; serializing raw state as a fake
-        # summary would violate the no-fallback workflow contract.
+        # must remain a terminal blocked result; serializing raw state as a
+        # fake summary would violate the no-fallback workflow contract.
         error = classify_error(e, operation="knowledge_base LLM summary")
-        raise RuntimeError(
-            f"knowledge_base LLM summary failed ({error.category}/{error.code}): "
-            f"{error.message}"
-        ) from e
+        return _blocked_knowledge_base_result(state, error)
 
     # Do not delegate the evidence appendix to the LLM.  The report remains
     # useful even when it summarises poorly or its output is truncated.

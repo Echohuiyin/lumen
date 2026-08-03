@@ -5,19 +5,28 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE_ROOT="${PROJECT_ROOT}/runtime/qemu-ssh"
-DISTRIBUTION="bookworm"
-ARCH="all"
-MIRROR="${LUMEN_DEBIAN_MIRROR:-https://mirrors.aliyun.com/debian}"
+IMAGE_ROOT="${LUMEN_QEMU_IMAGE_ROOT:-${PROJECT_ROOT}/runtime/qemu-ssh}"
+DISTRIBUTION="${LUMEN_DEBIAN_DISTRIBUTION:-bookworm}"
+ARCH="${LUMEN_QEMU_ARCH:-all}"
+MIRROR="${LUMEN_DEBIAN_MIRROR:-}"
+REBUILD="${LUMEN_QEMU_REBUILD:-0}"
+if [[ "$REBUILD" == "1" || "$REBUILD" == "true" ]]; then
+    REBUILD=true
+else
+    REBUILD=false
+fi
 
 usage() {
     cat <<'EOF'
-Usage: bash scripts/provision_qemu_ssh_image.sh [--arch x86_64|arm64|all] [--distribution bookworm] [--image-root PATH]
+Usage: bash scripts/provision_qemu_ssh_image.sh [--arch x86_64|arm64|all] [--distribution NAME] [--mirror URL] [--image-root PATH] [--rebuild]
 
 Builds Debian ext4 guest images with sshd and a generated root SSH key.  The
 images and private keys are deployment artifacts under runtime/qemu-ssh/ and
 are intentionally ignored by Git.  Cross-architecture arm64 creation requires
-qemu-user-static and binfmt support on an x86_64 host.
+qemu-user-static and binfmt support on an x86_64 host.  Set
+LUMEN_DEBIAN_MIRROR (or pass --mirror) to choose the package source.  When it
+is omitted, the first HTTP(S) source configured by the host's APT files is
+used; there is no project-specific mirror default.
 EOF
 }
 
@@ -25,7 +34,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --arch) ARCH="$2"; shift 2 ;;
         --distribution) DISTRIBUTION="$2"; shift 2 ;;
+        --mirror) MIRROR="$2"; shift 2 ;;
         --image-root) IMAGE_ROOT="$2"; shift 2 ;;
+        --rebuild) REBUILD=true; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -36,6 +47,44 @@ require_command() {
         echo "ERROR: required command not found: $1 ($2)" >&2
         exit 1
     fi
+
+}
+
+resolve_mirror() {
+    if [[ -n "$MIRROR" ]]; then
+        return
+    fi
+
+    local source_file candidate
+    while IFS= read -r -d '' source_file; do
+        candidate="$(grep -Eho 'https?://[^[:space:]]+' "$source_file" 2>/dev/null | head -n 1 || true)"
+        if [[ -n "$candidate" ]]; then
+            MIRROR="${candidate%/}"
+            echo "[INFO] using Debian mirror discovered from ${source_file}: ${MIRROR}"
+            return
+        fi
+    done < <(find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) -print0 2>/dev/null)
+
+    echo "ERROR: Debian mirror is not configured; set LUMEN_DEBIAN_MIRROR or pass --mirror URL" >&2
+    exit 1
+}
+
+manifest_matches() {
+    local manifest="$1" lumen_arch="$2" distribution="$3" package
+    grep -Fxq "schema=1" "$manifest" &&
+        grep -Fxq "arch=${lumen_arch}" "$manifest" &&
+        grep -Fxq "distribution=${distribution}" "$manifest" || return 1
+    for package in "${guest_packages[@]}"; do
+        grep -Fxq "package=${package}" "$manifest" || return 1
+    done
+}
+
+backup_artifact() {
+    local artifact="$1" backup
+    [[ -e "$artifact" ]] || return 0
+    backup="${artifact}.legacy-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    mv -- "$artifact" "$backup"
+    echo "[WARN] preserved previous artifact: ${backup}"
 }
 
 require_command sudo "install sudo/debootstrap prerequisites first"
@@ -60,7 +109,10 @@ cleanup_rootfs_mounts() {
 }
 
 build_one() {
-    local lumen_arch="$1" deb_arch rootfs image key qemu_static binfmt_name use_static=false
+    local lumen_arch="$1" deb_arch rootfs image key manifest qemu_static binfmt_name
+    local manifest_tmp
+    local -a guest_packages
+    local use_static=false
     case "$lumen_arch" in
         x86_64) deb_arch="amd64" ;;
         arm64) deb_arch="arm64" ;;
@@ -69,19 +121,42 @@ build_one() {
     rootfs="${IMAGE_ROOT}/${lumen_arch}/rootfs"
     image="${IMAGE_ROOT}/${lumen_arch}/debian.img"
     key="${IMAGE_ROOT}/${lumen_arch}/lumen_qemu_ed25519"
-
-    if [[ -s "$image" && -s "$key" ]]; then
-        echo "[OK] persistent SSH image exists: $lumen_arch"
-        return
+    manifest="${IMAGE_ROOT}/${lumen_arch}/guest-components.manifest"
+    guest_packages=(
+        openssh-server kmod iproute2 ca-certificates coreutils
+        curl tar time strace psmisc iputils-ping dnsutils net-tools
+        gcc libc6-dev make stress-ng
+    )
+    if [[ "$lumen_arch" == "arm64" ]]; then
+        guest_packages+=(haveged)
     fi
+    mkdir -p "$(dirname "$rootfs")"
+
     if [[ -e "$rootfs" ]]; then
         echo "ERROR: incomplete rootfs exists: $rootfs; remove it explicitly before rebuilding" >&2
         exit 1
     fi
+    if [[ -s "$image" && -s "$key" && -s "${key}.pub" && -s "$manifest" ]] &&
+        manifest_matches "$manifest" "$lumen_arch" "$DISTRIBUTION"; then
+        echo "[OK] persistent SSH image with declared guest components exists: $lumen_arch"
+        return
+    fi
+    if [[ "$REBUILD" != true ]] && [[ -e "$image" || -e "$key" || -e "${key}.pub" || -e "$manifest" ]]; then
+        echo "ERROR: existing ${lumen_arch} artifacts have no matching guest-components.manifest; set LUMEN_QEMU_REBUILD=1 or pass --rebuild to preserve them and rebuild" >&2
+        exit 1
+    fi
+    if [[ "$REBUILD" == true ]]; then
+        backup_artifact "$image"
+        backup_artifact "$key"
+        backup_artifact "${key}.pub"
+        backup_artifact "$manifest"
+    fi
+    resolve_mirror
+
     if [[ "$lumen_arch" != "$host_arch" ]]; then
         case "$lumen_arch" in
-            x86_64) qemu_static="/usr/bin/qemu-x86_64-static"; binfmt_name="qemu-x86_64" ;;
-            arm64) qemu_static="/usr/bin/qemu-aarch64-static"; binfmt_name="qemu-aarch64" ;;
+            x86_64) qemu_static="$(command -v qemu-x86_64-static || true)"; binfmt_name="qemu-x86_64" ;;
+            arm64) qemu_static="$(command -v qemu-aarch64-static || true)"; binfmt_name="qemu-aarch64" ;;
         esac
         if [[ -x "$qemu_static" ]]; then
             use_static=true
@@ -123,17 +198,9 @@ auto eth0
 iface eth0 inet dhcp
 EOF
     sudo chroot "$rootfs" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get update
-    guest_packages=(
-        openssh-server kmod iproute2 ca-certificates coreutils
-        curl tar time strace psmisc iputils-ping dnsutils net-tools
-        gcc libc6-dev make stress-ng
-    )
-    if [[ "$lumen_arch" == "arm64" ]]; then
-        # arm64 TCG on an x86 host may have too little entropy for sshd to
-        # create host keys promptly; this is the same issue called out by
-        # syzkaller's arm64 QEMU setup guide.
-        guest_packages+=(haveged)
-    fi
+    # arm64 TCG on an x86 host may have too little entropy for sshd to
+    # create host keys promptly; this is the same issue called out by
+    # syzkaller's arm64 QEMU setup guide.
     sudo chroot "$rootfs" /usr/bin/env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         "${guest_packages[@]}"
     sudo chroot "$rootfs" systemctl enable ssh
@@ -150,6 +217,16 @@ EOF
     sudo mke2fs -q -t ext4 -d "$rootfs" "$image"
     sudo chown "$(id -u):$(id -g)" "$image"
     sudo rm -rf "$rootfs"
+    manifest_tmp="${manifest}.tmp.$$"
+    {
+        echo "schema=1"
+        echo "arch=${lumen_arch}"
+        echo "distribution=${DISTRIBUTION}"
+        for package in "${guest_packages[@]}"; do
+            echo "package=${package}"
+        done
+    } > "$manifest_tmp"
+    mv -f -- "$manifest_tmp" "$manifest"
     echo "[OK] built persistent SSH image: $image"
 }
 

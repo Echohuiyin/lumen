@@ -42,7 +42,7 @@ python3 main.py input.txt --config config.json
 | crash build libraries | Build crash for both targets | `apt install libncurses-dev zlib1g-dev liblzo2-dev libsnappy-dev libzstd-dev libgmp-dev libmpfr-dev` |
 | cpio / gzip | Initramfs packaging | `apt install cpio gzip` |
 | git / wget | Fetch sources during deployment | `apt install git wget` |
-| Claude Code CLI | Default KernelExpert backend | `npm install -g @anthropic-ai/claude-code` |
+| Codex CLI + bubblewrap | KernelExpert agent-loop backend and sandbox | `npm install -g @openai/codex`; `apt install bubblewrap` |
 | Embedding endpoint | Full RAG historical-case retrieval and Chroma import | Any configured OpenAI-compatible `/v1/embeddings` service |
 | semcode-mcp | Semantic code search | Built by `deploy.sh` under `Analysis-SKILL/tools/semcode/` |
 | Analysis-SKILL | Kernel tools and skills | `git submodule update --init --recursive` |
@@ -67,35 +67,37 @@ full RAG retrieval/import. If it is missing or unavailable, configuration is
 reported explicitly; Lumen does not substitute another provider or account.
 
 2. `config.json` is generated from `config.json.template`. The default chat
-backend is Anthropic-compatible; `kernel_expert` uses Claude Code. OpenAI,
-HTTP, and OpenCode backends are also configurable there.
+backend is Anthropic-compatible; `kernel_expert` is fixed to the project-
+isolated Codex backend. Other backends remain available to non-Kernel-Expert
+roles only; there is no Kernel Expert backend, account, or model fallback.
 
 Backend 说明：
 
 | Backend | 作用与适用场景 |
 |---------|----------------|
 | `anthropic` | 普通 Anthropic-compatible 聊天 API，适合 validator、PM、工具专家和知识库总结；端点和模型由部署配置提供。 |
-| `claude_code` | Claude Code CLI agent loop，提供文件读写、编译、Shell 和多轮工具调用；Kernel Expert 的默认 backend。 |
-| `opencode` | 可替代 Claude Code 的 CLI agent loop，适用于需要独立 provider 或 API 配置的 Kernel Expert 部署。 |
+| `codex` | 项目隔离的 Codex CLI agent loop；Kernel Expert 的唯一 backend，负责读取源码与日志、使用 Semcode 并生成用户态 C reproducer。 |
 
-Kernel Expert 必须使用 `claude_code` 或 `opencode`；普通 `anthropic` backend
-不支持其 `workdir`/`add_dirs` 文件操作接口。
+Kernel Expert 必须使用 `codex`；`anthropic`、`claude_code`、`opencode` 或其他
+provider/backend/model 均不得作为该角色的 fallback。
 
-Kernel Expert uses Claude Code with a project-local settings file. Copy the selected file with cp $HOME/.claude/settings.json .claude/settings.json and chmod 600 .claude/settings.json. The configuration passes it through --settings and sets --setting-sources project, so user-level settings and skills are not loaded. A missing file is a terminal configuration error; Lumen never switches to another account or a global settings file.
-KernelExpert must use the `claude_code` or `opencode` agent-loop backend:
-the workflow passes `workdir` and `add_dirs` to `invoke()` so the agent can
-construct and validate PoC artifacts. The plain `anthropic` backend is not
-compatible with this interface.
+Kernel Expert uses `codex exec` with an ignored project runtime HOME under
+`runtime/codex-home`. `deploy.sh` copies an existing Codex `auth.json` with
+mode 600 (or accepts invocation-scoped `CODEX_API_KEY`) and exposes repository
+skills through `.agents/skills`. User config/rules and plugin/app/multi-agent
+extensions are disabled. Semcode MCP is required, and the kernel source is
+readable but is never added as a writable Codex workspace. The deploy script
+records the detected Codex executable in `.env`; source `.env` before running
+Lumen so user-level npm installations remain portable across login shells.
 
-With a local Claude Code installation, run the online backend smoke test with:
+With a local Codex installation, run the online backend smoke test with:
 
 ```bash
-venv/bin/pytest -m online --run-online dev/tests/test_claude_code_online.py
+venv/bin/pytest -m online --run-online dev/tests/test_codex_online.py
 ```
 
-The test requires `LUMEN_CLAUDE_SETTINGS_FILE` and `LUMEN_KERNEL_SOURCE`, checks
-the local `workdir`/`add_dirs` agent-loop contract, and
-does not run a kernel or QEMU case.
+The test requires isolated Codex authentication and `LUMEN_KERNEL_SOURCE`,
+checks the read-only-source/session-output contract, and does not run QEMU.
 
 ## Input Format
 
@@ -114,10 +116,29 @@ absent, Lumen extracts it from `vmcore` plus `vmlinux` into the session and
 passes that generated log path to KernelExpert. `boot_kernel` enables QEMU
 verification.
 
+QEMU deployment inputs are configurable and are not tied to a developer's
+machine:
+
+- `LUMEN_QEMU_IMAGE_ROOT`: persistent image/key root (default:
+  `<project>/runtime/qemu-ssh`).
+- `LUMEN_QEMU_RUNTIME_ROOT`: per-session writable scratch root (use tmpfs or
+  NVMe when the project filesystem is constrained).
+- `LUMEN_QEMU_SSH_USER`: guest account matching the provisioned key (default:
+  `root`).
+- `LUMEN_QEMU_GUEST_WORKDIR`: guest-side POC directory (default:
+  `/tmp/lumen-poc`).
+- `LUMEN_QEMU_DEFAULT_SMP`: deployment default vCPU count used only when the
+  contract leaves `qemu_recipe.smp` empty (default: `2`; explicit contract
+  values always win). This is useful for older kernels that cannot boot
+  reliably with secondary CPUs under QEMU.
+
+The runner validates these values before starting QEMU and keeps the original
+userspace-C and call-chain contracts unchanged.
+
 ## Workflow
 
 ```
-Input → Validator → PM → ToolExperts (fan-out) → KernelExpert Claude loop → KnowledgeBase → Result
+Input → Validator → PM → ToolExperts (fan-out) → KernelExpert Codex loop → KnowledgeBase → Result
                          │                         (analyse → PoC → persistent SSH QEMU)
                          └────────────────── expert results + raw user log ─────────────────────┘
 ```
@@ -126,9 +147,9 @@ The LangGraph state carries the original input, parsed artifacts, expert
 results, reproduction contract, and test result through the workflow. PM selects
 the applicable tool experts; their results are accumulated in `expert_results`
 before KernelExpert receives them. The original `log:` path and each tool
-expert's persisted result-file path are passed independently; the Claude loop
+expert's persisted result-file path are passed independently; the Codex loop
 reads the original evidence on demand rather than receiving copied summaries.
-One Claude Code loop then analyses, creates a PoC, and invokes the deterministic
+One Codex loop then analyses, creates a PoC, and invokes the deterministic
 persistent-QEMU SSH runner. Every pass, failure, and blocked result is archived.
 
 | Node | Responsibility | Output to the next stage |
@@ -136,7 +157,7 @@ persistent-QEMU SSH runner. Every pass, failure, and blocked result is archived.
 | Validator | Checks that the problem is actionable; parses artifact paths, logs, and target architecture. | Validation and input-artifact contracts. |
 | PM | Deterministically routes by available evidence: always searches historical cases; log evidence adds `kernel_log_analysis`; crash evidence adds `crash_analysis`; lockup/RCU/hung-task evidence uses `lock_analysis` instead of duplicate crash analysis. | Expert routing plan and issue ID. |
 | ToolExperts | Run independently: `lock_analysis` diagnoses lock/hung-task issues; `crash_analysis` inspects vmcore and stack evidence; `kernel_log_analysis` extracts a failure timeline; `knowledge_search` finds similar cases. | Structured evidence and analysis summaries. |
-| KernelExpert | In one Claude Code loop, combines raw logs and expert evidence, analyzes source, creates a PoC, then requests deterministic verification. If the final structured contract is empty or malformed, it retries once inside the same loop; otherwise it blocks. | PoC contract plus the runner-owned test contract. |
+| KernelExpert | In one project-isolated Codex loop, combines raw logs and expert evidence, analyzes source through required Semcode MCP, and creates a userspace C PoC. If the final structured contract is empty or malformed, it retries once; otherwise it blocks. | PoC contract plus the runner-owned test contract. |
 | Persistent QEMU runner | Reuses only a guest with the same kernel/rootfs/architecture/recipe identity; uploads the PoC through loopback SSH and evaluates host serial evidence. | SSH output, serial log, and pass/fail/blocked evidence. |
 | KnowledgeBase | Summarizes the evidence, reproducer, and test outcome; archives the case and optionally imports it into Chroma. | Knowledge-base document and final response. |
 
@@ -156,6 +177,14 @@ used by PoC validation (`curl`, `iproute2`, `net-tools`, `strace`, `gcc`,
 in the guest by default: the runner does not clone sources or perform
 interactive debugging inside the VM.
 
+
+On hosts where the project filesystem is also receiving large benchmark assets,
+set `LUMEN_QEMU_RUNTIME_ROOT` to a writable scratch filesystem before running
+E2E cases. It relocates only per-try-out writable images and QEMU runtime logs;
+the source-controlled project paths and the immutable base images remain
+configurable and unchanged. Leave it unset to keep the default `sessions/`
+layout.
+
 ## Project Structure
 
 ```
@@ -164,7 +193,7 @@ interactive debugging inside the VM.
 ├── config.json.template    # LLM/workflow config template
 ├── agents/                 # LangGraph agent nodes
 │   ├── backends.py         # LLM backend abstraction
-│   ├── kernel_expert.py    # Claude analysis → PoC → verification loop
+│   ├── kernel_expert.py    # Codex analysis → PoC → verification loop
 │   ├── persistent_qemu.py  # Persistent QEMU lifecycle and SSH execution
 │   ├── qemu_tools.py       # Legacy one-shot QEMU wrappers
 │   └── ...

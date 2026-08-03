@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 
-from agents.backends import AnthropicBackend, CLIBackend, ClaudeCodeBackend, HTTPBackend, OpenCodeBackend
+from agents.backends import AnthropicBackend, CLIBackend, ClaudeCodeBackend, CodexBackend, HTTPBackend, OpenCodeBackend
 from paths import PROJECT_ROOT, resolve_aicrasher_path
 
 # Add aicrasher to Python path for crash session management (from submodule)
@@ -25,14 +25,14 @@ AUTOMATION_AGENTS = [
     "improvement",
 ]
 
-# Automation agents permitted to use an agent-loop CLI backend (claude_code
-# or opencode). These delegates run `claude -p` / `opencode run` whose own
-# agent loop is mature enough to run without interactive prompts (unlike raw
-# CLIBackend). kernel_expert is the canonical user — it needs Read/Write/Bash
-# to build reproducer artifacts.
+# Automation agents permitted to use an agent-loop CLI backend. Kernel Expert
+# is deliberately restricted to the project-isolated Codex backend. Other
+# automation agents retain their configured restrictions; no backend is
+# selected here as a recovery path for Kernel Expert.
 AGENT_LOOP_ALLOWED = {"kernel_expert"}
-# Back-compat alias for any code still referencing the old name.
+# Back-compat alias for code that still imports the old constant.
 CLAUDE_CODE_ALLOWED = AGENT_LOOP_ALLOWED
+CODEX_ALLOWED = AGENT_LOOP_ALLOWED
 
 DEFAULT_CONFIG_PATH = "config.json"
 
@@ -46,26 +46,23 @@ def validate_agent_backend(agent_name: str, backend: str) -> None:
     """Validate that automation agents don't use raw CLI backend.
 
     CLI backend requires interactive user input and will block the workflow.
-    Automation agents must use OpenAI, HTTP, or an agent-loop backend
-    (claude_code / opencode) for automatic execution. Both `claude -p` and
-    `opencode run` run non-interactively with their own agent loop, and
-    are gated by AGENT_LOOP_ALLOWED.
+    Kernel Expert additionally requires the project-isolated Codex backend;
+    other automation agents retain their configured backend restrictions.
     """
     if agent_name in AUTOMATION_AGENTS and backend == "cli":
         raise ValueError(
             f"Agent '{agent_name}' is an automation agent and cannot use CLI backend. "
             f"CLI backend requires interactive user input and will block the workflow. "
-            f"Please use 'openai', 'http', 'claude_code', or 'opencode' backend instead."
+            f"Please use the configured non-interactive backend instead."
         )
-    if agent_name == "kernel_expert" and backend not in {"claude_code", "opencode"}:
+    if agent_name == "kernel_expert" and backend != "codex":
         raise ValueError(
-            "Agent 'kernel_expert' requires a CLI agent-loop backend because its "
-            "invoke() call passes workdir= and add_dirs= for PoC construction. "
-            "Use 'claude_code' or 'opencode'; AnthropicBackend is not compatible."
+            "Agent 'kernel_expert' must use the project-isolated Codex backend "
+            "('codex'); Claude Code, OpenCode, and provider/model fallbacks are forbidden."
         )
     if (
         agent_name in AUTOMATION_AGENTS
-        and backend in {"claude_code", "opencode"}
+        and backend in {"claude_code", "codex", "opencode"}
         and agent_name not in AGENT_LOOP_ALLOWED
     ):
         raise ValueError(
@@ -116,6 +113,24 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             cli_stdin=bool(agent_config.get("cli_stdin", defaults.get("cli_stdin", False))),
         )
     elif backend == "claude_code":
+        if agent_name == "kernel_expert":
+            configured_settings = agent_config.get("settings_file") or defaults.get("settings_file", "")
+            configured_pool = agent_config.get("model_pool") or defaults.get("model_pool")
+            configured_sources = agent_config.get("setting_sources") or defaults.get("setting_sources")
+            if configured_pool:
+                raise ValueError(
+                    "Agent 'kernel_expert' cannot configure model_pool; "
+                    "quota/model fallback is forbidden."
+                )
+            if "," in str(configured_settings):
+                raise ValueError(
+                    "Agent 'kernel_expert' requires exactly one project Claude settings file; "
+                    "settings fallback lists are forbidden."
+                )
+            if str(configured_sources).strip() != "project":
+                raise ValueError(
+                    "Agent 'kernel_expert' must load Claude settings from project only."
+                )
         return ClaudeCodeBackend(
             cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "claude"),
             cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 600)),
@@ -130,6 +145,22 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
             disable_skills=bool(agent_config.get("disable_skills", defaults.get("disable_skills", False))),
             setting_sources=agent_config.get("setting_sources") or defaults.get("setting_sources"),
+        )
+    elif backend == "codex":
+        return CodexBackend(
+            cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "codex"),
+            cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 14400)),
+            model=agent_config.get("model") or agent_config.get("model_name") or defaults.get("model") or defaults.get("model_name", ""),
+            reasoning_effort=agent_config.get("reasoning_effort") or defaults.get("reasoning_effort", ""),
+            sandbox_mode=agent_config.get("sandbox_mode") or defaults.get("sandbox_mode", "workspace-write"),
+            approval_policy=agent_config.get("approval_policy") or defaults.get("approval_policy", "never"),
+            runtime_home=agent_config.get("runtime_home") or defaults.get("runtime_home", ""),
+            project_root=agent_config.get("project_root") or defaults.get("project_root", ""),
+            project_skills_dir=agent_config.get("project_skills_dir") or defaults.get("project_skills_dir", ""),
+            semcode_mcp=agent_config.get("semcode_mcp") or defaults.get("semcode_mcp", {}),
+            ephemeral=bool(agent_config.get("ephemeral", defaults.get("ephemeral", True))),
+            ignore_user_config=bool(agent_config.get("ignore_user_config", defaults.get("ignore_user_config", True))),
+            ignore_rules=bool(agent_config.get("ignore_rules", defaults.get("ignore_rules", True))),
         )
     elif backend == "opencode":
         return OpenCodeBackend(
@@ -153,7 +184,7 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             response_path=agent_config.get("http_response_path") or defaults.get("http_response_path", "choices.0.message.content"),
         )
     else:
-        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', 'claude_code', 'opencode', or 'http'.")
+        raise ValueError(f"Unknown backend type: {backend!r}. Expected 'openai', 'anthropic', 'cli', 'claude_code', 'codex', 'opencode', or 'http'.")
 
 
 def load_prompt_from_file(path: str) -> str:
@@ -177,7 +208,8 @@ def _resolve_env_vars(text: str) -> str:
     """
     # Known vars we allow for simple $VAR style (no braces)
     _SIMPLE_VARS = {"HOME", "USER", "LUMEN_OUTPUT_DIR", "LUMEN_PROJECT_ROOT",
-                    "KERNEL_SOURCE_DIR", "LUMEN_SEMCODE_MCP", "CLAUDE_SETTINGS"}
+                    "KERNEL_SOURCE_DIR", "LUMEN_SEMCODE_MCP", "CLAUDE_SETTINGS",
+                    "CODEX_HOME", "LUMEN_CODEX_RUNTIME_HOME"}
 
     def _resolve_simple(m: re.Match) -> str:
         return os.environ.get(m.group(1), "")

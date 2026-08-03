@@ -12,13 +12,16 @@ fail()  { echo -e "${RED}[FAIL]${NC} $1"; }
 # ── Config ───────────────────────────────────────────────────────────────────
 VENV_DIR="venv"
 USE_VENV=true
-CLAUDE_SETTINGS_SOURCE="${LUMEN_CLAUDE_SETTINGS_SOURCE:-${HOME}/.claude/settings.json}"
-CLAUDE_SETTINGS_TARGET="${LUMEN_CLAUDE_SETTINGS_TARGET:-.claude/settings.json}"
+CODEX_CLI="${LUMEN_CODEX_CLI:-codex}"
+CODEX_RUNTIME_HOME="${LUMEN_CODEX_RUNTIME_HOME:-runtime/codex-home}"
+CODEX_AUTH_SOURCE="${LUMEN_CODEX_AUTH_SOURCE:-${CODEX_HOME:-${HOME}/.codex}/auth.json}"
+CODEX_AUTH_TARGET="${CODEX_RUNTIME_HOME}/.codex/auth.json"
+CODEX_SKILLS_DIR="${LUMEN_CODEX_SKILLS_DIR:-.agents/skills}"
 CRASH_SOURCE_DIR="${CRASH_SOURCE_DIR:-runtime/crash-source}"
 CRASH_BIN_DIRS="${LUMEN_CRASH_BIN_DIRS:-}"
 CRASH_REPO="${CRASH_REPO:-https://github.com/crash-utility/crash.git}"
 CRASH_REF="${CRASH_REF:-9.0.2}"
-GNU_MIRROR="${LUMEN_GNU_MIRROR:-https://mirrors.aliyun.com/gnu}"
+GNU_MIRROR="${LUMEN_GNU_MIRROR:-}"
 CRASH_BUILDER="Analysis-SKILL/tools/crash-vmcore/scripts/build_crash.sh"
 BUSYBOX_BUILDER="Analysis-SKILL/tools/build_busybox.sh"
 SEMCODE_SOURCE_DIR="Analysis-SKILL/tools/semcode"
@@ -62,7 +65,8 @@ preflight_check() {
     check_cmd debootstrap "apt install debootstrap" || ((fail_count++))
     check_cmd cpio "apt install cpio" || ((fail_count++))
     check_cmd gzip "apt install gzip (usually pre-installed)" || ((fail_count++))
-    check_cmd claude "npm install -g @anthropic-ai/claude-code" || ((fail_count++))
+    check_cmd "$CODEX_CLI" "npm install -g @openai/codex" || ((fail_count++))
+    check_cmd bwrap "apt install bubblewrap" || ((fail_count++))
     check_cmd git "apt install git" || ((fail_count++))
     check_cmd wget "apt install wget" || ((fail_count++))
     check_cmd make "apt install build-essential" || ((fail_count++))
@@ -156,7 +160,7 @@ preflight_check() {
     fi
 
     # git submodule
-    if [ -f Analysis-SKILL/CLAUDE.md ]; then
+    if [ -d Analysis-SKILL/skills ]; then
         ok "Analysis-SKILL submodule — present"
     else
         warn "Analysis-SKILL submodule — missing (run: git submodule update --init)"
@@ -186,6 +190,45 @@ preflight_check() {
         echo ""
         ok "=== 所有外部依赖已就绪 ==="
     fi
+}
+
+# ── Codex CLI ────────────────────────────────────────────────────────────────
+ensure_codex_cli() {
+    if [ -n "${LUMEN_CODEX_CLI:-}" ]; then
+        CODEX_CLI="$LUMEN_CODEX_CLI"
+    fi
+    if command -v "$CODEX_CLI" &>/dev/null; then
+        CODEX_CLI="$(command -v "$CODEX_CLI")"
+    elif [ "$CODEX_CLI" = "codex" ] && command -v npm &>/dev/null \
+        && [ -x "$(npm prefix -g)/bin/codex" ]; then
+        CODEX_CLI="$(npm prefix -g)/bin/codex"
+        export PATH="$(dirname "$CODEX_CLI"):${PATH}"
+        hash -r
+    elif [ "$CODEX_CLI" != "codex" ]; then
+        fail "Configured Codex CLI is missing: $CODEX_CLI"
+        return 1
+    elif ! command -v npm &>/dev/null; then
+        fail "Codex CLI is missing and npm is unavailable; install Node.js/npm first"
+        return 1
+    else
+        info "Installing Codex CLI with npm"
+        npm install -g @openai/codex
+        CODEX_CLI="$(npm prefix -g)/bin/codex"
+        export PATH="$(dirname "$CODEX_CLI"):${PATH}"
+        hash -r
+    fi
+
+    if [ ! -x "$CODEX_CLI" ]; then
+        fail "Codex CLI installation did not produce an executable: $CODEX_CLI"
+        return 1
+    fi
+    export LUMEN_CODEX_CLI="$CODEX_CLI"
+    if [ -f .env ] && ! grep -Eq '^[[:space:]]*(export[[:space:]]+)?LUMEN_CODEX_CLI=' .env; then
+        printf '\n# Resolved by deploy.sh; source .env before running Lumen.\n' >> .env
+        printf 'export LUMEN_CODEX_CLI=%q\n' "$CODEX_CLI" >> .env
+        ok "Codex CLI path recorded in .env"
+    fi
+    ok "Codex CLI: $($CODEX_CLI --version)"
 }
 
 # ── Python version check ─────────────────────────────────────────────────────
@@ -280,28 +323,65 @@ ENVEOF
 }
 
 # ── Directory init ────────────────────────────────────────────────────────────
-# Claude Code project settings
-setup_claude_settings() {
+# Project-isolated Codex auth and repository skill discovery.
+setup_codex_runtime() {
     echo ""
-    info "=== Claude Code project settings.json ==="
+    info "=== Codex project-isolated runtime ==="
 
-    if [ ! -f "$CLAUDE_SETTINGS_SOURCE" ]; then
-        fail "Missing Claude settings file: $CLAUDE_SETTINGS_SOURCE"
-        fail "Set LUMEN_CLAUDE_SETTINGS_SOURCE or prepare $HOME/.claude/settings.json"
-        return 1
+    mkdir -p "${CODEX_RUNTIME_HOME}/.codex" "$CODEX_SKILLS_DIR"
+    chmod 700 "$CODEX_RUNTIME_HOME" "${CODEX_RUNTIME_HOME}/.codex"
+
+    if [ -n "${CODEX_API_KEY:-}" ]; then
+        ok "Codex will use invocation-scoped CODEX_API_KEY"
+    else
+        if [ ! -f "$CODEX_AUTH_SOURCE" ]; then
+            fail "Missing Codex authentication: $CODEX_AUTH_SOURCE"
+            fail "Run 'codex login' first or set LUMEN_CODEX_AUTH_SOURCE/CODEX_API_KEY"
+            return 1
+        fi
+        if [ "$(readlink -f "$CODEX_AUTH_SOURCE")" != "$(readlink -f "$CODEX_AUTH_TARGET" 2>/dev/null || true)" ]; then
+            install -m 600 "$CODEX_AUTH_SOURCE" "$CODEX_AUTH_TARGET"
+        else
+            chmod 600 "$CODEX_AUTH_TARGET"
+        fi
+        if [ ! -s "$CODEX_AUTH_TARGET" ]; then
+            fail "Codex auth provisioning failed: $CODEX_AUTH_TARGET"
+            return 1
+        fi
+        ok "Codex auth provisioned at $CODEX_AUTH_TARGET (mode 600)"
     fi
 
-    local target_dir
-    target_dir="$(dirname "$CLAUDE_SETTINGS_TARGET")"
-    mkdir -p "$target_dir"
-    install -m 600 "$CLAUDE_SETTINGS_SOURCE" "$CLAUDE_SETTINGS_TARGET"
-
-    if ! cmp -s "$CLAUDE_SETTINGS_SOURCE" "$CLAUDE_SETTINGS_TARGET"; then
-        fail "Claude settings verification failed: $CLAUDE_SETTINGS_TARGET"
+    local source_dir skill_dir skill_name target relative_target
+    for source_dir in Analysis-SKILL/skills skills; do
+        [ -d "$source_dir" ] || continue
+        for skill_dir in "$source_dir"/*; do
+            [ -f "$skill_dir/SKILL.md" ] || continue
+            skill_name="$(basename "$skill_dir")"
+            target="${CODEX_SKILLS_DIR}/${skill_name}"
+            if [ -e "$target" ] && [ ! -L "$target" ]; then
+                fail "Refusing to replace existing Codex skill path: $target"
+                return 1
+            fi
+            if [ -L "$target" ] && [ "$(readlink -f "$target")" = "$(readlink -f "$skill_dir")" ]; then
+                continue
+            fi
+            if [ -L "$target" ]; then
+                unlink "$target"
+            fi
+            relative_target="$(realpath --relative-to="$CODEX_SKILLS_DIR" "$skill_dir")"
+            ln -s "$relative_target" "$target"
+        done
+    done
+    if ! find -L "$CODEX_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md -print -quit | grep -q .; then
+        fail "No project Codex skills were provisioned under $CODEX_SKILLS_DIR"
         return 1
     fi
-    chmod 600 "$CLAUDE_SETTINGS_TARGET"
-    ok "Claude settings copied to project path: $CLAUDE_SETTINGS_TARGET (mode 600)"
+    ok "Project Codex skills provisioned under $CODEX_SKILLS_DIR"
+
+    if [ -z "${CODEX_API_KEY:-}" ]; then
+        HOME="$CODEX_RUNTIME_HOME" CODEX_HOME="${CODEX_RUNTIME_HOME}/.codex" \
+            "$CODEX_CLI" login status
+    fi
 }
 
 init_dirs() {
@@ -336,7 +416,11 @@ build_crash_binary() {
         fi
         git clone --depth 1 --branch "$CRASH_REF" "$CRASH_REPO" "$CRASH_SOURCE_DIR"
     fi
-    sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
+    if [ -n "$GNU_MIRROR" ]; then
+        sed -i "s|http://ftp.gnu.org/gnu|${GNU_MIRROR%/}|g" "$CRASH_SOURCE_DIR/Makefile"
+    else
+        info "LUMEN_GNU_MIRROR 未配置，保留 crash 工具的上游 GNU 源"
+    fi
     if [ ! -f "$CRASH_SOURCE_DIR/gdb-16.2.patch" ]; then
         git show HEAD:gdb-16.2.patch > "$CRASH_SOURCE_DIR/gdb-16.2.patch"
     fi
@@ -529,10 +613,11 @@ main() {
     # Load deployment inputs before preflight so explicitly configured paths,
     # including LUMEN_CRASH_BIN_DIRS, are visible to all checks.
     setup_env
+    ensure_codex_cli
     preflight_check
     create_virtualenv
     install_deps
-    setup_claude_settings
+    setup_codex_runtime
     init_dirs
     build_dual_arch_tools
     provision_persistent_qemu_images

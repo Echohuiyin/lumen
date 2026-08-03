@@ -194,6 +194,7 @@ def patch_session_dir(monkeypatch, session_dir):
         "agents.kernel_expert.paths_get_output_dir",
         lambda: session_dir,
     )
+
     return session_dir
 
 
@@ -441,6 +442,24 @@ def integration_env(monkeypatch, tmp_path):
         lambda: session_dir,
     )
 
+    # The production node now proves the requested source/index before it
+    # invokes any model.  This test isolates the OpenCode empty-final-text
+    # contract, so provide an explicit successful source proof instead of
+    # accidentally testing the earlier source gate.
+    monkeypatch.setattr(
+        "agents.kernel_expert.resolve_kernel_source_for_commit",
+        lambda source, expected_commit, workspace_root="": str(session_dir),
+    )
+    monkeypatch.setattr(
+        "agents.kernel_expert.verify_semcode_target",
+        lambda **kwargs: {
+            "status": "ok",
+            "kernel_source_path": str(session_dir),
+            "expected_kernel_commit": kwargs.get("expected_kernel_commit", ""),
+            "evidence": [{"kind": "test_source_verification", "status": "ok"}],
+        },
+    )
+
     # Mock opencode to return tool-use-only JSONL
     run_stdout = (
         '{"type":"step_start","part":{"id":"p1","sessionID":"ses_integration","type":"step-start"}}\n'
@@ -455,49 +474,9 @@ def integration_env(monkeypatch, tmp_path):
     return session_dir
 
 
-def test_integration_opencode_empty_text_blocks_without_explicit_contract(monkeypatch, integration_env):
-    """An empty OpenCode response must block, even when a disk contract exists.
+def test_integration_opencode_backend_is_rejected_for_kernel_expert():
+    """Kernel Expert must never route to OpenCode as a fallback backend."""
+    from llm_config import validate_agent_backend
 
-    The workflow no longer consumes stale or partial contracts after the model
-    boundary; the Kernel Expert must emit an explicit structured response.
-    """
-    from agents.kernel_expert import kernel_expert_node
-
-    state = {
-        "session_dir": str(integration_env),
-        "config": {
-            "default": {
-                "backend": "opencode",
-                "api_key": "",
-                "base_url": "",
-                "model_name": "deepseek-v4-flash",
-            },
-            "agents": {
-                "kernel_expert": {
-                    "backend": "opencode",
-                    "cli_command": "opencode",
-                    "model": "deepseek/deepseek-v4-flash",
-                    "cli_timeout": 3600,
-                }
-            },
-            "workflow": {},
-        },
-        "user_input": "test",
-        "vmlinux_path": str(integration_env / "vmlinux"),
-        "boot_kernel_path": str(integration_env / "bzImage"),
-        "kernel_source_path": "/home/user/kernel",
-        "tool_experts": [],
-        "artifacts": {
-            "pm_issue_url": "",
-            "vmcore_path": "vmcore",
-            "vmlinux_path": str(integration_env / "vmlinux"),
-        },
-        "crash_tools_path": "crash",
-    }
-
-    result = kernel_expert_node(state)
-    contract = result["kernel_contract"]
-
-    assert contract["status"] == "blocked"
-    assert "explicit structured response" in contract["blocked_reason"]
-    assert result["kernel_ready_for_test"] is False
+    with pytest.raises(ValueError, match="must use the project-isolated Codex"):
+        validate_agent_backend("kernel_expert", "opencode")

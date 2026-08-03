@@ -17,9 +17,12 @@ from agents.contracts import KernelExpertOutput
 from agents.kernel_expert import _apply_semcode_path_analysis
 from agents.semcode_path_analysis import (
     SemcodeFunction,
+    resolve_kernel_source_for_commit,
+    verify_semcode_target,
     analyze_uaf_paths,
     extract_semcode_entry_points,
     render_semcode_analysis_context,
+    _without_database_args,
 )
 from agents.input_artifacts import parse_input_artifacts
 from llm_config import get_llm_with_config, load_config
@@ -27,6 +30,20 @@ from llm_config import get_llm_with_config, load_config
 
 class _FixedSemcodeClient:
     """Dependency injection, not a fallback: fixture models a parsed MCP reply."""
+
+    def __init__(self, target: str):
+        self.target = target
+
+    def _call(self, tool_name: str, arguments: dict) -> str:
+        if tool_name == "list_branches":
+            return (
+                "=== Indexed Branches ===\n\n"
+                f"  lumen-target/{self.target} ({self.target[:8]})\n"
+                "    Status: up-to-date\n"
+            )
+        if tool_name == "indexing_status":
+            return "=== Indexing Status ===\nStatus: Completed (1 files processed)\n"
+        raise AssertionError(f"unexpected meta-tool: {tool_name}")
 
     def find_function(self, name: str) -> SemcodeFunction:
         assert name == "foo_ioctl"
@@ -66,9 +83,13 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path]:
 
 def test_semcode_event_graph_calculates_deltas_and_declares_boundaries(tmp_path):
     source, executable = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
     result = analyze_uaf_paths(
         kernel_source_path=str(source), entry_points=["foo_ioctl"],
-        semcode_command=str(executable), client=_FixedSemcodeClient(),
+        expected_kernel_commit=target,
+        semcode_command=str(executable), client=_FixedSemcodeClient(target),
     )
 
     assert result.status == "ok"
@@ -91,6 +112,22 @@ def test_semcode_event_graph_calculates_deltas_and_declares_boundaries(tmp_path)
     assert contract.reproduction_target_path == contract.max_likely_path
 
 
+
+
+def test_semcode_scope_uses_declared_target_commit(tmp_path):
+    source, executable = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    result = analyze_uaf_paths(
+        kernel_source_path=str(source), entry_points=["foo_ioctl"],
+        expected_kernel_commit=target,
+        semcode_command=str(executable), client=_FixedSemcodeClient(target),
+    )
+    assert result.status == "ok"
+    assert result.scope.kernel_commit == target
+
+
 def test_semcode_requires_explicit_entry_point_and_never_falls_back(tmp_path):
     source, executable = _source_tree(tmp_path)
     result = analyze_uaf_paths(
@@ -101,12 +138,66 @@ def test_semcode_requires_explicit_entry_point_and_never_falls_back(tmp_path):
     assert result.analysis is None
 
 
+def test_semcode_blocks_when_target_object_is_not_indexed(tmp_path):
+    source, executable = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    result = verify_semcode_target(
+        kernel_source_path=str(source), expected_kernel_commit=target,
+        semcode_command=str(executable),
+        client=type("NoIndex", (), {
+            "_call": lambda self, name, arguments: (
+                "No branches have been indexed yet." if name == "list_branches"
+                else "Status: Not started"
+            )
+        })(),
+    )
+    assert result["status"] == "blocked"
+    assert "not proven" in result["blocked_reason"]
+
+
+def test_kernel_source_is_pinned_to_target_head_without_copying_tree(tmp_path):
+    source, _ = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    (source / "later.c").write_text("int later(void) { return 0; }\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(source), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+         "add", "later.c"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+         "commit", "-qm", "later"],
+        check=True,
+    )
+    pinned = resolve_kernel_source_for_commit(
+        str(source), target, workspace_root=str(tmp_path / "work"),
+    )
+    assert Path(pinned) != source
+    assert subprocess.check_output(
+        ["git", "-C", pinned, "rev-parse", "HEAD"], text=True,
+    ).strip() == target
+    assert (Path(pinned) / ".semcode.db").is_symlink()
+
+
 def test_entry_point_extraction_accepts_only_explicit_function_evidence():
     entries = extract_semcode_entry_points(
         "function: foo_ioctl\nCall Trace: bar_release+0x1a/0x40",
         "ordinary prose should not create an entry point",
     )
     assert entries == ["foo_ioctl", "bar_release"]
+
+
+
+
+def test_entry_point_extraction_accepts_declared_title_target():
+    entries = extract_semcode_entry_points(
+        "Bug Promote: title=KASAN use-after-free write in j1939_sock_pending_del subsystem=can"
+    )
+    assert entries == ["j1939_sock_pending_del"]
 
 
 def test_entry_point_extraction_accepts_structured_stack_evidence():
@@ -128,6 +219,16 @@ def test_entry_point_extraction_accepts_quoted_json_fields():
         '{"function":"foo_ioctl","frame":"bar_release+0x1a"}'
     )
     assert entries == ["foo_ioctl", "bar_release"]
+
+
+
+
+def test_semcode_args_do_not_duplicate_source_binding():
+    args = _without_database_args([
+        "--legacy", "-d", "old.db", "--git-repo", "old-tree",
+        "--database=new.db", "--git-repo=new-tree", "--lazy",
+    ])
+    assert args == ["--legacy", "--lazy"]
 
 
 def test_semcode_path_analysis_online_llm_roundtrip():

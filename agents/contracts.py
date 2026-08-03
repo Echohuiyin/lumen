@@ -251,6 +251,7 @@ class InputArtifactsContract(BaseModel):
     rootfs_path: str = ""
     qemu_extra_cmdline: str = ""
     target_arch: str = ""
+    expected_kernel_commit: str = ""
     kernel_source_path: str = ""
     log_path: str = ""
     reproducer_path: str = ""

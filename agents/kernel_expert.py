@@ -15,6 +15,8 @@ from agents.semcode_path_analysis import (
     analyze_uaf_paths,
     extract_semcode_entry_points,
     render_semcode_analysis_context,
+    resolve_kernel_source_for_commit,
+    verify_semcode_target,
 )
 from agents.llm_display import (
     call_llm_with_persistence,
@@ -46,6 +48,39 @@ def _write_tool_call_output(output_file: str, content: str, expert_name: str):
         f.write(footer)
 
 
+
+def _pin_semcode_mcp_to_source(agent_config: dict, kernel_source_path: str) -> dict:
+    """Bind the agent-loop Semcode server to the declared kernel checkout.
+
+    A database alone is insufficient for git-aware Semcode queries: without
+    ``--git-repo`` the MCP server may resolve a different branch/checkout and
+    return source from a repaired commit. Keep the deployment-provided config
+    immutable and return a copy with explicit, source-derived arguments.
+    """
+    source = os.path.realpath(os.path.expanduser(str(kernel_source_path or "").strip()))
+    if not source or "semcode_mcp" not in agent_config:
+        return agent_config
+    database = os.path.join(source, ".semcode.db")
+    if not os.path.exists(database):
+        return agent_config
+    pinned = dict(agent_config)
+    semcode = dict(agent_config.get("semcode_mcp") or {})
+    existing_args = list(semcode.get("args") or [])
+    filtered_args: list[str] = []
+    skip_next = False
+    for arg in existing_args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in ("-d", "--database", "--git-repo"):
+            skip_next = True
+            continue
+        if arg.startswith("--database=") or arg.startswith("--git-repo="):
+            continue
+        filtered_args.append(arg)
+    semcode["args"] = [*filtered_args, "-d", database, "--git-repo", source]
+    pinned["semcode_mcp"] = semcode
+    return pinned
 # ---------------------------------------------------------------------------
 # Preflight: kernel config + test_assets scan
 # ---------------------------------------------------------------------------
@@ -207,16 +242,16 @@ def _run_kernel_expert_with_agent_loop(
 ) -> AIMessage:
     """Execute kernel expert analysis via an agent-loop CLI backend.
 
-    Delegates the tool-calling loop to `claude -p` (claude_code backend) or
-    `opencode run` (opencode backend), letting the CLI's own agent loop
-    handle Read/Write/Edit/Bash/Grep/Glob. Returns the final text result
-    with KERNEL_CONTRACT and marker lines for downstream parsing.
+    Delegates the tool-calling loop to ``codex exec``. Codex reads source and
+    logs, uses the required Semcode MCP server, and may write only diagnostic
+    userspace artifacts in the session output directory. Returns the final
+    text result with KERNEL_CONTRACT and marker lines for downstream parsing.
 
     Both backends implement the same invoke(messages, workdir, add_dirs)
     contract, so this function is backend-agnostic — the choice is made
     at config-time via `agents.kernel_expert.backend`.
     """
-    backend_label = "Claude Code" if llm.__class__.__name__ == "ClaudeCodeBackend" else (
+    backend_label = "Codex" if llm.__class__.__name__ == "CodexBackend" else (
         "OpenCode" if llm.__class__.__name__ == "OpenCodeBackend" else "Agent Loop"
     )
     header = _format_agent_header_text(expert_name, f"分析构造用例（{backend_label}）")
@@ -262,7 +297,7 @@ def _run_kernel_expert_with_agent_loop(
         # Retry once inside this same Kernel Expert loop when the final turn
         # is empty or lacks a parseable structured contract.  A bare JSON
         # object is valid too; requiring the cosmetic marker here used to
-        # trigger a second expensive Claude run even when the contract was
+        # trigger a second expensive Codex run even when the contract was
         # complete and only the heading punctuation differed.
         parsed_contract = _extract_kernel_contract(output_content) if output_content.strip() else None
         has_structured_contract = bool(
@@ -320,6 +355,18 @@ def _resolve_primary_log_path(input_artifacts: dict, expert_results: list[dict])
     return ""
 
 
+def _read_primary_log_text(path: str) -> str:
+    """Read the resolved first-hand log for deterministic frame extraction."""
+    if not path:
+        return ""
+    try:
+        return Path(os.path.expanduser(path)).read_text(
+            encoding="utf-8", errors="replace",
+        )
+    except OSError:
+        return ""
+
+
 def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     """内核专家 agent：根据工具专家的输出，结合代码分析，构造必现用例并给出内核维测方案。
 
@@ -339,23 +386,45 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # Retry/direct callers can carry an incomplete artifact contract even
     # though the user input still contains authoritative paths. Reparse it
     # here so the kernel prompt always exposes the real log/reproducer paths.
-    if not input_artifacts.get("reproducer_path") or not input_artifacts.get("log_path"):
+    if (not input_artifacts.get("reproducer_path") or not input_artifacts.get("log_path")
+            or not input_artifacts.get("expected_kernel_commit")):
         reparsed = parse_input_artifacts(state.get("user_input", ""), validate_paths=False)
         reparsed_dict = model_to_dict(reparsed)
         for key, value in reparsed_dict.items():
             if value and not input_artifacts.get(key):
                 input_artifacts[key] = value
     kernel_source_path = input_artifacts.get("kernel_source_path", "")
-    if kernel_source_path and "semcode_mcp" in agent_config:
-        candidate_db = os.path.join(
-            os.path.expanduser(kernel_source_path), ".semcode.db"
+    expected_kernel_commit = input_artifacts.get("expected_kernel_commit", "")
+    try:
+        kernel_source_path = resolve_kernel_source_for_commit(
+            kernel_source_path,
+            expected_kernel_commit,
+            workspace_root=str(session_dir or ""),
         )
-        if os.path.exists(candidate_db):
-            agent_config = {**agent_config}
-            agent_config["semcode_mcp"] = {
-                **agent_config["semcode_mcp"],
-                "args": ["-d", candidate_db],
-            }
+        input_artifacts["kernel_source_path"] = kernel_source_path
+    except Exception as exc:
+        return _blocked_source_verification({
+            "status": "blocked",
+            "blocked_reason": str(exc),
+            "evidence": [{"kind": "kernel_source_worktree", "status": "blocked", "error": str(exc)}],
+        })
+    agent_config = _pin_semcode_mcp_to_source(agent_config, kernel_source_path)
+
+    # A git_sha on an individual Semcode query is not a source-integrity proof:
+    # the MCP server may silently answer from its default HEAD when that
+    # snapshot is absent from the index.  Refuse to start the LLM/QEMU handoff
+    # until the declared commit exists in git and is represented by an
+    # up-to-date Semcode branch.  This prevents a plausible but wrong source
+    # revision from becoming a successful reproduction.
+    semcode_config = agent_config.get("semcode_mcp") or {}
+    source_verification = verify_semcode_target(
+        kernel_source_path=kernel_source_path,
+        expected_kernel_commit=expected_kernel_commit,
+        semcode_command=str(semcode_config.get("command", "")),
+        semcode_args=semcode_config.get("args", []) or [],
+    )
+    if source_verification.get("status") != "ok":
+        return _blocked_source_verification(source_verification)
 
     llm = get_llm_with_config(agent_config, default_config=default_config, agent_name="kernel_expert")
     system_prompt = load_prompt_from_file(
@@ -363,9 +432,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     )
 
     # Tool expert transcripts are durable artifacts.  Pass paths (not large
-    # summaries) to the Claude loop so each expert can be iterated and audited
+    # summaries) to the Codex loop so each expert can be iterated and audited
     # independently without mixing its context into another expert's prose.
     expert_results = state.get("expert_results", [])
+    original_log_path = _resolve_primary_log_path(input_artifacts, expert_results)
+    original_log_text = _read_primary_log_text(original_log_path)
 
     # Only display expert outputs on first invocation (not on retries after test failures)
     if state.get("test_attempts", 0) == 0:
@@ -378,7 +449,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         if not output_path:
             # Direct node/unit callers may provide a tool result without
             # going through tool_expert_node.  Materialize that supplied
-            # result once so the Claude boundary still receives a file path.
+            # result once so the Codex boundary still receives a file path.
             # Normal workflow execution always takes the persisted branch.
             expert_type = str(result.get("expert_type", "unknown"))
             materialized_file = get_expert_output_file(expert_type)
@@ -389,8 +460,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             f" ({result.get('expert_type', 'unknown')}): {output_path}"
         )
 
-    original_log_path = _resolve_primary_log_path(input_artifacts, expert_results)
-
     # Extract evidence summary for LLM context
     evidence_summary = _extract_evidence_summary(expert_results)
     path_analysis_required = _requires_path_analysis(
@@ -400,12 +469,21 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     semcode_path_analysis: SemcodePathAnalysisResult | None = None
     if path_analysis_required:
         semcode_config = agent_config.get("semcode_mcp") or {}
+        declared_entries = extract_semcode_entry_points(state.get("user_input", ""))
+        if declared_entries:
+            entry_points = declared_entries
+        else:
+            entry_evidence = [state.get("user_input", "")]
+            if original_log_text:
+                entry_evidence.append(original_log_text)
+            entry_points = extract_semcode_entry_points(
+                *entry_evidence,
+                expert_results=expert_results,
+            )
         semcode_path_analysis = analyze_uaf_paths(
             kernel_source_path=kernel_source_path,
-            entry_points=extract_semcode_entry_points(
-                state.get("user_input", ""),
-                expert_results=expert_results,
-            ),
+            entry_points=entry_points,
+            expected_kernel_commit=expected_kernel_commit,
             semcode_command=str(semcode_config.get("command", "")),
             semcode_args=semcode_config.get("args", []) or [],
         )
@@ -418,6 +496,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"- vmcore_path: {input_artifacts.get('vmcore_path', 'N/A')}\n"
         f"- vmlinux_path: {input_artifacts.get('vmlinux_path', 'N/A')}\n"
         f"- boot_kernel_path: {input_artifacts.get('boot_kernel_path', input_artifacts.get('vmlinux_path', 'N/A'))}\n\n"
+        f"- expected_kernel_commit: {expected_kernel_commit or 'N/A'}\n"
+        f"- Semcode source verification: {json.dumps(source_verification, ensure_ascii=False)}\n"
+        f"- Semcode 查询约束：每次查询必须显式传入 git_sha={expected_kernel_commit or '<missing>'}；缺少目标提交的索引时必须 blocked，禁止查询默认 HEAD 或改用 grep/源码 fallback。\n\n"
         f"- rootfs_path: {input_artifacts.get('rootfs_path', 'N/A')}\n\n"
         f"- qemu_extra_cmdline: {input_artifacts.get('qemu_extra_cmdline', 'N/A')}\n\n"
         f"- 原始日志路径（第一手证据，按需直接读取，禁止以专家摘要替代）: {original_log_path or 'N/A（vmcore 日志提取失败或未提供）'}\n\n"
@@ -546,7 +627,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         if _bk.parent.is_dir() and (_bk.parent / "input.txt").exists():
             test_assets_dir = str(_bk.parent)
 
-    # Execute exactly one Claude agent loop.  A max-turns exhaustion is a
+    # Execute exactly one Codex agent loop. Agent-loop exhaustion is a
     # terminal blocked outcome; partial files must not bypass SSH verification.
     max_reproduction_rounds = int((config.get("workflow", {}) or {}).get("max_tryouts", 10))
     if max_reproduction_rounds < 1:
@@ -595,8 +676,8 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
 
     text = response.content.strip()
 
-    # Keep the optional human review package, but do not reinvoke Claude here.
-    # Analysis, POC creation, and SSH-QEMU verification are one Claude loop;
+    # Keep the optional human review package, but do not reinvoke Codex here.
+    # Analysis, POC creation, and SSH-QEMU verification are one Codex loop;
     # a second model call would split the evidence context again.
     try:
         write_hint_review_pack(
@@ -616,6 +697,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         state=state,
         semcode_path_analysis=semcode_path_analysis,
     )
+    parsed["semcode_source_verification"] = source_verification
+    contract_data = parsed.get("kernel_contract")
+    if isinstance(contract_data, dict):
+        contract_data["evidence"] = [
+            *(contract_data.get("evidence") or []),
+            *(source_verification.get("evidence") or []),
+        ]
+        parsed["kernel_contract"] = contract_data
     if semcode_path_analysis is not None:
         parsed["semcode_path_analysis"] = semcode_path_analysis.as_dict()
     return parsed
@@ -643,6 +732,31 @@ def _blocked_semcode_path_analysis(result: SemcodePathAnalysisResult) -> dict:
         "semcode_path_analysis": result.as_dict(),
         "kernel_ready_for_test": False,
         "kernel_contract": model_to_dict(contract),
+        "final_response": reason,
+    }
+
+
+def _blocked_source_verification(result: dict) -> dict:
+    """Block the workflow when the requested kernel snapshot is unproven."""
+    reason = f"kernel source verification blocked: {result.get('blocked_reason', 'unknown source-index failure')}"
+    evidence = list(result.get("evidence") or [])
+    contract = KernelExpertOutput(
+        status="blocked",
+        build_status="skipped",
+        blocked_reason=reason,
+        warnings=[
+            "The declared kernel commit is not proven by an exact Semcode index.",
+            "No LLM/direct-git source fallback is permitted.",
+        ],
+        evidence=evidence,
+    )
+    return {
+        "kernel_analysis": reason,
+        "reproduce_case": "",
+        "kernel_diagnosis": "",
+        "kernel_ready_for_test": False,
+        "kernel_contract": model_to_dict(contract),
+        "semcode_source_verification": result,
         "final_response": reason,
     }
 
@@ -731,8 +845,9 @@ def _parse_kernel_expert_response(
     # the empty-text fallback that would search outputs/ for stale reproducer
     # dirs and route test_expert with the wrong expected_signal.
     if text and (
-        "Claude Code 调用失败" in text
-        or "Claude Code timed out" in text
+        "Codex 调用失败" in text
+        or "Codex timed out" in text
+        or "Codex failed" in text
         or "OpenCode 调用失败" in text
         or "OpenCode timed out" in text
         or "Reached maximum number of turns" in text
@@ -892,7 +1007,7 @@ def _attach_persistent_test_result(
 ) -> dict:
     """Attach only a fresh deterministic SSH-QEMU result to the workflow state.
 
-    Claude's prose is never used as a test verdict.  The loop must invoke the
+    Codex prose is never used as a test verdict. The loop must invoke the
     project runner, which writes this independently parsed JSON contract.
     """
     contract = parsed.get("kernel_contract") or {}
@@ -916,7 +1031,7 @@ def _attach_persistent_test_result(
         round_contracts = []
         for expected_round, result_path in enumerate(result_paths, start=1):
             if result_path.stat().st_mtime < started_after:
-                raise OSError(f"round result predates this Claude invocation: {result_path}")
+                raise OSError(f"round result predates this Codex invocation: {result_path}")
             data = json.loads(result_path.read_text(encoding="utf-8"))
             round_contract = _model_validate(TestResultContract, data)
             if round_contract.attempts != expected_round:
@@ -1041,7 +1156,7 @@ def _coerce_contract_json(data: object) -> object:
     """Normalize harmless LLM prose before validating the handoff schema.
 
     The contract fields for pressure/fault injection are executable
-    ``ExecutionStep`` objects.  Claude occasionally puts a human-readable
+    ``ExecutionStep`` objects. Codex may put a human-readable
     requirement string in those arrays (for example, describing work already
     performed by the C reproducer).  Treating that prose as an execution step
     would either reject an otherwise complete evidence contract or invent a
@@ -1086,7 +1201,7 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
     if marker_idx >= 0:
         candidates.append(text[marker_idx + len("KERNEL_CONTRACT:"):])
 
-    # Claude sometimes says ``the KERNEL_CONTRACT`` and then emits a bare
+    # Codex may say ``the KERNEL_CONTRACT`` and then emit a bare
     # JSON object (as opposed to ``KERNEL_CONTRACT:```json``).  Scan balanced
     # JSON objects across the whole response.  The literal marker can appear
     # inside a contract string value; starting there would skip the outer
@@ -1139,17 +1254,22 @@ def _enrich_kernel_contract_from_runtime(
     while keeping the no-fallback rule: a missing file remains missing.
     """
     data = model_to_dict(contract)
-    if not data.get("target_arch"):
-        data["target_arch"] = str(input_artifacts.get("target_arch", "") or "")
-    if not data.get("boot_kernel_path"):
-        data["boot_kernel_path"] = str(input_artifacts.get("boot_kernel_path", "") or "")
-    if not data.get("rootfs_path"):
-        data["rootfs_path"] = str(input_artifacts.get("rootfs_path", "") or "")
+    # Paths and architecture declared by the user are authoritative runtime
+    # inputs.  A model must not redirect Test Expert to an old case image or
+    # kernel merely by emitting a different existing path in its JSON.
+    for field in ("target_arch", "vmlinux_path", "boot_kernel_path", "rootfs_path"):
+        declared = str(input_artifacts.get(field, "") or "").strip()
+        if declared:
+            data[field] = declared
     qemu_extra_cmdline = str(input_artifacts.get("qemu_extra_cmdline", "") or "").strip()
     if qemu_extra_cmdline:
         recipe = dict(data.get("qemu_recipe") or {})
-        if not str(recipe.get("extra_cmdline") or "").strip():
-            recipe["extra_cmdline"] = qemu_extra_cmdline
+        existing = str(recipe.get("extra_cmdline") or "").strip()
+        existing_tokens = existing.split()
+        declared_tokens = qemu_extra_cmdline.split()
+        missing_tokens = [token for token in declared_tokens if token not in existing_tokens]
+        if missing_tokens:
+            recipe["extra_cmdline"] = " ".join([*existing_tokens, *missing_tokens])
             data["qemu_recipe"] = recipe
 
     repro = dict(data.get("reproducer") or {})

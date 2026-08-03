@@ -1,6 +1,7 @@
 # local env files
 .env*
 .claude/settings.json
+.agents/skills/
 config.yaml
 config.json
 AGENTS.md
@@ -37,6 +38,8 @@ _test_tmp.txt
 .semcode.db/
 runtime/
 syzfetch-cases/
+syzfetch-inbox/
+*.orig
 outputs/
 runtime/qemu-ssh/
 knowledge_base/

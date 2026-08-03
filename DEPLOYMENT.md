@@ -10,7 +10,7 @@ on a fresh Ubuntu/Debian machine.
 1. [Prerequisites](#1-prerequisites)
 2. [System Dependencies](#2-system-dependencies)
 3. [Clone & Submodule](#3-clone--submodule)
-4. [LLM & Claude Code Setup](#4-llm--claude-code-setup)
+4. [LLM & Codex Setup](#4-llm--codex-setup)
 5. [Kernel Source & Crash Setup](#5-kernel-source--crash-setup)
 6. [QEMU & Busybox Setup](#6-qemu--busybox-setup)
 7. [semcode MCP](#7-semcode-mcp)
@@ -146,7 +146,7 @@ git submodule update --init --recursive
 Verify submodule:
 
 ```bash
-ls -d Analysis-SKILL/CLAUDE.md Analysis-SKILL/src/aicrasher Analysis-SKILL/skills
+ls -d Analysis-SKILL/src/aicrasher Analysis-SKILL/skills
 ```
 
 If the submodule is empty, check SSH keys and GitHub access:
@@ -157,7 +157,7 @@ ssh -T git@github.com
 
 ---
 
-## 4. LLM & Claude Code Setup
+## 4. LLM & Codex Setup
 
 ### 4.1 LLM API Endpoint
 
@@ -167,37 +167,38 @@ Lumen supports multiple backends:
 |---------|-----------------|-------------|
 | Anthropic | `anthropic` | DeepSeek Anthropic-compatible API, or direct Anthropic API |
 | OpenAI | `openai` | OpenAI-compatible API |
-| Claude Code | `claude_code` | Claude Code CLI (used by kernel_expert) |
+| Codex | `codex` | Project-isolated Codex CLI (required by kernel_expert) |
 
 The deployment config has no provider, endpoint, model, or account defaults.
-Set these values explicitly in `.env` and in the project Claude settings file.
+Set chat-agent values explicitly in `.env`. Kernel Expert authentication is
+copied into its isolated project runtime by `deploy.sh`.
 
 You need:
 
 1. An API key for the chat backend
-2. Claude Code CLI installed and authenticated
+2. Codex CLI installed and authenticated
 
-### 4.2 Claude Code CLI
+### 4.2 Codex CLI
 
 ```bash
 # Install Node.js (if not present)
 curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
 sudo apt install -y nodejs
 
-# Install Claude Code CLI
-npm install -g @anthropic-ai/claude-code
+# Install Codex CLI
+npm install -g @openai/codex
 
-# Authenticate (runs interactive login)
-claude
-# Follow the browser login flow. After successful login, exit with Ctrl+C.
+# Authenticate once in the deployment account
+codex login
 ```
 
 Verify:
 
 ```bash
-claude --version
-claude --output-format json --permission-mode bypassPermissions \
-  -p 'say "hello" and nothing else' 2>/dev/null
+codex --version
+codex login status
+codex exec --ephemeral --sandbox read-only --skip-git-repo-check \
+  'Reply with exactly: CODEX_OK'
 ```
 
 > **Proxy note**: If behind a corporate proxy, see [Section 11](#11-proxy--air-gapped-environments).
@@ -213,19 +214,27 @@ Get your API key from one of:
 - **OpenAI**: https://platform.openai.com/api-keys
 - **Anthropic**: https://console.anthropic.com/settings/keys
 
-### 4.4 Claude Code Settings File (kernel_expert)
+### 4.4 Isolated Codex Runtime (kernel_expert)
 
-Claude Code supports an explicit settings file. Lumen copies the selected
-settings into the project-local file and invokes the CLI with both
---settings and --setting-sources project. This keeps kernel_expert on one known credential profile and limits skills/settings discovery to the project scope.
+`deploy.sh` copies an existing Codex login from
+`${LUMEN_CODEX_AUTH_SOURCE:-${CODEX_HOME:-$HOME/.codex}/auth.json}` into
+`${LUMEN_CODEX_RUNTIME_HOME:-runtime/codex-home}/.codex/auth.json` with mode
+`0600`. An invocation-scoped `CODEX_API_KEY` is also supported without writing
+the key to project configuration. Authentication files are secrets: never
+commit or paste them into logs.
 
-Prepare the file once on the deployment host:
+The deploy script exposes only repository-owned skills through
+`${LUMEN_CODEX_SKILLS_DIR:-.agents/skills}`. Kernel Expert runs `codex exec`
+with an isolated HOME/CODEX_HOME, ephemeral sessions, ignored user config and
+rules, disabled plugins/apps/multi-agent, and a required Semcode MCP server.
+The session directory is writable, while the kernel source remains read-only
+and is not added as a writable Codex workspace. Missing authentication, skills,
+Semcode, quota, billing, or CLI startup blocks the workflow; there is no
+provider, backend, model, account, or session fallback.
 
-    mkdir -p .claude
-    cp $HOME/.claude/settings.json .claude/settings.json
-    chmod 600 .claude/settings.json
-
-The project configuration points agents.kernel_expert.settings_file at ${LUMEN_PROJECT_ROOT:-.}/.claude/settings.json. The source file should contain the Claude Code env values required by your provider, including ANTHROPIC_AUTH_TOKEN and ANTHROPIC_BASE_URL. If the file is absent or invalid, the workflow stops with an explicit configuration error. There is no settings file, account, model, or session fallback.
+When Codex is installed under a user npm prefix, `deploy.sh` records its
+resolved executable as `LUMEN_CODEX_CLI` in `.env`. Run `source .env` before
+starting Lumen; this avoids depending on interactive-shell PATH setup.
 
 
 ---
@@ -469,7 +478,7 @@ bash deploy.sh
 
 1. **Python check**: verifies Python 3.10+
 2. **External dependency check**: looks for QEMU, build tools, cross compiler,
-   Claude Code, cpio, gzip, git, wget, and project-managed tool outputs
+   Codex, bubblewrap, cpio, gzip, git, wget, and project-managed tool outputs
 3. **Arch-specific crash binary check**: verifies `crash_x86_64` and
    `crash_arm64` are present in the project crash directory, configured
    `LUMEN_CRASH_BIN_DIRS`, or executable `PATH` (required for cross-arch
@@ -576,7 +585,7 @@ Agents run in order:
 | PM | Analyzes input, selects experts | 5-15s |
 | ToolExpert (crash) | Runs crash commands on vmcore (uses `crash_x86_64` or `crash_arm64` based on vmlinux arch) | 10-60s |
 | ToolExpert (knowledge) | Searches knowledge base | 5-10s |
-| KernelExpert | One Claude Code loop: analyzes raw logs + expert findings, writes a PoC, then verifies it through persistent SSH QEMU | 3-15 min |
+| KernelExpert | One Codex loop: analyzes raw logs + expert findings and writes a userspace C reproducer contract; Test Expert performs QEMU verification | 3-15 min |
 | KnowledgeBase | Writes final report | 10-30s |
 
 ### 10.4 Validation points
@@ -603,7 +612,7 @@ ls -lt knowledge_base/*.md | head -3
 | `API key not found` | Missing `ANTHROPIC_API_KEY` in `.env` | Edit `.env` and source it |
 | `Config file not found` | `config.json` not generated | `cp config.json.template config.json` |
 | `QEMU not found` | `qemu-system-x86_64` not installed | `sudo apt install qemu-system-x86` |
-| `claude: command not found` | Claude Code CLI not installed | `npm install -g @anthropic-ai/claude-code` |
+| `codex: command not found` | Codex CLI not installed | `npm install -g @openai/codex` |
 | `Permission denied` for `/dev/kvm` | User not in `kvm` group | `sudo usermod -aG kvm $USER && newgrp kvm` |
 | `crash: not found` or crash sigabort | `crash` not installed or too old | `sudo apt install crash` or build from source |
 | Python import error | Virtual environment not activated | `source venv/bin/activate` |
@@ -644,9 +653,9 @@ For a machine with no internet access, pre-download:
 
 2. **NPM packages**:
    ```bash
-   npm pack @anthropic-ai/claude-code
+   npm pack @openai/codex
    # Copy .tgz to target, then:
-   npm install -g ./anthropic-ai-claude-code-*.tgz
+   npm install -g ./openai-codex-*.tgz
    ```
 
 3. **Rust/semcode**: Pre-build on a networked machine, copy the binary.
@@ -808,18 +817,19 @@ sudo usermod -aG kvm $USER
 newgrp kvm
 ```
 
-### Claude Code: "Login required"
+### Codex: "Login required"
 
 ```bash
-claude
-# Follow the interactive login flow
+codex login
+# Follow the browser/device login flow, then rerun deploy.sh so the isolated
+# runtime receives the authenticated auth.json.
 ```
 
-### Claude Code: Exit code 127 / command not found
+### Codex: Exit code 127 / command not found
 
 ```bash
-which claude || npm list -g @anthropic-ai/claude-code
-# If not found, reinstall: npm install -g @anthropic-ai/claude-code
+which codex || npm list -g @openai/codex
+# If not found, reinstall: npm install -g @openai/codex
 ```
 
 ### "busybox applet not found" in initramfs
@@ -902,5 +912,6 @@ This means the test script (PID 1) exited. Common causes:
 | `outputs/` | Reproducer artifacts | `deploy.sh` |
 | `sessions/` | Per-run logs and agent output | Workflow at runtime |
 | `Analysis-SKILL/` | Submodule: MCP tools, skills, scripts | `git submodule update --init` |
-| `~/.claude/skills/` | Installed Claude Code skills | `Analysis-SKILL/scripts/install.sh` |
+| `.agents/skills/` | Project-only Codex skill mappings | `deploy.sh` |
+| `runtime/codex-home/.codex/auth.json` | Isolated Codex authentication (secret, mode 0600) | `deploy.sh` |
 | `~/.cache/lumen/` | Caches (ikconfig, crash output) | Workflow at runtime |

@@ -1,9 +1,30 @@
-"""Tests for Claude settings priority and quota failover."""
+"""Tests for agent-loop backend restrictions and legacy Claude isolation."""
 
 import pytest
 from langchain_core.messages import AIMessage
 
-from agents.backends import ClaudeCodeBackend
+from agents.backends import ClaudeCodeBackend, CodexBackend
+from llm_config import get_llm_with_config, validate_agent_backend
+
+
+def test_kernel_expert_requires_codex_backend():
+    with pytest.raises(ValueError, match="must use the project-isolated Codex"):
+        validate_agent_backend("kernel_expert", "opencode")
+
+
+def test_kernel_expert_builds_codex_backend_without_provider_fallback(tmp_path):
+    backend = get_llm_with_config(
+        {
+            "backend": "codex",
+            "runtime_home": str(tmp_path / "runtime-home"),
+            "project_root": str(tmp_path),
+            "project_skills_dir": str(tmp_path / ".agents" / "skills"),
+            "semcode_mcp": {"command": "/bin/true", "args": []},
+        },
+        agent_name="kernel_expert",
+    )
+
+    assert isinstance(backend, CodexBackend)
 
 
 def test_settings_candidates_keep_glm_first(tmp_path, monkeypatch):

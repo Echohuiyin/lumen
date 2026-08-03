@@ -391,7 +391,10 @@ def display_expert_outputs(expert_results: list) -> None:
     for result in expert_results:
         expert_type = result.get("expert_type", "unknown")
         expert_name = result.get("expert_name", expert_type)
-        status = result.get("status", "ok")
+        # ``ToolExpertResult`` keeps the contract under structured_output;
+        # reading only the legacy top-level field turns blocked provider
+        # calls into a misleading green checkmark.
+        status = result.get("status") or (result.get("structured_output") or {}).get("status") or "ok"
         status_str = _c(GREEN, "✓") if status == "ok" else _c(YELLOW, "⚠")
         timing = _format_timing(expert_name)
         output_file = get_expert_output_file(expert_type)

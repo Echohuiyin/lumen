@@ -204,6 +204,9 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         ],
     )
     target_arch, arch_pattern = _extract_target_arch(text)
+    expected_kernel_commit, commit_label = _extract_labeled_value(
+        text, ["expected_kernel_commit", "kernel_commit", "kernel commit"]
+    )
     log_excerpt = _extract_log_excerpt(text)
 
     fields = {
@@ -221,6 +224,16 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             evidence.append({"kind": "input_path", "field": field, "value": value, "source": source})
     if target_arch:
         evidence.append({"kind": "input_arch", "field": "target_arch", "value": target_arch, "source": arch_pattern})
+    if expected_kernel_commit:
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", expected_kernel_commit):
+            warnings.append(
+                "expected_kernel_commit is not a hexadecimal git object id: "
+                f"{expected_kernel_commit}"
+            )
+        evidence.append({
+            "kind": "input_value", "field": "expected_kernel_commit",
+            "value": expected_kernel_commit, "source": commit_label,
+        })
     if log_excerpt:
         evidence.append({"kind": "input_log_excerpt", "field": "log_excerpt", "length": len(log_excerpt)})
 
@@ -261,6 +274,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         boot_kernel_path=boot_kernel_path,
         rootfs_path=rootfs_path,
         qemu_extra_cmdline=qemu_extra_cmdline,
+        expected_kernel_commit=expected_kernel_commit,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
         log_path=log_path,

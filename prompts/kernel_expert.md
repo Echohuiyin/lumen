@@ -24,8 +24,31 @@ Test Expert, not you, copies the image, launches QEMU, compiles the C program in
 - The original log path is first-hand evidence. Read it as needed; do not replace it with an expert summary.
 - Tool Expert result files are independent evidence artifacts. Read the relevant files before relying on their claims.
 - Source locations must be established through Semcode first. Semcode failure is `blocked`; do not substitute grep or invented source semantics.
+- The input declares `expected_kernel_commit`. Pass that exact value as
+  `git_sha` on every Semcode function/type/call-chain query. The default HEAD
+  is not evidence for this case. If the target commit is not indexed, return
+  `blocked` instead of querying another commit or using a source-text fallback.
 - Cite source evidence as `function() — relative/path.c:line` and label its source domain.
 - Record contradictions and unknowns explicitly. Never turn an unverified hypothesis into a root-cause conclusion.
+
+## Deployment/configuration boundary
+
+- You run through the project-isolated Codex backend. Use only skills exposed
+  under the repository `.agents/skills` directory. Do not invoke personal,
+  admin, bundled-system, or plugin-provided skills, and do not delegate to
+  subagents.
+- Never hardcode a developer username, host-specific absolute path, SSH port,
+  image location, guest work directory, package mirror, or API endpoint in a
+  reproducer, contract, prompt-generated command, or QEMU recipe.
+- Resolve deployment values from the input contract, project configuration, or
+  documented environment variables. Preserve absolute paths only when they
+  were supplied as readable input artifacts or generated inside the current
+  session directory.
+- A QEMU `extra_cmdline` value must come from an explicit deployment setting or
+  a source/log-backed kernel requirement; do not invent a machine-specific
+  workaround. If the selected image or guest capability is unavailable, return
+  `blocked` with the missing configuration rather than silently substituting a
+  local path or fallback image.
 
 ## C-only reproducer boundary
 

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import shlex
 import subprocess
 import tempfile
@@ -1403,6 +1404,247 @@ class ClaudeCodeBackend:
 
     def stream(self, messages: list[BaseMessage]):
         """Non-streaming fallback: invoke and yield single chunk."""
+        yield self.invoke(messages)
+
+
+class CodexBackend:
+    """Run the Kernel Expert through ``codex exec``.
+
+    The backend deliberately isolates Codex from the invoking developer's
+    HOME/configuration. Authentication is provisioned into a project-local,
+    ignored runtime home by ``deploy.sh``; only repository skills under
+    ``.agents/skills`` are in scope. Semcode is injected as a required MCP
+    server so source-analysis failures stop the workflow instead of silently
+    falling back to text search.
+    """
+
+    def __init__(
+        self,
+        cli_command: str = "codex",
+        cli_timeout: int = 14400,
+        model: str = "",
+        reasoning_effort: str = "",
+        sandbox_mode: str = "workspace-write",
+        approval_policy: str = "never",
+        runtime_home: str = "",
+        project_root: str = "",
+        project_skills_dir: str = "",
+        semcode_mcp: dict | None = None,
+        ephemeral: bool = True,
+        ignore_user_config: bool = True,
+        ignore_rules: bool = True,
+    ):
+        self._cli_command = cli_command
+        self._cli_timeout = int(cli_timeout)
+        self._model = model
+        self._reasoning_effort = reasoning_effort
+        self._sandbox_mode = sandbox_mode
+        self._approval_policy = approval_policy
+        self._runtime_home = runtime_home
+        self._project_root = project_root
+        self._project_skills_dir = project_skills_dir
+        self._semcode_mcp = semcode_mcp or {}
+        self._ephemeral = bool(ephemeral)
+        self._ignore_user_config = bool(ignore_user_config)
+        self._ignore_rules = bool(ignore_rules)
+
+    def bind_tools(self, tools):
+        """Codex owns its tool loop; LangChain tools are not rebound."""
+        return self
+
+    @staticmethod
+    def _expanded_path(value: str, *, base: Path | None = None) -> Path:
+        path = Path(os.path.expandvars(os.path.expanduser(str(value))))
+        if not path.is_absolute() and base is not None:
+            path = base / path
+        return path.resolve()
+
+    def _runtime_paths(self) -> tuple[Path, Path, Path, Path]:
+        if not self._project_root:
+            raise RuntimeError("Codex project_root is required; refusing implicit cwd discovery")
+        project_root = self._expanded_path(self._project_root)
+        if not project_root.is_dir():
+            raise RuntimeError(f"Codex project_root does not exist: {project_root}")
+
+        if not self._runtime_home:
+            raise RuntimeError("Codex runtime_home is required for project-isolated execution")
+        runtime_home = self._expanded_path(self._runtime_home, base=project_root)
+        codex_home = runtime_home / ".codex"
+        auth_file = codex_home / "auth.json"
+        if not auth_file.is_file() and not os.environ.get("CODEX_API_KEY", "").strip():
+            raise RuntimeError(
+                "Codex isolated authentication is missing; run deploy.sh after `codex login` "
+                f"or provide CODEX_API_KEY for this invocation: {auth_file}"
+            )
+        if auth_file.is_file() and auth_file.stat().st_mode & 0o077:
+            raise RuntimeError(f"Codex auth file must have mode 600: {auth_file}")
+
+        if not self._project_skills_dir:
+            raise RuntimeError("Codex project_skills_dir is required")
+        skills_dir = self._expanded_path(self._project_skills_dir, base=project_root)
+        if not skills_dir.is_dir() or not any(skills_dir.glob("*/SKILL.md")):
+            raise RuntimeError(
+                f"Codex project skills are missing under {skills_dir}; run deploy.sh"
+            )
+        try:
+            skills_dir.relative_to(project_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Codex project_skills_dir must stay inside project_root: {skills_dir}"
+            ) from exc
+        return project_root, runtime_home, codex_home, skills_dir
+
+    def _resolve_mcp_command(self, project_root: Path) -> tuple[str, list[str]]:
+        command_value = str(self._semcode_mcp.get("command") or "").strip()
+        if not command_value:
+            raise RuntimeError("Codex Semcode MCP command is required; no source fallback is allowed")
+        expanded = os.path.expandvars(os.path.expanduser(command_value))
+        if os.sep in expanded or (os.altsep and os.altsep in expanded):
+            command_path = self._expanded_path(expanded, base=project_root)
+            if not command_path.is_file() or not os.access(command_path, os.X_OK):
+                raise RuntimeError(f"Codex Semcode MCP binary is missing or not executable: {command_path}")
+            command = str(command_path)
+        else:
+            command = shutil.which(expanded) or ""
+            if not command:
+                raise RuntimeError(f"Codex Semcode MCP command not found on PATH: {expanded}")
+        args = [os.path.expandvars(os.path.expanduser(str(item))) for item in self._semcode_mcp.get("args", [])]
+        return command, args
+
+    @staticmethod
+    def _parse_jsonl(stdout: str) -> str:
+        final_text = ""
+        errors: list[str] = []
+        for raw_line in stdout.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") == "item.completed":
+                item = event.get("item") or {}
+                if item.get("type") == "agent_message" and item.get("text"):
+                    final_text = str(item["text"])
+            elif event.get("type") in {"error", "turn.failed"}:
+                detail = event.get("message") or event.get("error") or event
+                errors.append(str(detail))
+        if not final_text and errors:
+            raise RuntimeError(f"Codex reported an error: {errors[-1][:500]}")
+        return final_text
+
+    def _build_command(self, *, workdir: Path, project_root: Path) -> list[str]:
+        command = shlex.split(self._cli_command)
+        if not command:
+            raise RuntimeError("Codex CLI command is empty")
+        mcp_command, mcp_args = self._resolve_mcp_command(project_root)
+        cmd = command + [
+            "--ask-for-approval", self._approval_policy,
+            "exec",
+            "--json",
+            "--color", "never",
+            "--skip-git-repo-check",
+            "--sandbox", self._sandbox_mode,
+            "-C", str(workdir),
+        ]
+        if self._ephemeral:
+            cmd.append("--ephemeral")
+        if self._ignore_user_config:
+            cmd.append("--ignore-user-config")
+        if self._ignore_rules:
+            cmd.append("--ignore-rules")
+        if self._model:
+            cmd.extend(["--model", self._model])
+        if self._reasoning_effort:
+            cmd.extend(["-c", f"model_reasoning_effort={json.dumps(self._reasoning_effort)}"])
+        cmd.extend([
+            "--disable", "plugins",
+            "--disable", "apps",
+            "--disable", "multi_agent",
+            "-c", f"mcp_servers.semcode.command={json.dumps(mcp_command)}",
+            "-c", f"mcp_servers.semcode.args={json.dumps(mcp_args)}",
+            "-c", f"mcp_servers.semcode.cwd={json.dumps(str(project_root))}",
+            "-c", "mcp_servers.semcode.required=true",
+            "-",
+        ])
+        return cmd
+
+    def invoke(
+        self,
+        messages: list[BaseMessage],
+        *,
+        workdir: str = "",
+        add_dirs: list[str] | None = None,
+    ) -> AIMessage:
+        project_root, runtime_home, codex_home, _skills_dir = self._runtime_paths()
+        if not workdir:
+            raise RuntimeError("Codex workdir is required for Kernel Expert output isolation")
+        workdir_path = self._expanded_path(workdir)
+        if not workdir_path.is_dir():
+            raise RuntimeError(f"Codex workdir does not exist: {workdir_path}")
+        try:
+            workdir_path.relative_to(project_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                "Codex workdir must stay inside project_root so repository skills are discoverable: "
+                f"{workdir_path}"
+            ) from exc
+
+        system_parts: list[str] = []
+        user_parts: list[str] = []
+        for message in messages:
+            if isinstance(message, dict):
+                role = str(message.get("role") or "user")
+                content = str(message.get("content") or "")
+            else:
+                role = "system" if isinstance(message, SystemMessage) or message.type == "system" else "user"
+                content = str(message.content)
+            (system_parts if role == "system" else user_parts).append(content)
+
+        prompt = (
+            "# Lumen Kernel Expert instructions\n\n"
+            + "\n\n".join(system_parts)
+            + "\n\n# Runtime isolation\n\n"
+            + "Use only repository skills discovered under the configured .agents/skills directory. "
+              "Do not invoke user, admin, bundled-system, or plugin-provided skills. "
+              "The target kernel source is read-only; write only inside the current session output directory.\n\n"
+            + "# Case input\n\n"
+            + ("\n\n".join(user_parts) or " ")
+        )
+        cmd = self._build_command(workdir=workdir_path, project_root=project_root)
+        env = os.environ.copy()
+        env["HOME"] = str(runtime_home)
+        env["CODEX_HOME"] = str(codex_home)
+        env["XDG_CONFIG_HOME"] = str(runtime_home / ".config")
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=str(workdir_path),
+                env=env,
+                input=prompt,
+                capture_output=True,
+                text=True,
+                timeout=self._cli_timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f"Codex timed out after {self._cli_timeout}s") from exc
+        except FileNotFoundError as exc:
+            raise RuntimeError(f"Codex CLI not found: {self._cli_command}") from exc
+
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[:1000]
+            prefix = "[cli_startup_failure] " if "mcp" in detail.lower() else ""
+            raise RuntimeError(f"{prefix}Codex failed (exit {result.returncode}): {detail}")
+        content = self._parse_jsonl(result.stdout)
+        if not content.strip():
+            raise RuntimeError("Codex returned no final agent message")
+        return AIMessage(content=content)
+
+    def stream(self, messages: list[BaseMessage]):
         yield self.invoke(messages)
 
 

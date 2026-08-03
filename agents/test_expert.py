@@ -8,6 +8,7 @@ maintenance reproduction.
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import re
 import shutil
 import subprocess
@@ -36,7 +37,20 @@ def _model_validate(model, value: dict):
 def _attempt_runtime_root(session_dir: str, tryout: int) -> Path:
     if not session_dir:
         raise ValueError("missing session_dir for isolated QEMU try-out")
-    return Path(session_dir).resolve() / "tryouts" / f"tryout-{tryout:02d}" / "qemu-ssh"
+    session_path = Path(session_dir).expanduser().resolve()
+    session_name = session_path.name
+    if not session_name:
+        raise ValueError("session_dir must name an isolated workflow session")
+
+    # Large sparse guest copies may not fit on the project filesystem when
+    # benchmark assets are being imported concurrently. Deployments can opt
+    # into a writable scratch filesystem (tmpfs/NVMe) without changing the
+    # evidence contract or baking a host-specific path into the code.
+    configured_root = os.environ.get("LUMEN_QEMU_RUNTIME_ROOT", "").strip()
+    root = Path(configured_root).expanduser().resolve() if configured_root else session_path
+    if configured_root:
+        root = root / session_name
+    return root / "tryouts" / f"tryout-{tryout:02d}" / "qemu-ssh"
 
 
 def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -> dict[str, str]:
@@ -46,8 +60,22 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
     image_source = Path(source_image).expanduser().resolve() if source_image else base.image
     if not image_source.is_file():
         raise FileNotFoundError(f"base image is missing: {image_source}")
-    if not base.ssh_key.is_file():
-        raise FileNotFoundError(f"base SSH key is missing: {base.ssh_key}")
+    # A case-provided rootfs may have been built with a different authorized
+    # key than the deployment default.  Pair an explicit image with the key
+    # next to that image; silently mixing keys makes a healthy guest look like
+    # a QEMU/SSH boot failure and would repeat the same error ten times.
+    if source_image:
+        sibling_key = image_source.parent / base.ssh_key.name
+        if not sibling_key.is_file():
+            raise FileNotFoundError(
+                f"declared rootfs has no co-located SSH key: {image_source}; "
+                f"expected {sibling_key}"
+            )
+        key_source = sibling_key
+    else:
+        key_source = base.ssh_key
+        if not key_source.is_file():
+            raise FileNotFoundError(f"base SSH key is missing: {key_source}")
     attempt.image.parent.mkdir(parents=True, exist_ok=True)
     # Preserve sparse holes in the base image.  ``shutil.copy2`` expands the
     # 2-GiB sparse guest image to its logical size, which exhausts the host
@@ -61,9 +89,15 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise OSError(f"failed to create sparse writable image copy: {exc}") from exc
-    shutil.copy2(base.ssh_key, attempt.ssh_key)
+    shutil.copy2(key_source, attempt.ssh_key)
     attempt.ssh_key.chmod(0o600)
-    return {"base_image": str(image_source), "attempt_image": str(attempt.image), "runtime_root": str(runtime_root)}
+    return {
+        "base_image": str(image_source),
+        "attempt_image": str(attempt.image),
+        "runtime_root": str(runtime_root),
+        "ssh_key_source": str(key_source),
+        "attempt_ssh_key": str(attempt.ssh_key),
+    }
 
 
 def _build_detection_signals(
@@ -93,12 +127,27 @@ def _build_detection_signals(
     ])
 
 
+def _is_inline_source_annotation(frame: str) -> bool:
+    """Return whether a source-level frame is explicitly inlined.
+
+    Inline helpers can explain a caller's source path without appearing as an
+    independent runtime stack frame.  Only explicit annotations are filtered;
+    ordinary function names containing ``inline`` remain required.
+    """
+    lowered = str(frame).lower()
+    return bool(re.search(
+        r"\[(?:[^]]*\bstatic\s+inline\b[^]]*|[^]]*\binlined\s+into\b[^]]*)\]"
+        r"|\binlined\s+into\b|\binline\s+at\b",
+        lowered,
+    ))
+
+
 def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
     """Make the original log chain authoritative for a real Test Expert plan."""
     original = [
         str(frame).strip()
         for frame in contract.original_call_chain
-        if str(frame).strip()
+        if str(frame).strip() and not _is_inline_source_annotation(frame)
     ]
     if not original:
         return contract.call_chain_oracle
@@ -118,12 +167,20 @@ def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
     configured_required = [
         str(frame).strip()
         for frame in data.get("required_frames") or []
-        if str(frame).strip() and str(frame).strip() not in exact_set
+        if (
+            str(frame).strip()
+            and not _is_inline_source_annotation(frame)
+            and str(frame).strip() not in exact_set
+        )
     ]
     required = [*exact, *configured_required]
     alternatives: list[list[str]] = []
     for group in data.get("required_frame_alternatives") or []:
-        members = [str(frame).strip() for frame in group if str(frame).strip()]
+        members = [
+            str(frame).strip()
+            for frame in group
+            if str(frame).strip() and not _is_inline_source_annotation(frame)
+        ]
         if members and not any(member in exact_set for member in members):
             alternatives.append(members)
     data["required_frames"] = required

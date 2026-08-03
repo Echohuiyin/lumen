@@ -44,9 +44,14 @@ def test_real_semcode_adapter_query_when_index_is_deployed():
     ))
     if not source.is_dir() or not (source / ".semcode.db").exists() or not binary.is_file():
         pytest.skip("real Semcode index/binary is not deployed")
+    expected = os.environ.get("LUMEN_SEMCODE_GIT_SHA", "")
+    if not expected:
+        pytest.skip("LUMEN_SEMCODE_GIT_SHA must identify the indexed snapshot")
     tools = create_semcode_tools(
         command=str(binary), args=[], kernel_source_path=str(source),
+        expected_kernel_commit=expected,
     )
-    result = tools[0].invoke({"name": "kfree"})
-    assert '"function": "kfree"' in result
+    symbol = os.environ.get("LUMEN_SEMCODE_PROBE_SYMBOL", "vfs_read")
+    result = tools[0].invoke({"name": symbol})
+    assert f'"function": "{symbol}"' in result
     assert '"location"' in result

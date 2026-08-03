@@ -4,7 +4,7 @@ Verifies that:
 1. config.json has valid semcode_mcp config
 2. The semcode-mcp binary exists at the configured path
 3. .semcode.db path is derived from kernel_source in input text
-4. _write_semcode_mcp_config() produces valid CLI-format MCP config
+4. Codex receives a required project-scoped Semcode MCP config
 5. kernel_source_path from input.txt supplies the semcode db path
 """
 
@@ -16,10 +16,12 @@ import sys
 import tempfile
 from pathlib import Path
 
+import pytest
+
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from agents.backends import ClaudeCodeBackend
+from agents.backends import CodexBackend
 from agents.input_artifacts import parse_input_artifacts
 from llm_config import load_config
 
@@ -92,49 +94,37 @@ def test_input_artifacts_kernel_source_absent_by_default():
     )
 
 
-def test_write_semcode_mcp_config_format(tmp_path):
-    """_write_semcode_mcp_config must produce valid CLI-format MCP config."""
+def test_codex_semcode_mcp_command_overrides(tmp_path):
+    """Codex CLI config must require the declared Semcode MCP server."""
     fake_bin = tmp_path / "semcode-mcp"
     fake_bin.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     fake_bin.chmod(0o755)
-    fake_db = tmp_path / ".semcode.db"
-    fake_db.touch()
 
-    backend = ClaudeCodeBackend(
-        cli_command="claude",
+    backend = CodexBackend(
+        cli_command="codex",
         semcode_mcp={
             "command": str(fake_bin),
-            "args": ["-d", str(fake_db)],
+            "args": ["-d", str(tmp_path / ".semcode.db")],
         },
     )
-    mcp_path = backend._write_semcode_mcp_config()
-    assert mcp_path, "_write_semcode_mcp_config returned empty path"
-    assert os.path.exists(mcp_path), f"Temp MCP config not found: {mcp_path}"
-    try:
-        parsed = json.loads(Path(mcp_path).read_text())
-        assert "mcpServers" in parsed, "Missing mcpServers key"
-        assert "semcode" in parsed["mcpServers"], "Missing semcode key in mcpServers"
-        sc = parsed["mcpServers"]["semcode"]
-        assert "command" in sc, "Missing command in semcode MCP server config"
-        assert "args" in sc, "Missing args in semcode MCP server config"
-        assert "-d" in sc["args"], "Missing -d in semcode MCP server args"
-        assert sc["command"] == str(fake_bin)
-    finally:
-        Path(mcp_path).unlink(missing_ok=True)
+    cmd = backend._build_command(workdir=tmp_path, project_root=tmp_path)
+    assert "mcp_servers.semcode.required=true" in cmd
+    assert f'mcp_servers.semcode.command={json.dumps(str(fake_bin))}' in cmd
+    assert any(item.startswith("mcp_servers.semcode.args=") and "-d" in item for item in cmd)
 
 
-def test_write_semcode_mcp_config_empty_when_no_command():
-    """_write_semcode_mcp_config returns '' when semcode_mcp has no command."""
-    backend = ClaudeCodeBackend(semcode_mcp={})
-    assert backend._write_semcode_mcp_config() == ""
+def test_codex_semcode_mcp_missing_command_is_blocking(tmp_path):
+    backend = CodexBackend(semcode_mcp={})
+    with pytest.raises(RuntimeError, match="Semcode MCP command is required"):
+        backend._build_command(workdir=tmp_path, project_root=tmp_path)
 
 
-def test_write_semcode_mcp_config_empty_when_binary_missing():
-    """_write_semcode_mcp_config returns '' when binary doesn't exist."""
-    backend = ClaudeCodeBackend(
+def test_codex_semcode_mcp_missing_binary_is_blocking(tmp_path):
+    backend = CodexBackend(
         semcode_mcp={"command": "/nonexistent/semcode-mcp"},
     )
-    assert backend._write_semcode_mcp_config() == ""
+    with pytest.raises(RuntimeError, match="Semcode MCP binary is missing"):
+        backend._build_command(workdir=tmp_path, project_root=tmp_path)
 
 
 def test_kernel_source_override_changes_db_path():

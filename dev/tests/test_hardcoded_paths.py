@@ -354,3 +354,21 @@ def test_deploy_preflight_uses_loaded_crash_dir_env():
     deploy = (PROJECT_ROOT / "deploy.sh").read_text(encoding="utf-8")
     assert 'configured_crash_bin_dirs="${LUMEN_CRASH_BIN_DIRS:-$CRASH_BIN_DIRS}"' in deploy
     assert 'read -r -a extra_crash_dirs <<< "$configured_crash_bin_dirs"' in deploy
+
+
+def test_qemu_provisioner_requires_deployment_mirror_and_component_manifest():
+    """QEMU provisioning must use deployment inputs and declare guest contents."""
+    script = (PROJECT_ROOT / "scripts" / "provision_qemu_ssh_image.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "LUMEN_DEBIAN_MIRROR" in script
+    assert "LUMEN_DEBIAN_DISTRIBUTION" in script
+    assert "LUMEN_QEMU_IMAGE_ROOT" in script
+    assert "command -v qemu-x86_64-static" in script
+    assert "command -v qemu-aarch64-static" in script
+    assert "--mirror" in script
+    assert "mirrors.aliyun.com/debian" not in script
+    assert "guest-components.manifest" in script
+    assert "--rebuild" in script
+    deploy = (PROJECT_ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert "LUMEN_GNU_MIRROR" in deploy

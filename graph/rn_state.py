@@ -71,6 +71,7 @@ class MaintenanceWorkflowState(TypedDict):
     test_feedback: str                # 下一轮 Kernel Expert 的结构化反馈摘要
     # 知识库生成输出
     knowledge_file: str               # 知识库文件路径
+    knowledge_base_contract: dict     # 终态归档结果或明确 blocked 证据
     final_response: str
 
 
@@ -131,5 +132,6 @@ def make_initial_state(
         "call_chain_consistent": False,
         "test_feedback": "",
         "knowledge_file": "",
+        "knowledge_base_contract": {},
         "final_response": "",
     }
