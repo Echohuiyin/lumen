@@ -1,6 +1,7 @@
 """Offline contracts for isolated userspace-C QEMU try-outs."""
 
 from pathlib import Path
+import lzma
 import os
 import sys
 
@@ -123,6 +124,39 @@ def test_arm64_launch_recipe_uses_expected_console_and_disk(tmp_path):
     assert "root=/dev/vda" in rendered
     assert "virtio-blk-pci,drive=rootfs" in rendered
     assert "virtio-net-pci,netdev=net0" in rendered
+
+
+def test_xz_kernel_uses_bundle_inner_image(tmp_path):
+    plan = _plan(tmp_path, arch="arm64")
+    inner = tmp_path / "Image.gz"
+    inner.write_bytes(b"gzip-kernel")
+    compressed = tmp_path / "Image.gz.xz"
+    compressed.write_bytes(lzma.compress(inner.read_bytes()))
+    plan.boot_kernel_path = str(compressed)
+    paths = persistent_qemu_paths("arm64", runtime_root=tmp_path / "guests")
+    paths.image.parent.mkdir(parents=True)
+    paths.image.write_bytes(b"rootfs")
+
+    command, _ = build_qemu_command(plan, paths, ssh_port=10024)
+
+    assert command[command.index("-kernel") + 1] == str(inner.resolve())
+
+
+def test_xz_kernel_is_decompressed_into_private_runtime(tmp_path):
+    plan = _plan(tmp_path, arch="arm64")
+    compressed = tmp_path / "CompressedKernel.xz"
+    expected = b"raw-kernel"
+    compressed.write_bytes(lzma.compress(expected))
+    plan.boot_kernel_path = str(compressed)
+    paths = persistent_qemu_paths("arm64", runtime_root=tmp_path / "guests")
+    paths.image.parent.mkdir(parents=True)
+    paths.image.write_bytes(b"rootfs")
+
+    command, _ = build_qemu_command(plan, paths, ssh_port=10025)
+    prepared = Path(command[command.index("-kernel") + 1])
+
+    assert prepared.parent == paths.runtime_dir.resolve()
+    assert prepared.read_bytes() == expected
 
 
 def test_missing_guest_artifacts_are_blocked_without_reuse(tmp_path):

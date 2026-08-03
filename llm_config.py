@@ -147,12 +147,23 @@ def get_llm_with_config(agent_config: dict, *, default_config: dict | None = Non
             setting_sources=agent_config.get("setting_sources") or defaults.get("setting_sources"),
         )
     elif backend == "codex":
+        # Codex authenticates through its isolated ChatGPT runtime.  Do not
+        # inherit the generic provider's model_name (for example an
+        # OpenAI-compatible DeepSeek model), because Codex would submit that
+        # name to the ChatGPT account and fail before the agent loop starts.
+        # An explicitly configured Codex model remains supported.
+        codex_model = (
+            agent_config.get("model")
+            or agent_config.get("model_name")
+            or defaults.get("codex_model")
+            or defaults.get("model", "")
+        )
         return CodexBackend(
             cli_command=agent_config.get("cli_command") or defaults.get("cli_command", "codex"),
             cli_timeout=int(agent_config.get("cli_timeout") if agent_config.get("cli_timeout") is not None else defaults.get("cli_timeout", 14400)),
-            model=agent_config.get("model") or agent_config.get("model_name") or "",
+            model=codex_model,
             reasoning_effort=agent_config.get("reasoning_effort") or defaults.get("reasoning_effort", ""),
-            service_tier=agent_config.get("service_tier") or defaults.get("service_tier", ""),
+            service_tier=agent_config.get("service_tier") or defaults.get("codex_service_tier", ""),
             sandbox_mode=agent_config.get("sandbox_mode") or defaults.get("sandbox_mode", "workspace-write"),
             approval_policy=agent_config.get("approval_policy") or defaults.get("approval_policy", "never"),
             runtime_home=agent_config.get("runtime_home") or defaults.get("runtime_home", ""),

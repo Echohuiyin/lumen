@@ -72,9 +72,9 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     assert "--ignore-user-config" in cmd
     assert "--ignore-rules" in cmd
     assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
+    assert 'service_tier="priority"' in cmd
     assert "--add-dir" not in cmd, "kernel source must remain read-only"
     assert "mcp_servers.semcode.required=true" in cmd
-    assert 'service_tier="priority"' in cmd
     assert captured["kwargs"]["env"]["HOME"] == str(runtime_home)
     assert captured["kwargs"]["env"]["CODEX_HOME"] == str(runtime_home / ".codex")
     assert "Use only repository skills" in captured["kwargs"]["input"]

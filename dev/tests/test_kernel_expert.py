@@ -19,6 +19,7 @@ from agents.kernel_expert import (
     _materialize_semcode_evidence,
     _read_primary_log_text,
     _codex_case_text,
+    _stage_codex_evidence,
     _validate_kernel_contract_artifacts,
 )
 
@@ -105,6 +106,33 @@ def test_semcode_mcp_is_pinned_to_declared_checkout(tmp_path):
         str(source.resolve()),
     ]
     assert config["semcode_mcp"]["args"] == ["--legacy", "--lazy", "--database", "old", "--git-repo=old"]
+
+
+def test_codex_evidence_extract_keeps_call_chain_and_drops_operational_noise(tmp_path):
+    case = tmp_path / "case"
+    case.mkdir()
+    (case / "report.txt").write_text(
+        "Unable to handle kernel paging request\n"
+        "CPU: 0 Comm: syz.0.1\n"
+        "Call trace:\n"
+        " target_entry+0x1/0x2\n"
+        " target_release+0x3/0x4\n"
+        "---[ end trace 000 ]---\n",
+        encoding="utf-8",
+    )
+    log = case / "console.log"
+    log.write_text("syz-executor ioctl setup\n", encoding="utf-8")
+    tool = case / "tool.txt"
+    tool.write_text("root cause summary\nsyzkaller syscall sequence\n", encoding="utf-8")
+
+    _stage_codex_evidence(
+        tmp_path / "workdir",
+        [("original.log", str(log)), ("tool_expert_1.txt", str(tool))],
+    )
+    staged = (tmp_path / "workdir" / "evidence" / "original.log").read_text()
+    assert "target_entry" in staged and "target_release" in staged
+    assert "syz" not in staged.lower()
+    assert "ioctl" not in (tmp_path / "workdir" / "evidence" / "tool_expert_1.txt").read_text().lower()
 
 
 def test_contract_rejects_module_metadata_in_c_source_set():

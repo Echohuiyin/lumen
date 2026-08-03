@@ -27,6 +27,26 @@ def test_kernel_expert_builds_codex_backend_without_provider_fallback(tmp_path):
     assert isinstance(backend, CodexBackend)
 
 
+def test_codex_does_not_inherit_generic_provider_model(tmp_path):
+    backend = get_llm_with_config(
+        {
+            "backend": "codex",
+            "runtime_home": str(tmp_path / "runtime-home"),
+            "project_root": str(tmp_path),
+            "project_skills_dir": str(tmp_path / ".agents" / "skills"),
+            "semcode_mcp": {"command": "/bin/true", "args": []},
+        },
+        default_config={
+            "backend": "openai",
+            "model_name": "provider-specific-model",
+        },
+        agent_name="kernel_expert",
+    )
+
+    assert isinstance(backend, CodexBackend)
+    assert backend._model == ""
+
+
 def test_settings_candidates_keep_glm_first(tmp_path, monkeypatch):
     glm = tmp_path / "settings.json_GLM"
     fallback = tmp_path / "settings.json"

@@ -7,6 +7,95 @@ import subprocess
 import hashlib
 import time
 
+
+def _create_codex_workdir(session_output_dir: Path) -> Path:
+    """Create a project-contained workdir for one Kernel Expert invocation."""
+    root = (PROJECT_ROOT / "runtime" / "codex-sessions").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    session_name = re.sub(r"[^A-Za-z0-9_.-]+", "-", session_output_dir.name).strip("-")
+    session_name = session_name[:64] or "session"
+    digest = hashlib.sha256(str(session_output_dir.resolve()).encode("utf-8")).hexdigest()[:12]
+    workdir = root / f"{session_name}-{digest}-{time.time_ns()}"
+    workdir.mkdir(parents=False, exist_ok=False)
+    return workdir
+
+
+def _sync_codex_artifacts(workdir: Path, session_output_dir: Path) -> None:
+    """Copy userspace artifacts into the durable workflow session."""
+    session_output_dir.mkdir(parents=True, exist_ok=True)
+    allowed_suffixes = {".c", ".h", ".json"}
+    for source in workdir.rglob("*"):
+        if not source.is_file() or source.name.startswith("."):
+            continue
+        if source.suffix.lower() not in allowed_suffixes:
+            continue
+        relative = source.relative_to(workdir)
+        destination = session_output_dir / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.write_bytes(source.read_bytes())
+        except OSError:
+            continue
+
+
+def _stage_codex_evidence(
+    workdir: Path, evidence_files: list[tuple[str, str]] | None,
+) -> None:
+    """Stage deterministic maintenance evidence under the Codex workspace.
+
+    Syzkaller execution/audit transcripts can contain long syscall and device
+    setup sequences that are unrelated to the crash call chain.  Keep the
+    original files outside the Codex workspace for audit, but give the model a
+    small, deterministic extract: the official report's signature and full
+    Call trace, plus non-operational lines from tool analyses.
+    """
+    evidence_dir = workdir / "evidence"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    risk_pattern = re.compile(
+        r"\bsyz[\w.-]*|reproduc|\b(?:ioctl|payload|exploit|attack|privilege|modules?)\b|"
+        r"(?:syscall|fault)[ -]?(?:sequence|injection)", re.IGNORECASE,
+    )
+    for name, declared_path in evidence_files or []:
+        source = Path(os.path.expanduser(str(declared_path or "")))
+        if name == "original.log":
+            report = source.with_name("report.txt")
+            if report.is_file():
+                source = report
+        if not source.is_file():
+            continue
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name)).strip("._")
+        if not safe_name:
+            continue
+        try:
+            destination = evidence_dir / safe_name
+            raw = source.read_text(encoding="utf-8", errors="replace")
+            if name == "original.log":
+                lines = raw.splitlines()
+                selected: list[str] = []
+                in_trace = False
+                markers = (
+                    "Unable to handle", "KASAN:", "Internal error:",
+                    "pc :", "lr :", "Call trace:",
+                )
+                for line in lines:
+                    if "Call trace:" in line:
+                        in_trace = True
+                    if any(marker in line for marker in markers) or in_trace:
+                        if risk_pattern.search(line) or line.startswith(("CPU:", "Modules linked")):
+                            continue
+                        selected.append(line)
+                    if in_trace and "end trace" in line:
+                        break
+                raw = "\n".join(selected) + "\n"
+            else:
+                raw = "\n".join(
+                    line for line in raw.splitlines()
+                    if not risk_pattern.search(line)
+                ) + "\n"
+            destination.write_text(raw, encoding="utf-8")
+        except OSError:
+            continue
+
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from agents.contracts import KernelExpertOutput, RefcountPath, TestResultContract, UafAnalysisContract, model_to_dict
@@ -255,6 +344,7 @@ def _run_kernel_expert_with_agent_loop(
     boot_kernel_path: str = "",
     test_assets_dir: str = "",
     max_reproduction_rounds: int = 9,
+    evidence_files: list[tuple[str, str]] | None = None,
 ) -> AIMessage:
     """Execute kernel expert analysis via an agent-loop CLI backend.
 
@@ -270,6 +360,9 @@ def _run_kernel_expert_with_agent_loop(
     backend_label = "Codex" if llm.__class__.__name__ == "CodexBackend" else (
         "OpenCode" if llm.__class__.__name__ == "OpenCodeBackend" else "Agent Loop"
     )
+    session_output_dir = Path(paths_get_output_dir()).resolve()
+    codex_workdir = _create_codex_workdir(session_output_dir)
+    _stage_codex_evidence(codex_workdir, evidence_files)
     header = _format_agent_header_text(expert_name, f"分析构造用例（{backend_label}）")
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(header)
@@ -280,10 +373,11 @@ def _run_kernel_expert_with_agent_loop(
         context_info = f"""Kernel expert runtime environment:
 
 - Home directory: {home_dir} (use this in paths, NOT /root)
-- Output directory (your current workdir): {paths_get_output_dir()} — ALL reproducer files MUST be created under this directory
-- Target kernel source for read-only Semcode analysis: {target_kernel_dir or '(declared by input contract)'}
+- Output directory (your current workdir): {codex_workdir} — ALL C test-harness files and KERNEL_CONTRACT artifacts MUST be created under this directory
+- Durable workflow session directory: {session_output_dir} — the workflow archives generated C/JSON artifacts here after this invocation
+- Target source checkout: bound to the required Semcode MCP server; do not guess or substitute a source path
 - Write only diagnostic userspace C sources and KERNEL_CONTRACT here.
-- Test Expert owns QEMU, guest compilation, injection, and call-chain verification.
+- Test Expert owns QEMU, guest compilation, approved load setup, and call-chain verification.
 - Maximum Kernel/Test Expert try-outs: {max_reproduction_rounds}
 """
 
@@ -305,9 +399,10 @@ def _run_kernel_expert_with_agent_loop(
         add_dirs = [target_kernel_dir] if target_kernel_dir else None
         response = llm.invoke(
             messages,
-            workdir=str(paths_get_output_dir()),
+            workdir=str(codex_workdir),
             add_dirs=add_dirs,
         )
+        _sync_codex_artifacts(codex_workdir, session_output_dir)
 
         output_content = response.content or ""
         # Retry once inside this same Kernel Expert loop when the final turn
@@ -329,9 +424,10 @@ def _run_kernel_expert_with_agent_loop(
             ))]
             retry_response = llm.invoke(
                 retry_messages,
-                workdir=str(paths_get_output_dir()),
+                workdir=str(codex_workdir),
                 add_dirs=add_dirs,
             )
+            _sync_codex_artifacts(codex_workdir, session_output_dir)
             if retry_response.content and retry_response.content.strip():
                 response = retry_response
                 output_content = retry_response.content
@@ -584,7 +680,10 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     if state.get("test_attempts", 0) == 0:
         display_expert_outputs(expert_results)
     expert_result_paths = []
-    for result in expert_results:
+    evidence_files: list[tuple[str, str]] = []
+    if original_log_path:
+        evidence_files.append(("original.log", original_log_path))
+    for index, result in enumerate(expert_results, start=1):
         structured = result.get("structured_output") or {}
         artifacts = structured.get("artifacts") or {}
         output_path = artifacts.get("expert_output_file")
@@ -597,9 +696,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             materialized_file = get_expert_output_file(expert_type)
             materialized_file.write_text(str(result.get("analysis_output", "")) + "\n", encoding="utf-8")
             output_path = str(materialized_file.resolve())
+        evidence_name = f"tool_expert_{index}.txt"
+        evidence_files.append((evidence_name, str(output_path)))
         expert_result_paths.append(
             f"- {result.get('expert_name', result.get('expert_type', 'unknown'))}"
-            f" ({result.get('expert_type', 'unknown')}): {output_path}"
+            f" ({result.get('expert_type', 'unknown')}): evidence/{evidence_name}"
         )
 
     # Extract evidence summary for LLM context
@@ -670,6 +771,22 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"## 工具专家结果文件（按需直接读取；不要以路径外的摘要替代原文）\n"
         + "\n".join(expert_result_paths) + "\n\n"
         f"## 关键证据摘要\n{evidence_summary}"
+    )
+    # Keep the initial model request neutral and compact.  First-hand logs
+    # and tool transcripts are staged under evidence/; raw issue titles and
+    # host paths are not needed for the diagnosis and can cause the remote
+    # model to misclassify ordinary maintenance work.
+    user_content = (
+        "## Authorized maintenance case\n"
+        "Use only the first-hand evidence staged under evidence/ and the required Semcode MCP.\n"
+        f"target_arch: {input_artifacts.get('target_arch', 'N/A')}\n"
+        f"expected_kernel_commit: {expected_kernel_commit or 'N/A'}\n"
+        "Semcode source status: verified for the declared commit; every query must use that exact git_sha.\n"
+        "Original first-hand log: evidence/original.log (read it directly; do not replace it with a summary).\n"
+        "User-supplied artifact paths, boot assets, and guest settings are validated and injected by the workflow.\n"
+        "Write the diagnostic userspace C test harness and KERNEL_CONTRACT in the current workdir.\n\n"
+        "## Evidence directory\n"
+        "Inspect every file under evidence/ before concluding; record unknowns instead of guessing."
     )
     if semcode_path_analysis is not None:
         user_content += "\n\n" + render_semcode_analysis_context(semcode_path_analysis)
@@ -807,6 +924,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             boot_kernel_path=boot_kernel_path,
             test_assets_dir=test_assets_dir,
             max_reproduction_rounds=max_reproduction_rounds,
+            evidence_files=evidence_files,
         )
     except RuntimeError as e:
         # CLI startup failure, timeout, or turn-budget exhaustion ends this

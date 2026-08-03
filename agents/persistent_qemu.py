@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+import lzma
 import os
 from pathlib import Path
 import shlex
@@ -61,6 +62,53 @@ def _ssh_user() -> str:
     if len(configured) > 64 or not _SAFE_SSH_USER.fullmatch(configured):
         raise ValueError("LUMEN_QEMU_SSH_USER is not a valid SSH account name")
     return configured
+
+
+def _resolve_qemu_kernel(boot_kernel_path: str, runtime_dir: Path) -> str:
+    """Return a kernel image format that QEMU can load directly.
+
+    Case inputs may point at the compressed ``*.xz`` transport artifact.  The
+    ARM64 QEMU loader does not recursively unpack that container, so passing
+    it to ``-kernel`` leaves a live but unbootable VM with no serial output.
+    Prefer the sibling image produced by the same asset bundle (usually the
+    inner gzip/raw image); when it is not present, decompress into the
+    try-out's private runtime directory and keep the declared artifact read
+    only.
+    """
+    kernel = Path(os.path.expanduser(boot_kernel_path)).resolve()
+    if kernel.suffix.lower() != ".xz":
+        return str(kernel)
+    if not kernel.is_file():
+        raise FileNotFoundError(f"boot kernel is missing: {kernel}")
+
+    sibling = kernel.with_suffix("")
+    if sibling.is_file():
+        return str(sibling)
+
+    stat = kernel.stat()
+    digest = hashlib.sha256(
+        f"{kernel}\0{stat.st_size}\0{stat.st_mtime_ns}".encode("utf-8")
+    ).hexdigest()[:16]
+    output_suffix = sibling.suffix or ".img"
+    output = runtime_dir / f"kernel-{digest}{output_suffix}"
+    if output.is_file() and output.stat().st_mtime_ns >= stat.st_mtime_ns:
+        return str(output)
+
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(output.name + ".tmp")
+    try:
+        with lzma.open(kernel, "rb") as source, temporary.open("wb") as target:
+            shutil.copyfileobj(source, target)
+        os.replace(temporary, output)
+        output.chmod(0o644)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return str(output)
+
+
 _PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
                       "scheduler": "--switch", "filesystem": "--hdd", "network": "--netdev"}
 _FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request"}
@@ -359,6 +407,7 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
     cmdline = f"console={console} root={root_device} rw net.ifnames=0 earlyprintk=serial"
     if recipe.extra_cmdline:
         cmdline += " " + recipe.extra_cmdline
+    qemu_kernel = _resolve_qemu_kernel(plan.boot_kernel_path, paths.runtime_dir)
     command = [
         qemu,
         "-machine", machine,
@@ -369,7 +418,7 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
         "-monitor", "none",
         "-serial", f"file:{paths.serial_log}",
         "-no-reboot",
-        "-kernel", os.path.expanduser(plan.boot_kernel_path),
+        "-kernel", qemu_kernel,
         "-append", cmdline,
         *drive_args,
         "-netdev", f"user,id=net0,hostfwd=tcp:127.0.0.1:{ssh_port}-:22",
