@@ -573,6 +573,19 @@ def _augment_kernel_feedback(result: TestResultContract) -> str:
     if not evidence:
         return feedback
     summary = "Runtime evidence: " + " | ".join(evidence)
+    if any(
+        re.search(
+            r"\b(?:segfault|sigsegv|stack\s+smashing|double\s+free|aborted\s*\(core\s+dumped\))\b",
+            line,
+            re.IGNORECASE,
+        )
+        for line in evidence
+    ):
+        feedback = (
+            "INVALID_USERSPACE_CRASH: the guest reproducer crashed in userspace; "
+            "repair its C safety and lifetime handling before changing the kernel oracle.\n"
+            + feedback
+        )
     if summary in feedback:
         return feedback
     return f"{feedback}\n{summary}".strip()

@@ -52,6 +52,7 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     feedback = _augment_kernel_feedback(result)
 
     assert "segfault" in feedback
+    assert "INVALID_USERSPACE_CRASH" in feedback
     assert "j1939_xtp_rx_rts_session_active" in feedback
     assert "boot noise" not in feedback
 
