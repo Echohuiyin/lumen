@@ -576,14 +576,14 @@ def _semcode_evidence_is_complete(payload: dict) -> bool:
 # patterns narrow enough to avoid treating prose identifiers as Semcode
 # symbols, while still capturing the actual inline warning function.
 _SEM_CODE_PC_LR_FRAME_RE = re.compile(
-    r"(?m)^\s*(?:pc|lr)\s*:\s*"
+    r"(?m)^[ \t]*(?:pc|lr)[ \t]*:[ \t]*"
     r"([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"
-    r"(?=\s+(?:[A-Za-z0-9_.-]+/)+[^\s:]+:\d+|\+0x)"
+    r"(?=[ \t]+(?:[A-Za-z0-9_.-]+/)+[^ \t:]+:\d+|\+0x)"
 )
 _SEM_CODE_TRACE_FRAME_RE = re.compile(
-    r"(?m)^\s+"
+    r"(?m)^[ \t]+"
     r"([A-Za-z_][A-Za-z0-9_]*(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)?)"
-    r"(?=\s+(?:[A-Za-z0-9_.-]+/)+[^\s:]+:\d+|\+0x)"
+    r"(?=[ \t]+(?:[A-Za-z0-9_.-]+/)+[^ \t:]+:\d+|\+0x)"
 )
 _SEM_CODE_INDEXING_MARKERS = (
     "database is currently being indexed",

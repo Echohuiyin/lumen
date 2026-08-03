@@ -234,10 +234,15 @@ def test_semcode_evidence_file_preserves_commit_and_blocked_state(tmp_path):
 
 def test_semcode_evidence_captures_inline_frames_and_rejects_indexing(tmp_path, monkeypatch):
     class FakeClient:
+        requested_names = []
+
         def __init__(self, **_kwargs):
             pass
 
         def _call_many(self, requests):
+            type(self).requested_names.extend(
+                arguments["name"] for _, arguments in requests
+            )
             assert any(arguments["name"] == "task_fpsimd_load" for _, arguments in requests)
             return [
                 (
@@ -249,6 +254,7 @@ def test_semcode_evidence_captures_inline_frames_and_rejects_indexing(tmp_path, 
             ]
 
     monkeypatch.setattr("agents.kernel_expert.SemcodeMcpClient", FakeClient)
+    monkeypatch.setattr("agents.kernel_expert.time.sleep", lambda _seconds: None)
     output = tmp_path / "session"
     output.mkdir()
     path = _materialize_semcode_evidence(
@@ -266,6 +272,9 @@ def test_semcode_evidence_captures_inline_frames_and_rejects_indexing(tmp_path, 
     assert data["status"] == "blocked"
     assert any(entry["function"] == "fpsimd_restore_current_state" for entry in data["entries"])
     assert any(failure["function"] == "task_fpsimd_load" for failure in data["failures"])
+    assert set(FakeClient.requested_names) <= {
+        "fpsimd_restore_current_state", "task_fpsimd_load",
+    }
 
 
 def test_partial_semcode_evidence_keeps_interactive_mcp_available():
