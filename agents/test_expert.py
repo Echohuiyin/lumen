@@ -357,6 +357,32 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
 
     # ``mount gadgetfs: No such device`` is the canonical signature when the
     # target kernel was built without CONFIG_USB_GADGETFS (or its UDC backend).
+    # Bluetooth SCO diagnostics can run normally while the guest has no HCI
+    # controller. An explicit ENODEV from the HCI ioctl is a QEMU hardware
+    # capability boundary, not a missing lockdep signature; retrying the same
+    # guest cannot create a controller.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        hci_device_missing = (
+            re.search(r"\bfirst_hci_errno\s*=\s*(?:19|enodev)\b", lowered)
+            and re.search(r"\bhci_(?:down|up)_ok\s*=\s*0\b", lowered)
+        ) or re.search(
+            r"\b(?:hci|bluetooth)[^\n]{0,120}"
+            r"(?:no such device|no device|not found)\b",
+            lowered,
+        )
+        if hci_device_missing:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_BLUETOOTH_HCI_MISSING"
+            result.summary = (
+                "Guest has no usable Bluetooth HCI controller; provide a "
+                "QEMU Bluetooth controller or pass-through device before "
+                "retrying this SCO maintenance case."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     # Restrict promotion to an explicit gadgetfs/USB ABI failure so an
     # unrelated boot-time message cannot suppress legitimate try-outs.
     # Deep suspend needs a PSCI system-suspend implementation.  A QEMU
