@@ -524,6 +524,7 @@ def _materialize_semcode_evidence(
     command: str,
     args: list[str],
     evidence_text: str,
+    semcode_source_path: str = "",
 ) -> str:
     """Persist exact-commit Semcode results for the Codex workspace.
 
@@ -548,7 +549,7 @@ def _materialize_semcode_evidence(
             client = SemcodeMcpClient(
                 command=command,
                 args=args,
-                kernel_source_path=source_path,
+                kernel_source_path=semcode_source_path or source_path,
                 git_sha=expected_commit,
                 timeout_sec=120,
             )
@@ -649,6 +650,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             if value and not input_artifacts.get(key):
                 input_artifacts[key] = value
     kernel_source_path = input_artifacts.get("kernel_source_path", "")
+    # Keep direct source reads on a detached exact-commit worktree, while
+    # Semcode queries use the deployment's completed multi-branch database.
+    semcode_source_path = kernel_source_path
     expected_kernel_commit = input_artifacts.get("expected_kernel_commit", "")
     try:
         kernel_source_path = resolve_kernel_source_for_commit(
@@ -663,7 +667,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "blocked_reason": str(exc),
             "evidence": [{"kind": "kernel_source_worktree", "status": "blocked", "error": str(exc)}],
         })
-    agent_config = _pin_semcode_mcp_to_source(agent_config, kernel_source_path)
+    agent_config = _pin_semcode_mcp_to_source(agent_config, semcode_source_path)
 
     # A git_sha on an individual Semcode query is not a source-integrity proof:
     # the MCP server may silently answer from its default HEAD when that
@@ -673,7 +677,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # revision from becoming a successful reproduction.
     semcode_config = agent_config.get("semcode_mcp") or {}
     source_verification = verify_semcode_target(
-        kernel_source_path=kernel_source_path,
+        kernel_source_path=semcode_source_path,
         expected_kernel_commit=expected_kernel_commit,
         semcode_command=str(semcode_config.get("command", "")),
         semcode_args=semcode_config.get("args", []) or [],
@@ -734,6 +738,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     semcode_evidence_path = _materialize_semcode_evidence(
         paths_get_output_dir(),
         source_path=kernel_source_path,
+        semcode_source_path=semcode_source_path,
         expected_commit=expected_kernel_commit,
         command=str(semcode_config.get("command", "")),
         args=list(semcode_config.get("args", []) or []),
@@ -789,6 +794,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             )
         semcode_path_analysis = analyze_uaf_paths(
             kernel_source_path=kernel_source_path,
+            semcode_source_path=semcode_source_path,
             entry_points=entry_points,
             expected_kernel_commit=expected_kernel_commit,
             semcode_command=str(semcode_config.get("command", "")),

@@ -523,6 +523,7 @@ def analyze_uaf_paths(
     kernel_source_path: str,
     entry_points: Iterable[str],
     semcode_command: str,
+    semcode_source_path: str = "",
     semcode_args: Iterable[str] = (),
     expected_kernel_commit: str = "",
     object_type: str = "unknown-with-rationale: object type is not derivable from a bounded call graph",
@@ -536,12 +537,19 @@ def analyze_uaf_paths(
     ``blocked`` result so the caller can retain it in the final archive.
     """
     normalized_source = str(Path(kernel_source_path).expanduser()) if kernel_source_path else ""
+    normalized_semcode_source = str(
+        Path(semcode_source_path or kernel_source_path).expanduser()
+    ) if (semcode_source_path or kernel_source_path) else ""
     normalized_entries = _unique_identifiers(entry_points)
     if not normalized_source or not Path(normalized_source).is_absolute():
         return _blocked("kernel_source from input.txt must be an absolute path")
-    db_path = Path(normalized_source) / ".semcode.db"
+    if not normalized_semcode_source or not Path(normalized_semcode_source).is_absolute():
+        return _blocked("semcode_source_path must be an absolute path")
+    db_path = Path(normalized_semcode_source) / ".semcode.db"
     if not Path(normalized_source).is_dir():
         return _blocked(f"kernel_source does not exist: {normalized_source}")
+    if not Path(normalized_semcode_source).is_dir():
+        return _blocked(f"semcode source does not exist: {normalized_semcode_source}")
     if not db_path.is_dir():
         return _blocked(f"semcode index missing: {db_path}")
     if not normalized_entries:
@@ -562,7 +570,7 @@ def analyze_uaf_paths(
 
     try:
         verification = verify_semcode_target(
-            kernel_source_path=normalized_source,
+            kernel_source_path=normalized_semcode_source,
             expected_kernel_commit=expected_kernel_commit,
             semcode_command=semcode_command,
             semcode_args=semcode_args,
@@ -577,7 +585,7 @@ def analyze_uaf_paths(
         semcode = client or SemcodeMcpClient(
             command=semcode_command,
             args=semcode_args,
-            kernel_source_path=normalized_source,
+            kernel_source_path=normalized_semcode_source,
             git_sha=expected_kernel_commit,
         )
         batch_finder = getattr(semcode, "find_functions", None)
