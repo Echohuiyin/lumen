@@ -855,7 +855,22 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
                 if re.search(r"\b(?:Call Trace:|LUMEN_REPRO_START:)", candidate, flags=re.IGNORECASE):
                     break
             if rip_line is not None:
-                block.insert(0, rip_line)
+                # The faulting leaf is often printed twice: once in the RIP
+                # header and again as the first real stack frame (for
+                # example ``RIP: strlen`` followed by ``? skb_put`` and
+                # ``? strlen``).  The Call Trace occurrence is authoritative
+                # for ordering.  Inserting the duplicate RIP line at index 0
+                # would make a caller-to-leaf edge appear reversed and can
+                # reject an otherwise complete, exact chain.  Keep RIP only
+                # when the trace does not contain that leaf at all.
+                rip_match = re.search(
+                    r"\bRIP:\s*(?:[0-9a-f]+:)?(?P<frame>[A-Za-z_][A-Za-z0-9_.$]*)",
+                    rip_line,
+                    flags=re.IGNORECASE,
+                )
+                rip_frame = rip_match.group("frame") if rip_match else ""
+                if not rip_frame or not any(frame_seen(line, rip_frame) for line in block):
+                    block.insert(0, rip_line)
             blocks.append(block)
         return blocks
 

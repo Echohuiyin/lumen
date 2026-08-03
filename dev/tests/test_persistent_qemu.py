@@ -59,6 +59,25 @@ def test_call_chain_accepts_fault_leaf_from_rip_before_trace(tmp_path):
     assert match["frame_order_matched"] is True
 
 
+def test_call_chain_uses_trace_leaf_when_rip_repeats_it(tmp_path):
+    """A duplicate RIP leaf must not reverse caller-to-leaf ordering."""
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["skb_put", "strlen", "audit_log", "caller"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] RIP: 0010:strlen+0x2c/0x70",
+        "[   1.1] Call Trace:",
+        "[   1.2]  ? skb_put+0x10/0x20",
+        "[   1.3]  ? strlen+0x2c/0x70",
+        "[   1.4]  audit_log+0x1/0x2",
+        "[   1.5]  caller+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
 def test_call_chain_keeps_part_symbols_distinct(tmp_path):
     plan = _plan(tmp_path)
     plan.original_call_chain = ["iput.part.0", "iput"]
