@@ -406,6 +406,27 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
             return result
 
+    # SVE-dependent diagnostics can compile and run but explicitly report
+    # that the guest CPU does not expose the arm64 SVE ABI.  This is a QEMU
+    # CPU-model capability boundary, not a missing fault signature; retrying
+    # an unchanged virt guest cannot enable SVE.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        sve_unavailable = re.search(
+            r"\b(?:arm64\s+)?sve\s+is\s+not\s+(?:exposed|available|supported)\b",
+            lowered,
+        )
+        if sve_unavailable:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_SVE_UNAVAILABLE"
+            result.summary = (
+                "Guest does not expose the required arm64 SVE userspace ABI; "
+                "select a QEMU CPU model with SVE before retrying this case."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     for key, raw_path, text in evidence:
         lowered = text.lower()
         if "gadgetfs" in lowered and "no such device" in lowered:
