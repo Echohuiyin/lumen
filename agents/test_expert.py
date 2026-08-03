@@ -383,6 +383,32 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
             return result
 
+    # A userspace SCO diagnostic that makes attempts but records no
+    # successful connection cannot reach the SCO teardown path. Treat this as
+    # an unavailable Bluetooth SCO/HCI setup, not as a retryable call-chain
+    # mismatch; a different controller or peer is required.
+    for key, raw_path, text in evidence:
+        lowered = text.lower()
+        sco_unavailable = re.search(
+            r"\bsco_connect_attempts\s*=\s*[1-9][0-9]*"
+            r".*?\bsuccesses\s*=\s*0\b"
+            r".*?\berrors\s*=\s*[1-9][0-9]*",
+            lowered,
+            flags=re.DOTALL,
+        )
+        if sco_unavailable:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_BLUETOOTH_SCO_UNAVAILABLE"
+            result.summary = (
+                "Guest made SCO connection attempts but established none; "
+                "the QEMU Bluetooth HCI/SCO setup cannot reach the target "
+                "teardown path. Provide a usable controller and peer before "
+                "retrying this maintenance case."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
+
     # Restrict promotion to an explicit gadgetfs/USB ABI failure so an
     # unrelated boot-time message cannot suppress legitimate try-outs.
     # Deep suspend needs a PSCI system-suspend implementation.  A QEMU

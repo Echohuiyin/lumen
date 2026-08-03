@@ -289,6 +289,24 @@ def test_missing_guest_bluetooth_hci_is_terminal():
     assert "HCI" in blocked.summary
 
 
+def test_unavailable_guest_bluetooth_sco_is_terminal():
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "ssh-command.log"
+        output.write_text(
+            "lumen-diagnostic: vhci_seen=1 sco_connect_attempts=17807 "
+            "successes=0 errors=17807\n",
+            encoding="utf-8",
+        )
+        failed = TestResultContract(
+            status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+            artifacts={"ssh_output": str(output)},
+        )
+        blocked = _promote_guest_capability_block(failed)
+    assert blocked.status == "blocked"
+    assert blocked.code == "BLOCKED_GUEST_BLUETOOTH_SCO_UNAVAILABLE"
+    assert "SCO" in blocked.summary
+
+
 def test_missing_guest_kvm_is_terminal():
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "ssh-command.log"
