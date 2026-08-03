@@ -113,6 +113,10 @@ _PRESSURE_PROFILES = {"cpu": "--cpu", "memory": "--vm", "io": "--io",
                       "scheduler": "--switch", "filesystem": "--hdd", "network": "--netdev"}
 _FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function", "fail_make_request"}
 _DEFAULT_BOOT_TIMEOUT_SEC = 900
+_DEFAULT_REPRODUCER_TIMEOUT_SEC = 60
+_DEFAULT_SSH_EXECUTION_GRACE_SEC = 30
+_MAX_REPRODUCER_TIMEOUT_SEC = 7200
+_MAX_SSH_EXECUTION_GRACE_SEC = 600
 _MAX_CONCURRENT_INSTANCES = 16
 _TERMINAL_BOOT_MARKERS = (
     "Kernel panic - not syncing:",
@@ -345,6 +349,7 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         if source.endswith(".c")), *(shlex.quote(arg) for arg in compiler_args),
         *(shlex.quote(lib) for lib in libraries), "-o", shlex.quote("../bin/" + reproducer.output_binary),
     ])
+    runtime_timeout = _normalise_reproducer_timeout(reproducer.runtime_timeout_sec)
     component_marker = f"LUMEN_GUEST_COMPONENT_MISSING:compiler:{reproducer.compiler}"
     lines.extend([
         f"if ! command -v {shlex.quote(reproducer.compiler)} >/dev/null 2>&1; then printf '%s\\n' {shlex.quote(component_marker)} > /dev/console 2>/dev/null || true; printf '%s\\n' {shlex.quote(component_marker)} >&2; exit 125; fi",
@@ -356,7 +361,7 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         if step.type == "run_binary":
             command = " ".join([shlex.quote("./" + step.path), *(shlex.quote(arg) for arg in step.args)])
             lines.append(f"test -x {shlex.quote('./' + step.path)}")
-            lines.append(f"timeout --signal=KILL 300 {command}")
+            lines.append(f"timeout --signal=KILL {runtime_timeout} {command}")
         elif step.type == "run_pressure":
             pressure_args = ["stress-ng", _PRESSURE_PROFILES[step.profile], str(step.workers)]
             if step.profile == "memory":
@@ -695,7 +700,9 @@ class PersistentQemuManager:
             [*self._ssh_base(port), f"sh {shlex.quote(remote + '/run.sh')}"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
-        deadline = time.monotonic() + 330
+        deadline = time.monotonic() + _normalise_reproducer_timeout(
+            self.plan.reproducer.runtime_timeout_sec
+        ) + _ssh_execution_grace_seconds()
         signal_seen = False
         while executed_proc.poll() is None and time.monotonic() < deadline:
             if self.paths.serial_log.exists():
@@ -1026,6 +1033,40 @@ def _normalise_boot_timeout(value: int | None) -> int:
     return timeout
 
 
+def _normalise_reproducer_timeout(value: int | None) -> int:
+    """Resolve the guest C timeout declared by UserspaceReproducer."""
+    try:
+        timeout = int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("reproducer.runtime_timeout_sec must be an integer") from exc
+    if timeout == 0:
+        return _DEFAULT_REPRODUCER_TIMEOUT_SEC
+    if not 1 <= timeout <= _MAX_REPRODUCER_TIMEOUT_SEC:
+        raise ValueError(
+            "reproducer.runtime_timeout_sec must be 0 or in range 1..7200"
+        )
+    return timeout
+
+
+def _ssh_execution_grace_seconds() -> int:
+    """Return configurable host-side cleanup grace after guest timeout."""
+    raw = os.environ.get(
+        "LUMEN_QEMU_SSH_EXECUTION_GRACE_SEC",
+        str(_DEFAULT_SSH_EXECUTION_GRACE_SEC),
+    )
+    try:
+        grace = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "LUMEN_QEMU_SSH_EXECUTION_GRACE_SEC must be an integer"
+        ) from exc
+    if not 0 <= grace <= _MAX_SSH_EXECUTION_GRACE_SEC:
+        raise ValueError(
+            "LUMEN_QEMU_SSH_EXECUTION_GRACE_SEC must be in range 0..600"
+        )
+    return grace
+
+
 def _normalise_concurrent_instances(value: int | None) -> int:
     try:
         instances = int(value or 1)
@@ -1090,6 +1131,8 @@ def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root:
         _validate_execution_steps(plan)
         instances = _normalise_concurrent_instances(plan.qemu_recipe.concurrent_instances)
         _normalise_boot_timeout(plan.qemu_recipe.timeout_sec)
+        _normalise_reproducer_timeout(plan.reproducer.runtime_timeout_sec)
+        _ssh_execution_grace_seconds()
     except ValueError as exc:
         return TestResultContract(
             status="blocked", code="BLOCKED_EXECUTION_PLAN", attempts=attempt,

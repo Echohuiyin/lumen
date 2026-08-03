@@ -219,6 +219,20 @@ def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
     assert "load_module" not in script
 
 
+def test_runner_honors_declared_guest_runtime_timeout(tmp_path):
+    plan = _plan(tmp_path)
+    plan.reproducer.runtime_timeout_sec = 17
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+    assert "timeout --signal=KILL 17 ./bin/trigger" in script
+
+
+def test_runner_rejects_unsafe_guest_runtime_timeout(tmp_path):
+    plan = _plan(tmp_path)
+    plan.reproducer.runtime_timeout_sec = 7201
+    with pytest.raises(ValueError, match="runtime_timeout_sec"):
+        _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+
+
 def test_stage_poc_copies_declared_sources_only(tmp_path):
     plan = _plan(tmp_path)
     # A session source directory also contains prior try-out artifacts.  The
