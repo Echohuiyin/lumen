@@ -2,6 +2,7 @@
 .env*
 .claude/settings.json
 .agents/skills/
+.agents/skills-disabled/
 config.yaml
 config.json
 AGENTS.md
