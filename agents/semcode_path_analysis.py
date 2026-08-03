@@ -306,23 +306,43 @@ class SemcodeMcpClient:
         calls_text = self._call("find_calls", {"name": name})
         return _parse_semcode_function(function_text, calls_text, requested_name=name)
 
-    def _call(self, tool_name: str, arguments: dict[str, Any]) -> str:
-        if tool_name in _GIT_AWARE_TOOLS:
-            if not self.git_sha:
-                raise SemcodePathAnalysisError(
-                    f"semcode {tool_name} requires an explicit expected kernel commit"
-                )
-            arguments = {**arguments, "git_sha": self.git_sha}
+    def find_functions(self, names: Iterable[str]) -> list[SemcodeFunction]:
+        """Resolve several functions with two MCP processes instead of one per symbol.
 
-        db_path = Path(self.kernel_source_path) / ".semcode.db"
-        command = [
-            *shlex.split(self.command), *_without_database_args(self.args),
-            "-d", str(db_path), "--git-repo", self.kernel_source_path,
+        Semcode's stdio server accepts multiple JSON-RPC requests before EOF.
+        Keeping the function and direct-call queries in two batches preserves
+        the exact git_sha on every request while avoiding repeated index
+        startup for every stack frame in a crash report.
+        """
+        requested = [str(name).strip() for name in names if str(name).strip()]
+        if not requested:
+            return []
+        function_texts = self._call_many([
+            ("find_function", {"name": name}) for name in requested
+        ])
+        calls_texts = self._call_many([
+            ("find_calls", {"name": name}) for name in requested
+        ])
+        return [
+            _parse_semcode_function(function_text, calls_text, requested_name=name)
+            for name, function_text, calls_text in zip(requested, function_texts, calls_texts)
         ]
-        if not command:
-            raise SemcodePathAnalysisError("semcode command is empty")
-        request_id = 2
-        messages = (
+
+    def _call(self, tool_name: str, arguments: dict[str, Any]) -> str:
+        return self._call_many([(tool_name, arguments)])[0]
+
+    def _call_many(self, requests: Iterable[tuple[str, dict[str, Any]]]) -> list[str]:
+        """Send a batch of MCP tool calls through one exact-commit server.
+
+        The previous one-request-per-process implementation repeatedly loaded
+        the Semcode database. A batch is still fail-closed: any missing or
+        malformed response raises SemcodePathAnalysisError and callers retain
+        their existing blocked behavior.
+        """
+        request_items = list(requests)
+        if not request_items:
+            return []
+        messages = [
             {
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {
@@ -331,11 +351,27 @@ class SemcodeMcpClient:
                 },
             },
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
-            {
+        ]
+        request_ids: list[int] = []
+        for request_id, (tool_name, arguments) in enumerate(request_items, start=2):
+            if tool_name in _GIT_AWARE_TOOLS:
+                if not self.git_sha:
+                    raise SemcodePathAnalysisError(
+                        f"semcode {tool_name} requires an explicit expected kernel commit"
+                    )
+                arguments = {**arguments, "git_sha": self.git_sha}
+            request_ids.append(request_id)
+            messages.append({
                 "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
                 "params": {"name": tool_name, "arguments": arguments},
-            },
-        )
+            })
+        db_path = Path(self.kernel_source_path) / ".semcode.db"
+        command = [
+            *shlex.split(self.command), *_without_database_args(self.args),
+            "-d", str(db_path), "--git-repo", self.kernel_source_path,
+        ]
+        if not command:
+            raise SemcodePathAnalysisError("semcode command is empty")
         payload = "".join(json.dumps(message) + "\n" for message in messages)
         try:
             completed = subprocess.run(
@@ -344,31 +380,36 @@ class SemcodeMcpClient:
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise SemcodePathAnalysisError(
-                f"semcode {tool_name} failed: {type(exc).__name__}: {exc}"
+                f"semcode batch failed: {type(exc).__name__}: {exc}"
             ) from exc
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout).strip()[-500:]
             raise SemcodePathAnalysisError(
-                f"semcode {tool_name} exited {completed.returncode}: {detail}"
+                f"semcode batch exited {completed.returncode}: {detail}"
             )
+        responses: dict[int, str] = {}
         for line in completed.stdout.splitlines():
             try:
                 response = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if response.get("id") != request_id:
+            response_id = response.get("id")
+            if response_id not in request_ids:
                 continue
             if "error" in response:
                 raise SemcodePathAnalysisError(
-                    f"semcode {tool_name} MCP error: {response['error']}"
+                    f"semcode request {response_id} MCP error: {response['error']}"
                 )
             content = response.get("result", {}).get("content", [])
             texts = [item.get("text", "") for item in content if item.get("type") == "text"]
             if texts:
-                return "\n".join(texts)
-        raise SemcodePathAnalysisError(
-            f"semcode {tool_name} returned no parseable MCP response"
-        )
+                responses[response_id] = "\n".join(texts)
+        missing = [request_id for request_id in request_ids if request_id not in responses]
+        if missing:
+            raise SemcodePathAnalysisError(
+                f"semcode batch returned no parseable MCP response for request ids {missing}"
+            )
+        return [responses[request_id] for request_id in request_ids]
 
 
 def verify_semcode_target(
@@ -539,7 +580,13 @@ def analyze_uaf_paths(
             kernel_source_path=normalized_source,
             git_sha=expected_kernel_commit,
         )
-        functions = [semcode.find_function(entry) for entry in normalized_entries]
+        batch_finder = getattr(semcode, "find_functions", None)
+        if callable(batch_finder):
+            functions = batch_finder(normalized_entries)
+        else:
+            # Keep compatibility with injected test doubles that implement
+            # only the original single-function interface.
+            functions = [semcode.find_function(entry) for entry in normalized_entries]
     except SemcodePathAnalysisError as exc:
         return _blocked(str(exc))
     except (OSError, ValueError) as exc:

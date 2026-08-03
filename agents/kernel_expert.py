@@ -552,12 +552,23 @@ def _materialize_semcode_evidence(
                 git_sha=expected_commit,
                 timeout_sec=120,
             )
-            for name in names:
-                try:
-                    result = client._call("find_function", {"name": name})
-                    entries.append({"function": name, "result": result})
-                except Exception as exc:
-                    failures.append({"function": name, "error": str(exc)})
+            batch_call = getattr(client, "_call_many", None)
+            if callable(batch_call):
+                results = batch_call([
+                    ("find_function", {"name": name}) for name in names
+                ])
+                entries.extend(
+                    {"function": name, "result": result}
+                    for name, result in zip(names, results)
+                )
+            else:
+                # Compatibility for injected clients that predate the batch API.
+                for name in names:
+                    try:
+                        result = client._call("find_function", {"name": name})
+                        entries.append({"function": name, "result": result})
+                    except Exception as exc:
+                        failures.append({"function": name, "error": str(exc)})
         except Exception as exc:
             failures.append({"function": "<client>", "error": str(exc)})
     else:
