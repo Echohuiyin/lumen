@@ -301,6 +301,19 @@ def test_missing_guest_sve_is_terminal():
     assert "SVE" in blocked.summary
 
 
+def test_missing_guest_sve_status_is_terminal():
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "ssh-command.log"
+        output.write_text("rounds=512 asimd=1 sve=0 pid=11894\n", encoding="utf-8")
+        failed = TestResultContract(
+            status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+            artifacts={"ssh_output": str(output)},
+        )
+        blocked = _promote_guest_capability_block(failed)
+    assert blocked.status == "blocked"
+    assert blocked.code == "BLOCKED_GUEST_SVE_UNAVAILABLE"
+
+
 
 if __name__ == "__main__":
     for test in (

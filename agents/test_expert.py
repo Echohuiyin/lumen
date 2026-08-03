@@ -415,6 +415,9 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
         sve_unavailable = re.search(
             r"\b(?:arm64\s+)?sve\s+is\s+not\s+(?:exposed|available|supported)\b",
             lowered,
+        ) or (
+            re.search(r"\bsve\s*=\s*0\b", lowered)
+            and re.search(r"\b(?:asimd|arm64)\b", lowered)
         )
         if sve_unavailable:
             result.status = "blocked"
