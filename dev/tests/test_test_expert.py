@@ -41,7 +41,9 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
         "boot noise\n"
         "LUMEN_REPRO_START:case:path\n"
         "[  1.0] lumen-diagnostic[1]: segfault in libc.so.6\n"
-        "[  1.1] vcan0: j1939_xtp_rx_rts_session_active: connection exists\n",
+        "[  1.1] vcan0: j1939_xtp_rx_rts_session_active: connection exists\n"
+        "[  1.2] ocfs2: Unknown parameter 'local'\n"
+        "[  1.3] ocfs2: Invalid cluster_stack option\n",
         encoding="utf-8",
     )
     result = TestResultContract(
@@ -54,6 +56,8 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     assert "segfault" in feedback
     assert "INVALID_USERSPACE_CRASH" in feedback
     assert "j1939_xtp_rx_rts_session_active" in feedback
+    assert "Unknown parameter 'local'" in feedback
+    assert "Invalid cluster_stack option" in feedback
     assert "boot noise" not in feedback
 
 

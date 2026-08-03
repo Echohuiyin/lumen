@@ -558,7 +558,8 @@ def _augment_kernel_feedback(result: TestResultContract) -> str:
         serial = serial[marker_at:]
     evidence_re = re.compile(
         r"(?:segfault|kasan|j1939|lumen_guest_component_missing|"
-        r"cannot|failed|error|warning|bug:|no such|abort|connection exists)",
+        r"cannot|failed|error|warning|bug:|no such|abort|connection exists|"
+        r"unknown parameter|invalid(?:\s+\S+){0,3}|resource busy)",
         re.IGNORECASE,
     )
     evidence: list[str] = []
