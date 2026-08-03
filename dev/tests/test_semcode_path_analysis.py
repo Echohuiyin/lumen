@@ -218,6 +218,36 @@ def test_kernel_source_is_pinned_to_target_head_with_readable_tree(tmp_path):
     assert (Path(pinned) / ".semcode.db").is_symlink()
 
 
+
+def test_configured_worktree_root_overrides_session_directory(tmp_path, monkeypatch):
+    source, _ = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ["git", "-C", str(source), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    (source / "later.c").write_text("int later(void) { return 0; }\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(source), "add", "later.c"],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(source), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
+         "commit", "-qm", "later"],
+        check=True,
+    )
+    configured = tmp_path / "configured-worktrees"
+    monkeypatch.setenv("LUMEN_KERNEL_SOURCE_WORKTREE_ROOT", str(configured))
+
+    pinned = resolve_kernel_source_for_commit(
+        str(source), target, workspace_root=str(tmp_path / "session"),
+    )
+
+    assert str(configured / "kernel-source-worktrees") in pinned
+    assert Path(pinned).is_dir()
+    assert subprocess.check_output(
+        ["git", "-C", pinned, "rev-parse", "HEAD"], text=True,
+    ).strip() == target
+
+
 def test_entry_point_extraction_accepts_only_explicit_function_evidence():
     entries = extract_semcode_entry_points(
         "function: foo_ioctl\nCall Trace: bar_release+0x1a/0x40",

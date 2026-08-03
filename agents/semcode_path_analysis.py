@@ -9,6 +9,8 @@ resolved at that depth is preserved in ``PathCoverage``.
 
 from __future__ import annotations
 
+import os
+
 from dataclasses import dataclass, field
 import hashlib
 import json
@@ -144,8 +146,13 @@ def resolve_kernel_source_for_commit(
     if head.lower() == target:
         return source
 
-    root = Path(workspace_root).expanduser() if workspace_root else Path(
-        os.environ.get("LUMEN_KERNEL_SOURCE_WORKTREE_ROOT", tempfile.gettempdir())
+    # A deployment may provide a high-capacity, lifecycle-managed filesystem
+    # for detached source worktrees.  Prefer that explicit location even when
+    # callers pass a session directory; otherwise a large kernel checkout can
+    # exhaust the project filesystem during an otherwise valid analysis.
+    configured_root = os.environ.get("LUMEN_KERNEL_SOURCE_WORKTREE_ROOT", "").strip()
+    root = Path(configured_root).expanduser() if configured_root else (
+        Path(workspace_root).expanduser() if workspace_root else Path(tempfile.gettempdir())
     )
     worktree = (root / "kernel-source-worktrees" / hashlib.sha256(
         f"{source}\0{target}".encode("utf-8")
