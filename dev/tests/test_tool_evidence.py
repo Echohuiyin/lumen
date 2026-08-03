@@ -12,6 +12,7 @@ from agents.tool_expert import (
     _parse_log_evidence,
     _parse_ps_evidence,
     _persist_extracted_kernel_log,
+    _read_declared_text_artifact,
 )
 
 
@@ -75,6 +76,20 @@ def test_vmcore_extracted_log_is_persisted_atomically(tmp_path):
     log_file = _persist_extracted_kernel_log(output_file, "raw vmcore kernel log\n")
     assert log_file.name == "kernel_log.raw.log"
     assert log_file.read_text(encoding="utf-8") == "raw vmcore kernel log\n"
+
+
+def test_declared_crash_report_is_read_from_input_contract(tmp_path):
+    report = tmp_path / "report.txt"
+    report.write_text(
+        "KASAN: slab-use-after-free in gadget_dev_open\n",
+        encoding="utf-8",
+    )
+    content, resolved = _read_declared_text_artifact(
+        {"input_artifacts_contract": {"crash_report_path": str(report)}},
+        "crash_report_path",
+    )
+    assert resolved == str(report)
+    assert "gadget_dev_open" in content
 
 
 if __name__ == "__main__":

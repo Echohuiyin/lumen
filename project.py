@@ -74,6 +74,8 @@ INPUT_FILE_FIELDS = {
     "vmlinux_path",
     "log",
     "log_path",
+    "crash_report",
+    "crash_report_path",
     "boot_kernel",
     "boot_kernel_path",
     "kernel_source",

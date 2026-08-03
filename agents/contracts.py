@@ -254,6 +254,7 @@ class InputArtifactsContract(BaseModel):
     expected_kernel_commit: str = ""
     kernel_source_path: str = ""
     log_path: str = ""
+    crash_report_path: str = ""
     reproducer_path: str = ""
     log_excerpt: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)

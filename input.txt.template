@@ -2,6 +2,7 @@ Bug Promote: 内核发生 Mutex ABBA 死锁导致 hung_task panic。两个线程
 vmcore: ./test_case/vmcore.elf
 vmlinux: ./test_case/vmlinux
 # log: ./test_case/kernel.log
+# crash_report: ./test_case/report.txt
 boot_kernel: ./test_case/bzImage
 kernel_source: /path/to/linux
 rootfs: ./test_case/debian.img

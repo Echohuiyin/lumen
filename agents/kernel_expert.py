@@ -462,6 +462,9 @@ def _run_kernel_expert_with_agent_loop(
 
 def _resolve_primary_log_path(input_artifacts: dict, expert_results: list[dict]) -> str:
     """Prefer the supplied log; otherwise use the log artifact extracted from vmcore."""
+    supplied_report = str(input_artifacts.get("crash_report_path", "") or "")
+    if supplied_report and Path(os.path.expanduser(supplied_report)).is_file():
+        return supplied_report
     supplied = str(input_artifacts.get("log_path", "") or "")
     if supplied and Path(os.path.expanduser(supplied)).is_file():
         return supplied

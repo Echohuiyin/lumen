@@ -194,6 +194,10 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         text,
         ["log_path", "log", "kernel log", "dmesg"],
     )
+    crash_report_path, crash_report_label = _extract_labeled_path(
+        text,
+        ["crash_report_path", "crash_report", "report_path", "report"],
+    )
     reproducer_path, reproducer_label = _extract_labeled_path(
         text,
         [
@@ -217,6 +221,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "qemu_extra_cmdline": (qemu_extra_cmdline, qemu_extra_label),
         "kernel_source_path": (kernel_source_path, source_label),
         "log_path": (log_path, log_label),
+        "crash_report_path": (crash_report_path, crash_report_label),
         "reproducer_path": (reproducer_path, reproducer_label),
     }
     for field, (value, source) in fields.items():
@@ -248,6 +253,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "rootfs_path": "file",
             "kernel_source_path": "dir",
             "log_path": "file",
+            "crash_report_path": "file",
             "reproducer_path": "file",
         }
         for field, (value, _) in fields.items():
@@ -278,6 +284,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
         log_path=log_path,
+        crash_report_path=crash_report_path,
         reproducer_path=reproducer_path,
         log_excerpt=log_excerpt,
         evidence=evidence,

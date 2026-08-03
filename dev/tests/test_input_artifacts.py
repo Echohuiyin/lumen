@@ -18,6 +18,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
             [
                 "Bug Promote: Linux maintenance case",
                 "rootfs: /tmp/debian.img",
+                "crash_report: /tmp/report.txt",
                 "reproducer: /tmp/repro.syz",
                 "qemu_extra_cmdline: no-kvmapf no-steal-acc init=/root/lumen-init",
                 "maintenance_notes: use fork workers and a blocking userspace sendmsg sequence",
@@ -40,6 +41,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
 
     contract = parse_input_artifacts(rendered, validate_paths=False)
     assert contract.rootfs_path == "/tmp/debian.img"
+    assert contract.crash_report_path == "/tmp/report.txt"
     assert contract.reproducer_path == "/tmp/repro.syz"
     assert contract.qemu_extra_cmdline == "no-kvmapf no-steal-acc init=/root/lumen-init"
     assert contract.expected_kernel_commit == "bdf56c7580d267a123cc71ca0f2459c797b76fde"

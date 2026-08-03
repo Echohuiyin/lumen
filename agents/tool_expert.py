@@ -90,6 +90,29 @@ def _check_file_exists(path: str | None) -> bool:
     return os.path.exists(resolved)
 
 
+def _read_declared_text_artifact(
+    state: MaintenanceWorkflowState,
+    field: str,
+    *,
+    max_chars: int = 24000,
+) -> tuple[str, str]:
+    """Read one first-hand text artifact declared by the input contract."""
+    artifacts = state.get("input_artifacts_contract") or {}
+    raw_path = str(artifacts.get(field) or "").strip()
+    if not raw_path:
+        return "", ""
+    resolved = _resolve_file_path(raw_path)
+    if not resolved or not os.path.isfile(resolved):
+        return "", resolved or raw_path
+    try:
+        return (
+            Path(resolved).read_text(encoding="utf-8", errors="replace")[:max_chars],
+            resolved,
+        )
+    except OSError:
+        return "", resolved
+
+
 def _log_tool_call(output_file: str, tool_name: str, tool_args: dict, expert_name: str):
     """Log tool execution to output file."""
     from pathlib import Path
@@ -909,6 +932,14 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
             # 没有 vmcore，纯文本分析
             user_content = f"用户输入:\n{user_input}\n\n请基于用户输入中的内核日志信息进行分析。"
             evidence = _parse_log_evidence(user_input)
+            supplied_report, report_path = _read_declared_text_artifact(
+                state, "crash_report_path"
+            )
+            if supplied_report:
+                user_content += (
+                    f"\n\nFIRST_HAND_CRASH_REPORT ({report_path}):\n"
+                    f"{supplied_report}\n"
+                )
             supplied_log = ""
             log_path = (state.get("input_artifacts_contract") or {}).get("log_path", "")
             if log_path:
@@ -938,6 +969,15 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
     else:
         # 其他专家类型：纯文本分析
         user_content = f"用户输入:\n{user_input}"
+        if expert_type == "kernel_log_analysis":
+            supplied_report, report_path = _read_declared_text_artifact(
+                state, "crash_report_path"
+            )
+            if supplied_report:
+                user_content += (
+                    f"\n\nFIRST_HAND_CRASH_REPORT ({report_path}):\n"
+                    f"{supplied_report}\n"
+                )
 
         response = call_llm_with_display(
             expert_name, "分析中", llm,

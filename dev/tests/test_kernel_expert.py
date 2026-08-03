@@ -17,6 +17,7 @@ from agents.kernel_expert import (
     _pin_semcode_mcp_to_source,
     _materialize_primary_log,
     _materialize_semcode_evidence,
+    _resolve_primary_log_path,
     _read_primary_log_text,
     _codex_case_text,
     _stage_codex_evidence,
@@ -189,6 +190,17 @@ def test_primary_log_reader_preserves_first_hand_source_frames(tmp_path):
     log.write_text("Call Trace: j1939_sock_pending_del+0x1a/0x40\n", encoding="utf-8")
     assert "j1939_sock_pending_del+0x1a" in _read_primary_log_text(str(log))
     assert _read_primary_log_text(str(tmp_path / "missing.log")) == ""
+
+
+def test_crash_report_is_preferred_over_boot_console_log(tmp_path):
+    console = tmp_path / "console.log"
+    report = tmp_path / "report.txt"
+    console.write_text("boot only\n", encoding="utf-8")
+    report.write_text("KASAN: target report\n", encoding="utf-8")
+    assert _resolve_primary_log_path({
+        "log_path": str(console),
+        "crash_report_path": str(report),
+    }, []) == str(report)
 
 
 def test_primary_log_is_materialized_inside_codex_workspace(tmp_path):
