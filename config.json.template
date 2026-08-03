@@ -21,7 +21,7 @@
       "prompt_file": "prompts/kernel_expert.md",
       "backend": "codex",
       "cli_command": "${LUMEN_CODEX_CLI:-codex}",
-      "cli_timeout": 14400,
+      "cli_timeout": "${LUMEN_CODEX_TIMEOUT_SECONDS:-600}",
       "model": "${LUMEN_CODEX_MODEL:-gpt-5.6-luna}",
       "reasoning_effort": "${LUMEN_CODEX_REASONING_EFFORT:-max}",
       "service_tier": "${LUMEN_CODEX_SERVICE_TIER:-priority}",

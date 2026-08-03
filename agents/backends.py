@@ -1421,7 +1421,7 @@ class CodexBackend:
     def __init__(
         self,
         cli_command: str = "codex",
-        cli_timeout: int = 14400,
+        cli_timeout: int = 600,
         model: str = "",
         reasoning_effort: str = "",
         service_tier: str = "",

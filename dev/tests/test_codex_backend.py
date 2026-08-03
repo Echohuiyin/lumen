@@ -89,6 +89,10 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     )
 
 
+def test_codex_backend_default_timeout_matches_workflow_bound():
+    assert CodexBackend()._cli_timeout == 600
+
+
 def test_codex_backend_can_use_complete_deterministic_evidence_without_mcp(tmp_path):
     backend, project, workdir, _runtime_home = _fixture(tmp_path)
     backend._semcode_mcp = {"disabled": True}
