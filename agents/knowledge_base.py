@@ -10,6 +10,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agents.llm_display import call_llm_with_display, set_session_dir
 from agents.error_handling import classify_error, error_to_evidence
+from agents.root_cause_evaluator import evaluate_root_cause
 from llm_config import get_llm_with_config, load_prompt_from_file, PROJECT_ROOT
 from graph.rn_state import MaintenanceWorkflowState
 from paths import resolve_best_skill_path, ANALYSIS_SKILL_PATH
@@ -54,6 +55,7 @@ def _blocked_knowledge_base_result(state: MaintenanceWorkflowState, error) -> di
 
 def _render_kernel_evidence_report(
     state: MaintenanceWorkflowState, *, round_summary: str, test_passed: bool,
+    evaluation: dict | None = None,
 ) -> str:
     """Persist root-cause evidence independently of reproduction success.
 
@@ -99,6 +101,14 @@ def _render_kernel_evidence_report(
         "### Reproduction-round evidence",
         round_summary,
     ]
+    if evaluation is not None:
+        lines += [
+            "",
+            "### Root-cause accuracy and tool contribution scorecard",
+            json.dumps(evaluation, ensure_ascii=False, indent=2),
+            "",
+            "评分是确定性证据对齐结果，不能替代维护者对补丁语义的人工复核。",
+        ]
     return "\n".join(lines)
 
 def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
@@ -124,6 +134,36 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     kernel_contract = state.get("kernel_contract") or {}
     semcode_path_analysis = state.get("semcode_path_analysis") or {}
     round_summary = _summarize_test_rounds(state.get("test_rounds", []))
+    # Run the scorecard before the summary model.  The scorecard is read-only
+    # with respect to the case and remains available if archive LLM generation
+    # later becomes blocked.
+    try:
+        root_cause_evaluation = evaluate_root_cause(state)
+    except Exception as exc:
+        root_cause_evaluation = {
+            "schema_version": 1,
+            "method": "deterministic evidence alignment",
+            "root_cause": {
+                "status": "evaluator_error",
+                "accuracy_score": None,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            "tool_experts": [],
+        }
+    evaluation_path = ""
+    session_dir = str(state.get("session_dir") or "").strip()
+    if session_dir:
+        try:
+            evaluation_file = Path(session_dir) / "root_cause_evaluation.json"
+            _atomic_write_text(
+                evaluation_file,
+                json.dumps(root_cause_evaluation, ensure_ascii=False, indent=2) + "\n",
+            )
+            evaluation_path = str(evaluation_file)
+        except OSError:
+            # The in-memory scorecard remains in the archive if the session
+            # directory cannot be written.
+            evaluation_path = ""
     # State fields are maintained for compatibility, but kernel_contract is
     # the durable handoff and may be recovered directly from disk.
     if not all_paths:
@@ -191,7 +231,10 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         semcode_path_analysis=semcode_path_analysis,
     )
     evidence_report = _render_kernel_evidence_report(
-        state, round_summary=round_summary, test_passed=bool(state.get("test_passed", False)),
+        state,
+        round_summary=round_summary,
+        test_passed=bool(state.get("test_passed", False)),
+        evaluation=root_cause_evaluation,
     )
     summary = knowledge_content or "The summary model returned no text; the evidence archive above remains authoritative."
     knowledge_content = f"{evidence_report}\n\n## Knowledge-base summary\n{summary.rstrip()}\n\n{path_appendix}\n"
@@ -212,12 +255,16 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     root_cause_summary = str(kernel_contract.get("root_cause") or "").strip()
     if not root_cause_summary:
         root_cause_summary = "See the evidence archive in the report; no root-cause conclusion was supplied by the contract."
+    root_score = (root_cause_evaluation.get("root_cause") or {}).get("accuracy_score")
+    root_status = (root_cause_evaluation.get("root_cause") or {}).get("status", "unknown")
     final_response = (
         f"问题分析已完成（{status_text}）。\n\n"
         f"Issue: {issue_id} ({issue_url})\n"
         f"知识库文件: {knowledge_file}\n\n"
         f"Root-cause report: {knowledge_file}\n"
         f"Root-cause conclusion: {root_cause_summary}\n\n"
+        f"Root-cause evidence score: {root_score if root_score is not None else '未评分'} ({root_status})\n"
+        f"Scorecard: {evaluation_path or '已生成但未能持久化'}\n\n"
         f"Chroma 导入: {import_message}\n\n"
         f"{path_appendix}\n\n"
         f"共调用 {len(expert_results)} 个工具专家，"
@@ -226,6 +273,11 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
 
     return {
         "knowledge_file": knowledge_file,
+        "knowledge_base_contract": {
+            "status": "ok",
+            "root_cause_evaluation": root_cause_evaluation,
+            "root_cause_evaluation_path": evaluation_path,
+        },
         "final_response": final_response,
     }
 

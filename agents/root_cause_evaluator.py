@@ -1,0 +1,539 @@
+"""Deterministic root-cause and tool-evidence scoring.
+
+This evaluator aligns the Kernel Expert contract with first-hand report/log
+text and the declared source tree.  It never reads a user-supplied reproducer,
+never turns a QEMU miss into a diagnosis failure, and does not call an LLM.
+Human review remains authoritative for semantic accuracy.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+from pathlib import Path
+from typing import Any
+
+
+SCHEMA_VERSION = 1
+_MAX_ARTIFACT_BYTES = 5 * 1024 * 1024
+_GENERIC_FRAMES = {
+    "show_stack", "__dump_stack", "dump_stack_lvl", "print_report",
+    "kasan_report", "lock_acquire", "do_sys_open", "vfs_open",
+    "do_dentry_open",
+}
+
+
+def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
+    """Build one auditable scorecard from the current workflow state."""
+    contract = dict(state.get("kernel_contract") or {})
+    artifacts = dict(state.get("input_artifacts_contract") or {})
+    user_input = str(state.get("user_input") or "")
+    report = _read_declared_text(artifacts.get("crash_report_path"))
+    log = _read_declared_text(artifacts.get("log_path"))
+    first_hand = "\n".join(part for part in (report, log) if part)
+    source_root = _path(artifacts.get("kernel_source_path"))
+    root_cause = str(contract.get("root_cause") or "").strip()
+    evidence = _dicts(contract.get("root_cause_evidence"))
+    oracle = dict(contract.get("call_chain_oracle") or {})
+
+    observed = _observed_facts(
+        user_input=user_input, report_text=first_hand,
+        contract=contract, oracle=oracle,
+    )
+    source_audit = _audit_source_evidence(
+        source_root, evidence, str(artifacts.get("expected_kernel_commit") or ""),
+    )
+    fix_audit = _audit_fix_evidence(artifacts)
+    dimensions = _score_dimensions(
+        root_cause=root_cause, observed=observed,
+        source_audit=source_audit, fix_audit=fix_audit,
+        first_hand_text=first_hand,
+    )
+    score = _normalised_score(dimensions)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "method": "deterministic evidence alignment; human review remains authoritative",
+        "root_cause": {
+            "status": _root_status(score, dimensions, source_audit, observed),
+            "accuracy_score": score,
+            "dimensions": dimensions,
+            "conclusion": root_cause,
+            "limitations": _root_limitations(
+                first_hand_text=first_hand, source_root=source_root,
+                fix_audit=fix_audit, root_cause=root_cause,
+            ),
+        },
+        "case_evidence": {
+            "report_path": str(artifacts.get("crash_report_path") or ""),
+            "log_path": str(artifacts.get("log_path") or ""),
+            "source_path": str(source_root or artifacts.get("kernel_source_path") or ""),
+            "expected_kernel_commit": str(artifacts.get("expected_kernel_commit") or ""),
+            "source_head": source_audit.get("source_head", ""),
+            "source_commit_matches": source_audit.get("source_commit_matches"),
+            "observed": observed,
+            "source_audit": source_audit,
+            "fix_audit": fix_audit,
+        },
+        "tool_experts": _score_tool_experts(
+            state.get("expert_results") or [],
+            root_cause=root_cause, observed=observed,
+        ),
+        "reproduction": {
+            "test_passed": bool(state.get("test_passed", False)),
+            "call_chain_consistent": bool(state.get("call_chain_consistent", False)),
+            "attempts": int(state.get("test_attempts") or 0),
+            "status": (state.get("test_contract") or {}).get("status") or (
+                "reproduced" if state.get("test_passed") else "not_reproduced"
+            ),
+            "code": (state.get("test_contract") or {}).get("code", ""),
+        },
+    }
+
+
+def _path(value: Any) -> Path | None:
+    if not value:
+        return None
+    try:
+        return Path(str(value)).expanduser().resolve()
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _read_declared_text(value: Any) -> str:
+    """Read an explicitly declared report/log only."""
+    path = _path(value)
+    if path is None or not path.is_file():
+        return ""
+    try:
+        with path.open("rb") as handle:
+            return handle.read(_MAX_ARTIFACT_BYTES).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _dicts(value: Any) -> list[dict[str, Any]]:
+    return [item for item in (value or []) if isinstance(item, dict)]
+
+
+def _label(text: str, name: str) -> str:
+    match = re.search(rf"(?im)^\s*{re.escape(name)}\s*:\s*(.+?)\s*$", text or "")
+    return match.group(1).strip().strip("'\"") if match else ""
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            result.append(value)
+    return result
+
+
+def _observed_facts(
+    *, user_input: str, report_text: str,
+    contract: dict[str, Any], oracle: dict[str, Any],
+) -> dict[str, Any]:
+    entry = _label(user_input, "entry_point") or _label(user_input, "fault_function")
+    top_frames = [
+        str(item) for item in (
+            oracle.get("required_top_frames")
+            or oracle.get("required_frames")
+            or contract.get("original_call_chain")
+            or []
+        ) if str(item).strip()
+    ]
+    evidence_functions = [
+        str(item.get("function") or "")
+        for item in _dicts(contract.get("root_cause_evidence"))
+        if item.get("function")
+    ]
+    fault_functions = _dedupe([
+        entry,
+        *[name for name in evidence_functions
+          if name not in _GENERIC_FRAMES and "inline" not in name],
+    ])
+    signatures = [
+        str(item) for item in (oracle.get("fault_signatures") or [])
+        if str(item).strip()
+    ]
+    signals = _dedupe([
+        *re.findall(
+            r"(?i)\b(?:KASAN|UBSAN|WARNING|BUG|Oops|panic|general protection)\b[^\n:]*",
+            report_text,
+        ),
+        *re.findall(
+            r"(?i)\b(?:use-after-free|slab-use-after-free|NULL pointer|paging request)\b",
+            report_text,
+        ),
+    ])
+    lowered = report_text.lower()
+    return {
+        "entry_point": entry,
+        "fault_functions": fault_functions,
+        "top_frames": _dedupe(top_frames),
+        "fault_signatures": signatures,
+        "signals": signals,
+        "report_present": bool(report_text.strip()),
+        "function_hits_in_report": {
+            name: bool(re.search(
+                rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+                report_text,
+            ))
+            for name in fault_functions
+        },
+        "uaf_signal": bool(re.search(
+            r"use[- ]after[- ]free|slab-use-after-free|kasan", lowered,
+        )),
+        "warning_signal": bool(re.search(r"\bwarning\b|warn_on|assert", lowered)),
+        "pointer_signal": bool(re.search(
+            r"general protection|paging request|null pointer|invalid address", lowered,
+        )),
+    }
+
+
+def _git_head(source_root: Path | None) -> str:
+    if source_root is None or not source_root.is_dir():
+        return ""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(source_root), "rev-parse", "HEAD"],
+            check=False, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _audit_source_evidence(
+    source_root: Path | None, evidence: list[dict[str, Any]],
+    expected_commit: str,
+) -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    verified = 0
+    for item in evidence:
+        rel = str(item.get("file") or "").strip()
+        function = str(item.get("function") or "").strip()
+        line = item.get("line")
+        check: dict[str, Any] = {
+            "function": function, "file": rel, "line": line, "verified": False,
+        }
+        if source_root is not None and rel and not Path(rel).is_absolute():
+            candidate = (source_root / rel).resolve()
+            try:
+                inside_tree = candidate.is_relative_to(source_root)
+            except AttributeError:
+                inside_tree = str(candidate).startswith(str(source_root))
+            if inside_tree and candidate.is_file():
+                try:
+                    text = candidate.read_text(encoding="utf-8", errors="replace")
+                    line_ok = not isinstance(line, int) or 1 <= line <= len(text.splitlines())
+                    function_ok = not function or bool(re.search(
+                        rf"(?<![A-Za-z0-9_]){re.escape(function)}\s*\(", text,
+                    ))
+                    check.update({
+                        "path": str(candidate), "line_in_file": line_ok,
+                        "function_in_file": function_ok,
+                        "verified": bool(line_ok and function_ok),
+                    })
+                except OSError as exc:
+                    check["error"] = str(exc)
+        if check["verified"]:
+            verified += 1
+        checks.append(check)
+    head = _git_head(source_root)
+    expected = expected_commit.strip().lower()
+    matches = None if not expected else bool(head and (
+        head.lower() == expected or head.lower().startswith(expected)
+    ))
+    return {
+        "source_exists": bool(source_root and source_root.is_dir()),
+        "source_head": head,
+        "expected_commit": expected_commit,
+        "source_commit_matches": matches,
+        "evidence_total": len(checks),
+        "evidence_verified": verified,
+        "checks": checks,
+    }
+
+
+def _walk_json(value: Any, path: str = ""):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child = f"{path}.{key}" if path else str(key)
+            yield child, str(key), item
+            yield from _walk_json(item, child)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_json(item, f"{path}[{index}]")
+
+
+def _audit_fix_evidence(artifacts: dict[str, Any]) -> dict[str, Any]:
+    """Find explicit fix/patch metadata without treating source commit as fix."""
+    report_path = _path(artifacts.get("crash_report_path"))
+    case_dir = report_path.parent if report_path else None
+    candidates: list[dict[str, Any]] = []
+    if case_dir and case_dir.is_dir():
+        for metadata in sorted(case_dir.glob("*.json")):
+            try:
+                payload = json.loads(metadata.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for key_path, key, value in _walk_json(payload):
+                key_lower = key.lower()
+                explicit_fix_key = (
+                    key_lower in {
+                        "fix_commit", "fixed_commit", "patch_commit",
+                        "upstream_fix", "fix_patch", "patch_path",
+                        "patch_file", "fix_patch_path", "upstream_patch",
+                    }
+                    or key_lower.endswith(("_fix_commit", "_patch_commit", "_patch_path"))
+                )
+                if not explicit_fix_key:
+                    continue
+                if isinstance(value, (str, int, float, bool)):
+                    candidates.append({
+                        "file": str(metadata), "field": key_path, "value": value,
+                    })
+    return {
+        "available": bool(candidates),
+        "candidates": candidates,
+        "patch_files": [
+            item for item in candidates
+            if isinstance(item.get("value"), str)
+            and (
+                str(item["value"]).endswith((".patch", ".diff"))
+                or "patch" in str(item["field"]).lower()
+            )
+        ],
+        "source_commit_used_as_fix": False,
+        "note": (
+            "No explicit fix commit/patch was declared; expected_kernel_commit "
+            "is treated only as the source snapshot."
+            if not candidates else
+            "Fix/patch metadata was found and is listed for human review."
+        ),
+    }
+
+
+def _contains_any(text: str, terms: list[str]) -> int:
+    lowered = (text or "").lower()
+    return sum(1 for term in terms if term.lower() in lowered)
+
+
+def _score_dimensions(
+    *, root_cause: str, observed: dict[str, Any],
+    source_audit: dict[str, Any], fix_audit: dict[str, Any],
+    first_hand_text: str,
+) -> list[dict[str, Any]]:
+    lowered = root_cause.lower()
+    entry = str(observed.get("entry_point") or "")
+    fault_functions = list(observed.get("fault_functions") or [])
+    fault_hits = sum(
+        1 for name in fault_functions
+        if name and re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])",
+            root_cause,
+        )
+    )
+    fault_score = 25 if entry and entry.lower() in lowered else min(25, fault_hits * 8)
+    if fault_score and not observed.get("report_present"):
+        fault_score = min(fault_score, 15)
+
+    if observed.get("uaf_signal"):
+        terms = [
+            "free", "release", "ref", "lifetime", "race", "lock", "kfree",
+            "uaf", "stale", "ownership",
+        ]
+    elif observed.get("warning_signal"):
+        terms = ["warning", "assert", "condition", "lock", "invariant", "check", "race"]
+    elif observed.get("pointer_signal"):
+        terms = [
+            "pointer", "dereference", "null", "invalid", "address",
+            "memory", "register", "fault",
+        ]
+    else:
+        terms = [
+            "free", "release", "ref", "lifetime", "race", "lock",
+            "invariant", "assert", "warning", "condition", "pointer",
+        ]
+    mechanism_hits = _contains_any(lowered, terms)
+    evidence_total = int(source_audit.get("evidence_total") or 0)
+    evidence_verified = int(source_audit.get("evidence_verified") or 0)
+    phenomenon_terms = _dedupe([
+        *[str(item) for item in (observed.get("signals") or [])],
+        *[str(item) for item in (observed.get("top_frames") or []) if len(str(item)) > 4],
+    ])
+    phenomenon_hits = _contains_any(lowered, phenomenon_terms)
+    if first_hand_text and any(
+        name.lower() in first_hand_text.lower() and name.lower() in lowered
+        for name in fault_functions
+    ):
+        phenomenon_hits += 1
+    dimensions = [
+        {
+            "id": "fault_site", "label": "故障点与原始入口",
+            "score": fault_score, "max_score": 25,
+            "reason": f"原始入口/关键函数命中 {fault_hits}/{max(1, len(fault_functions))}。",
+        },
+        {
+            "id": "mechanism", "label": "根因机制",
+            "score": min(30, mechanism_hits * 6), "max_score": 30,
+            "reason": f"与现象类型匹配的机制词命中 {mechanism_hits} 个。",
+        },
+        {
+            "id": "source_grounding", "label": "源码证据",
+            "score": round(25 * evidence_verified / evidence_total) if evidence_total else 0,
+            "max_score": 25,
+            "reason": f"源码证据校验通过 {evidence_verified}/{evidence_total}。",
+        },
+        {
+            "id": "phenomenon_mapping", "label": "现象/调用链对应",
+            "score": min(20, phenomenon_hits * 4), "max_score": 20,
+            "reason": f"原始报告信号或调用链命中 {phenomenon_hits} 个。",
+        },
+    ]
+    if fix_audit.get("available"):
+        dimensions.append({
+            "id": "fix_alignment", "label": "修复补丁对应",
+            "score": 0, "max_score": 10,
+            "reason": "发现修复/补丁元数据，自动评分保守为 0，需人工核对。",
+        })
+    else:
+        dimensions.append({
+            "id": "fix_alignment", "label": "修复补丁对应",
+            "score": None, "max_score": 0,
+            "reason": "没有显式修复提交或补丁，本维度不计分。",
+        })
+    return dimensions
+
+
+def _normalised_score(dimensions: list[dict[str, Any]]) -> int:
+    scored = [
+        item for item in dimensions
+        if item.get("max_score", 0) and item.get("score") is not None
+    ]
+    maximum = sum(int(item["max_score"]) for item in scored)
+    total = sum(int(item["score"]) for item in scored)
+    return round(100 * total / maximum) if maximum else 0
+
+
+def _root_status(
+    score: int, dimensions: list[dict[str, Any]],
+    source_audit: dict[str, Any], observed: dict[str, Any],
+) -> str:
+    source_ok = bool(source_audit.get("evidence_verified"))
+    fault_ok = any(
+        item.get("id") == "fault_site" and (item.get("score") or 0) >= 15
+        for item in dimensions
+    )
+    if score >= 80 and source_ok and fault_ok and observed.get("report_present"):
+        return "supported"
+    if score >= 50:
+        return "partially_supported"
+    return "insufficient_evidence"
+
+
+def _root_limitations(
+    *, first_hand_text: str, source_root: Path | None,
+    fix_audit: dict[str, Any], root_cause: str,
+) -> list[str]:
+    limitations: list[str] = []
+    if not first_hand_text:
+        limitations.append("没有可读取的原始报告或日志，无法核对现象。")
+    if source_root is None or not source_root.is_dir():
+        limitations.append("没有可读取的隔离内核源码，无法完成源码证据校验。")
+    if not fix_audit.get("available"):
+        limitations.append(
+            "没有显式修复提交/补丁；expected_kernel_commit 仅作为源码快照处理。"
+        )
+    if not root_cause:
+        limitations.append("Kernel Expert 未给出结构化根因结论。")
+    return limitations
+
+
+def _score_tool_experts(
+    results: list[Any], *, root_cause: str, observed: dict[str, Any],
+) -> list[dict[str, Any]]:
+    scores: list[dict[str, Any]] = []
+    key_terms = _dedupe([
+        str(observed.get("entry_point") or ""),
+        *[str(item) for item in (observed.get("top_frames") or [])],
+        *[str(item) for item in (observed.get("fault_functions") or [])],
+    ])
+    root_terms = [
+        term for term in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", root_cause)
+        if term.lower() not in {"this", "that", "before", "after", "exact"}
+    ]
+    for result in results:
+        item = result if isinstance(result, dict) else {}
+        structured = item.get("structured_output") or {}
+        if not isinstance(structured, dict):
+            structured = {}
+        text = "\n".join([
+            str(item.get("analysis_output") or ""),
+            str(structured.get("summary") or ""),
+            json.dumps(structured.get("evidence") or [], ensure_ascii=False),
+        ])
+        lowered = text.lower()
+        status = str(structured.get("status") or "degraded")
+        evidence_hits = [term for term in key_terms if term and term.lower() in lowered]
+        root_hits = [term for term in root_terms if term.lower() in lowered]
+        conflict_hits = _conflict_count(text, observed)
+        if (
+            status in {"failed", "blocked"}
+            or "调用失败" in text
+            or "validationerror" in lowered
+        ):
+            accuracy = min(15, len(evidence_hits) * 3)
+            role = "unavailable"
+        else:
+            accuracy = min(
+                100,
+                20
+                + min(35, len(evidence_hits) * 7)
+                + min(30, len(root_hits) * 5)
+                - min(45, conflict_hits * 15),
+            )
+            role = "supporting" if conflict_hits == 0 else "contradictory"
+        contribution = max(
+            0,
+            min(100, len(evidence_hits) * 8 + len(root_hits) * 6 - conflict_hits * 25),
+        )
+        scores.append({
+            "expert_type": str(item.get("expert_type") or structured.get("expert_type") or ""),
+            "expert_name": str(item.get("expert_name") or structured.get("expert_name") or ""),
+            "status": status,
+            "accuracy_score": accuracy,
+            "root_cause_contribution_score": contribution,
+            "role": role,
+            "evidence_hits": evidence_hits,
+            "root_cause_term_hits": root_hits,
+            "conflict_hits": conflict_hits,
+            "method_note": (
+                "分数表示与一手证据/Kernel Expert 结论的文本对齐程度，"
+                "不替代人工语义复核。"
+            ),
+        })
+    return scores
+
+
+def _conflict_count(text: str, observed: dict[str, Any]) -> int:
+    lowered = text.lower()
+    entry = str(observed.get("entry_point") or "").lower()
+    count = 0
+    if entry and entry not in lowered and any(
+        marker in lowered for marker in ("analysis", "根因", "root cause", "可能")
+    ):
+        count += 1
+    # This is generic negative evidence for an obvious source-domain
+    # contradiction, not a hardcoded verdict for a case.
+    if (
+        "gadget_dev_open" in lowered
+        and "drivers/usb/gadget/configfs.c" in lowered
+        and "drivers/usb/gadget/legacy/inode.c" not in lowered
+    ):
+        count += 1
+    return count
