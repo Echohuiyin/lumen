@@ -81,6 +81,7 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
         "tool_experts": _score_tool_experts(
             state.get("expert_results") or [],
             root_cause=root_cause, observed=observed,
+            source_audit=source_audit,
         ),
         "reproduction": {
             "test_passed": bool(state.get("test_passed", False)),
@@ -507,6 +508,7 @@ def _root_limitations(
 
 def _score_tool_experts(
     results: list[Any], *, root_cause: str, observed: dict[str, Any],
+    source_audit: dict[str, Any],
 ) -> list[dict[str, Any]]:
     scores: list[dict[str, Any]] = []
     key_terms = _dedupe([
@@ -532,7 +534,7 @@ def _score_tool_experts(
         status = str(structured.get("status") or "degraded")
         evidence_hits = [term for term in key_terms if term and term.lower() in lowered]
         root_hits = [term for term in root_terms if term.lower() in lowered]
-        conflict_hits = _conflict_count(text, observed)
+        conflict_hits, conflict_reasons = _conflict_count(text, observed, source_audit)
         if (
             status in {"failed", "blocked"}
             or "调用失败" in text
@@ -563,6 +565,7 @@ def _score_tool_experts(
             "evidence_hits": evidence_hits,
             "root_cause_term_hits": root_hits,
             "conflict_hits": conflict_hits,
+            "conflict_reasons": conflict_reasons,
             "method_note": (
                 "分数表示与一手证据/Kernel Expert 结论的文本对齐程度，"
                 "不替代人工语义复核。"
@@ -571,12 +574,34 @@ def _score_tool_experts(
     return scores
 
 
-def _conflict_count(text: str, observed: dict[str, Any]) -> int:
+def _conflict_count(
+    text: str, observed: dict[str, Any], source_audit: dict[str, Any],
+) -> tuple[int, list[str]]:
     lowered = text.lower()
     entry = str(observed.get("entry_point") or "").lower()
     count = 0
+    reasons: list[str] = []
     if entry and entry not in lowered and any(
         marker in lowered for marker in ("analysis", "根因", "root cause", "可能")
     ):
         count += 1
-    return count
+        reasons.append("declared entry point is absent from the expert analysis")
+    # Generic source-domain check: when an expert names a concrete source
+    # path for the declared entry but omits the exact source file recorded by
+    # the Kernel Expert evidence, retain that as a contradiction signal.
+    expected_files = {
+        str(item.get("file") or "").lower()
+        for item in (source_audit.get("checks") or [])
+        if item.get("file")
+    }
+    source_paths = re.findall(
+        r"\b(?:drivers|fs|net|kernel|mm|include|arch)/[A-Za-z0-9_./-]+\.c\b",
+        lowered,
+    )
+    if entry and entry in lowered and source_paths and expected_files:
+        expected_names = {Path(item).name for item in expected_files}
+        named_names = {Path(item).name for item in source_paths}
+        if expected_names.isdisjoint(named_names):
+            count += 1
+            reasons.append("named source path does not match the exact-source evidence")
+    return count, reasons
