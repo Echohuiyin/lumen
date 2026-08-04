@@ -69,6 +69,27 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     assert "boot noise" not in feedback
 
 
+def test_kernel_feedback_ignores_pre_marker_boot_crash(tmp_path):
+    serial = tmp_path / "serial.log"
+    serial.write_text(
+        "systemd[1]: segfault in libc.so.6\n"
+        "Kernel panic - not syncing: Attempted to kill init!\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="blocked", code="BLOCKED_PERSISTENT_QEMU",
+        summary="QEMU reached a terminal boot failure before SSH became ready",
+        kernel_feedback="QEMU boot failed",
+        artifacts={"serial_log": str(serial)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "INVALID_USERSPACE_CRASH" not in feedback
+    assert "systemd[1]" not in feedback
+    assert "QEMU boot failed" in feedback
+
+
 def test_test_expert_attempt_output_preserves_prior_rounds(tmp_path):
     output = tmp_path / "test_expert.txt"
     _append_attempt_output(output, "TRY-OUT: 1/10\nTEST STATUS: failed\n")

@@ -778,7 +778,12 @@ def _augment_kernel_feedback(
             if capability not in guest_runtime_incompatibility:
                 guest_runtime_incompatibility.append(capability)
         marker_at = text.find("LUMEN_REPRO_START:")
-        if marker_at >= 0:
+        if artifact_name == "serial_log":
+            # Boot failures happen before the runner marker is emitted.
+            # Their serial output may contain unrelated init SIGSEGV lines.
+            # Do not feed those lines into userspace-POC safety feedback.
+            if marker_at < 0:
+                continue
             text = text[marker_at:]
         runtime_text.append(text)
     if historical and not runtime_text:
