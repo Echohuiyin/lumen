@@ -401,6 +401,32 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
         )
         result.kernel_feedback = result.summary
         result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+
+    # A userspace diagnostic may discover an optional filesystem utility only
+    # after it has started (for example ``mkfs.bcachefs``).  Keep this explicit
+    # marker in the same terminal capability class; retrying an unchanged
+    # image cannot make an absent executable appear.  Do not broaden this to
+    # arbitrary stderr text, because normal reproducer failures remain valid
+    # try-outs and must still reach the Kernel Expert loop.
+    for key, raw_path, text in evidence:
+        match = re.search(
+            r"LUMEN_BLOCKED:\s*no\s+executable\s+([A-Za-z0-9_.+-]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        component_name = match.group(1)
+        result.status = "blocked"
+        result.code = "BLOCKED_GUEST_COMPONENT_MISSING"
+        result.summary = (
+            f"Guest is missing the userspace executable {component_name}; "
+            "install it in the selected QEMU image or select a compatible "
+            "image before retrying."
+        )
+        result.kernel_feedback = result.summary
+        result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+        return result
     # A successfully compiled pthread probe that cannot create/join a worker
     # is deterministic guest ABI evidence. Keep this retryable so Kernel
     # Expert can switch to process workers or a single-process trigger; do not
