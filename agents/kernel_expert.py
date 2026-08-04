@@ -975,6 +975,78 @@ def _codex_case_text(user_input: str) -> str:
     return text
 
 
+_FIRST_HAND_LOG_ACTION_MARKERS = (
+    "fault_injection",
+    "failslab",
+    "probability",
+    "interval",
+    "times",
+    "gadgetfs",
+    "dummy_udc",
+    "usbip-vudc",
+    "mount",
+    "umount",
+    "openat",
+    "vfs_open",
+    "write",
+    "read",
+    "close",
+    "ioctl",
+    "mmap",
+    "send",
+    "recv",
+    "syz_",
+    "call trace",
+    "allocated by task",
+    "freed by task",
+    "kasan",
+    "unable to handle",
+    "general protection",
+    "kernel bug",
+    "warning:",
+)
+
+
+def _extract_first_hand_log_hints(
+    log_text: str,
+    *,
+    max_lines: int = 80,
+    max_chars: int = 8000,
+) -> str:
+    """Extract observable setup/trigger evidence from the first-hand log.
+
+    Kernel Expert still receives the complete log as an evidence artifact.  A
+    compact deterministic excerpt prevents the prompt boundary from hiding
+    prerequisites such as a write-driven bind or an explicit fault injector,
+    while avoiding any supplied reproducer source or command substitution.
+    """
+    if not log_text:
+        return ""
+    selected: list[str] = []
+    seen: set[str] = set()
+    for raw_line in str(log_text).splitlines():
+        line = raw_line.strip()
+        if not line or line in seen:
+            continue
+        lowered = line.lower()
+        has_action_marker = any(
+            marker in lowered for marker in _FIRST_HAND_LOG_ACTION_MARKERS
+        )
+        has_symbol_frame = bool(
+            re.search(
+                r"\b[A-Za-z_][A-Za-z0-9_.$]*\+0x[0-9a-fA-F]+(?:/0x[0-9a-fA-F]+)?",
+                line,
+            )
+        )
+        if not has_action_marker and not has_symbol_frame:
+            continue
+        seen.add(line)
+        selected.append(line[:500])
+        if len(selected) >= max_lines:
+            break
+    return "\n".join(selected)[:max_chars]
+
+
 def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     """内核专家 agent：根据工具专家的输出，结合代码分析，构造必现用例并给出内核维测方案。
 
@@ -1196,6 +1268,19 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         "## Evidence directory\n"
         "Inspect every file under evidence/ before concluding; record unknowns instead of guessing."
     )
+    first_hand_log_hints = _extract_first_hand_log_hints(original_log_text)
+    if first_hand_log_hints:
+        user_content += (
+            "\n\n## Deterministic first-hand log action hints\n"
+            "These lines are extracted from the supplied kernel log, not from a user repro. "
+            "Treat observable setup, syscall, pressure, and fault-injection events as "
+            "reproduction prerequisites when the userspace ABI permits them. If a prerequisite "
+            "cannot be implemented in the isolated guest, record that limitation in the contract "
+            "instead of silently replacing it with a generic trigger.\n"
+            "```text\n"
+            f"{first_hand_log_hints}\n"
+            "```"
+        )
     if semcode_evidence_path:
         user_content += (
             "\n\nRead evidence/semcode-evidence.json before interactive MCP. "

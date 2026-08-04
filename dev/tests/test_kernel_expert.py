@@ -21,6 +21,7 @@ from agents.kernel_expert import (
     _resolve_primary_log_path,
     _read_primary_log_text,
     _codex_case_text,
+    _extract_first_hand_log_hints,
     _stage_codex_evidence,
     _static_check_userspace_reproducer,
     _sync_codex_artifacts,
@@ -156,6 +157,25 @@ def test_codex_case_text_uses_maintenance_language():
     assert "new userspace C regression test" in text
     assert "in-kernel extension" in text
     assert "vulnerability research" not in text
+
+
+def test_first_hand_log_hints_preserve_trigger_prerequisites_without_repro_source():
+    log = """
+    unrelated boot line
+    FAULT_INJECTION: forcing a failure.
+    name failslab, interval 1, probability 0, times 1
+    gadgetfs: bound to dummy_udc driver
+    __arm64_sys_write+0x7c/0x90
+    gadget_dev_open+0x50/0x1c4
+    arbitrary text without an action marker
+    """
+    hints = _extract_first_hand_log_hints(log)
+    assert "FAULT_INJECTION: forcing a failure." in hints
+    assert "failslab" in hints
+    assert "gadgetfs: bound to dummy_udc driver" in hints
+    assert "__arm64_sys_write" in hints
+    assert "gadget_dev_open" in hints
+    assert "unrelated boot line" not in hints
 
 
 def test_structured_kernel_contract_round_trips_without_module_build():
