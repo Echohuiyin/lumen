@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.persistent_qemu import PersistentQemuPaths
-from agents.test_expert import _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
+from agents.test_expert import _append_attempt_output, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
 from agents.test_expert import _strict_call_chain_oracle
 
 
@@ -67,6 +67,17 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     assert "Invalid cluster_stack option" in feedback
     assert "LUMEN_DIAGNOSTIC_NO_OCFS2_MOUNT" in feedback
     assert "boot noise" not in feedback
+
+
+def test_test_expert_attempt_output_preserves_prior_rounds(tmp_path):
+    output = tmp_path / "test_expert.txt"
+    _append_attempt_output(output, "TRY-OUT: 1/10\nTEST STATUS: failed\n")
+    _append_attempt_output(output, "TRY-OUT: 2/10\nTEST STATUS: passed\n")
+
+    text = output.read_text(encoding="utf-8")
+    assert text.count("TRY-OUT:") == 2
+    assert "TRY-OUT: 1/10" in text
+    assert "TRY-OUT: 2/10" in text
 
 
 def test_kernel_feedback_keeps_historical_userspace_crash_constraint():

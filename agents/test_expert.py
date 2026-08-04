@@ -762,6 +762,17 @@ def _format_attempt(result: TestResultContract) -> str:
     return "\n".join(lines)
 
 
+def _append_attempt_output(output_file: str | Path, text: str) -> None:
+    """Persist every Test Expert try-out instead of truncating prior evidence."""
+    path = Path(output_file)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    needs_separator = path.exists() and path.stat().st_size > 0
+    with path.open("a", encoding="utf-8") as handle:
+        if needs_separator:
+            handle.write("\n")
+        handle.write(text)
+
+
 def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     """Validate one userspace-C contract in a fresh QEMU image copy."""
     set_session_dir(state.get("session_dir"))
@@ -832,10 +843,13 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                     result.kernel_feedback = _augment_kernel_feedback(result, previous_rounds)
 
     text = _format_attempt(result)
-    with open(output_file, "w", encoding="utf-8") as handle:
-        handle.write(_format_agent_header_text("测试专家", f"调用链验证 - 第{tryout}次"))
-        handle.write(text + "\n")
-        handle.write(_format_agent_footer_text("测试专家"))
+    _append_attempt_output(
+        output_file,
+        _format_agent_header_text("测试专家", f"调用链验证 - 第{tryout}次")
+        + text
+        + "\n"
+        + _format_agent_footer_text("测试专家"),
+    )
     result_data = model_to_dict(result)
     previous_rounds.append(result_data)
     return {
