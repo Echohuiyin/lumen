@@ -531,4 +531,39 @@ paths, server addresses, credentials, fixed case names, or fixed function
 lists. Resolve paths from the project root, environment variables, or an
 explicit deployment configuration; fail with an actionable diagnostic when a
 required value is not configured. Case fixtures may retain provenance paths,
-but runtime code must not depend on a particular user's home directory.
+ but runtime code must not depend on a particular user's home directory.
+
+## Root-cause-first evaluation gate
+
+The primary acceptance target is an evidence-backed root-cause report for every
+case. Reproduction is a secondary target; a case that does not reproduce is
+still successful for diagnosis when its report is accurately grounded.
+
+After Kernel Expert completes, the workflow writes
+root_cause_evaluation.json in the session directory. The deterministic
+scorecard reads only the original report/log, the declared isolated source
+tree, the source commit identity, the Kernel Expert contract, and Tool Expert
+outputs. It never reads a user-provided reproducer and never changes the
+QEMU pass/fail verdict.
+
+The score is an auditable, provisional alignment score over:
+
+1. fault site and original entry point;
+2. mechanism (lifetime, ownership, locking, assertion, pointer, or other
+   evidence appropriate to the observed fault);
+3. exact-source evidence (file, line, function, and commit);
+4. mapping to the first-hand phenomenon and call chain; and
+5. explicit fix commit/patch alignment, when such an artifact is actually
+   supplied.
+
+The fix dimension is excluded, rather than guessed, when the case declares
+only a source snapshot. expected_kernel_commit must not be treated as a
+fix commit. Each Tool Expert receives a separate evidence-accuracy score and a
+root-cause contribution score; failed or contradictory reports remain visible
+and are not silently replaced.
+
+The reproduction target is at least 20% of the evaluated cases with a
+consistent top-of-chain oracle. This threshold does not waive the
+root-cause-evidence gate. Any remediation made while pursuing the target must
+include a cause/impact assessment and preserve the smallest change that fixes
+the observed issue.
