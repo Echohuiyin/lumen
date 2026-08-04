@@ -75,6 +75,18 @@ change_from_previous_tryout and keep the kernel call-chain oracle strict.
 - Treat numeric protocol/address/PGN values and reason codes present in the first-hand report as part of the oracle: copy them exactly into frame fields and ABI arguments. Do not substitute a neighboring value because it is easier to exercise; when the report omits a value, mark it unknown rather than inventing one.
 - Before retrying, compare the generated C's control-flow and object lifecycle with the verified source guards. If the entry condition is not demonstrated, revise the C trigger and `change_from_previous_tryout`; do not compensate with generic load, random frames, or a broadened call-chain oracle.
 
+### Mount teardown and dentry lifetime
+
+For VFS or gadgetfs lifetime failures involving `MNT_DETACH`, distinguish a
+namespace pathname from a reference to the detached mount. If the target
+open must occur after teardown, open and retain an `O_PATH|O_DIRECTORY` fd for
+the mounted root before detaching, then use `openat(dirfd, endpoint)` while
+the worker remains active across the final holder close. A later
+`openat(AT_FDCWD, absolute_path, ...)` can resolve the underlying directory
+after the detach and is not evidence that the stale mounted dentry was
+reopened. Apply this rule only when the exact source lifetime and the guest
+ABI establish that a detached-mount lookup is the required entry condition.
+
 ### Transport direction and scheduler-context audit
 
 For a connection-oriented transport, derive the direction of an injected
