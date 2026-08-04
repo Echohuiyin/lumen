@@ -22,6 +22,7 @@ from agents.kernel_expert import (
     _read_primary_log_text,
     _codex_case_text,
     _stage_codex_evidence,
+    _sync_codex_artifacts,
     _validate_kernel_contract_artifacts,
 )
 
@@ -68,6 +69,8 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "socket-owned TX/session object" in prompt
     assert "such as `sendto`" in prompt
     assert "Preserve observable identifiers" in prompt
+    assert "numeric protocol/address/PGN values" in prompt
+    assert "copy them exactly" in prompt
     assert "generic load, random frames" in prompt
     assert "do not repeat them through interactive MCP" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
@@ -437,3 +440,31 @@ def test_codex_evidence_extracts_uppercase_crash_signatures(tmp_path):
     assert "Call Trace:" in staged
     assert "target_syscall_frame" in staged
     assert "target_release" in staged
+
+
+
+def test_ephemeral_reproducer_dir_remaps_only_from_current_sync(tmp_path):
+    workdir = tmp_path / "codex-workdir"
+    session = tmp_path / "durable-session"
+    workdir.mkdir()
+    session.mkdir()
+    (workdir / "diagnostic_test.c").write_text(
+        "int main(void) { return 0; }", encoding="utf-8"
+    )
+    _sync_codex_artifacts(workdir, session)
+
+    contract = _contract(tmp_path)
+    data = model_to_dict(contract)
+    data["reproducer"]["source_dir"] = str(workdir / "removed-after-codex")
+    data["reproducer"]["source_files"] = ["diagnostic_test.c"]
+    enriched = _enrich_kernel_contract_from_runtime(
+        KernelExpertOutput(**data), input_artifacts={}, output_dir=session,
+    )
+    assert enriched.reproducer.source_dir == str(session.resolve())
+    assert any("ephemeral Codex workdir" in warning for warning in enriched.warnings)
+
+    (session / ".codex_artifact_manifest.json").unlink()
+    unchanged = _enrich_kernel_contract_from_runtime(
+        KernelExpertOutput(**data), input_artifacts={}, output_dir=session,
+    )
+    assert unchanged.reproducer.source_dir == str((workdir / "removed-after-codex").resolve())

@@ -24,6 +24,7 @@ def _sync_codex_artifacts(workdir: Path, session_output_dir: Path) -> None:
     """Copy userspace artifacts into the durable workflow session."""
     session_output_dir.mkdir(parents=True, exist_ok=True)
     allowed_suffixes = {".c", ".h", ".json"}
+    copied_files: list[str] = []
     for source in workdir.rglob("*"):
         if not source.is_file() or source.name.startswith("."):
             continue
@@ -34,8 +35,21 @@ def _sync_codex_artifacts(workdir: Path, session_output_dir: Path) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             destination.write_bytes(source.read_bytes())
+            copied_files.append(relative.as_posix())
         except OSError:
             continue
+    manifest = {
+        "source_workdir": str(workdir.resolve()),
+        "session_output_dir": str(session_output_dir.resolve()),
+        "copied_files": sorted(copied_files),
+    }
+    try:
+        (session_output_dir / ".codex_artifact_manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2) + chr(10),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
 
 
 def _stage_codex_evidence(
@@ -1768,6 +1782,38 @@ def _enrich_kernel_contract_from_runtime(
     if not source_dir:
         source_dir = str(output_dir)
     source_files = list(repro.get("source_files") or [])
+    # Codex runs in an ephemeral workdir. Remap only files proven to have
+    # been copied by this invocation into the durable session; without the
+    # manifest, preserve the model path and let validation block it.
+    manifest_path = output_dir / ".codex_artifact_manifest.json"
+    copied_files: set[str] = set()
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if str(Path(manifest.get("session_output_dir", "")).resolve()) == str(output_dir.resolve()):
+            copied_files = {
+                str(item) for item in manifest.get("copied_files", [])
+                if isinstance(item, str)
+            }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        copied_files = set()
+    safe_source_files: list[str] = []
+    for source_file in source_files:
+        candidate = Path(str(source_file))
+        if candidate.is_absolute() or ".." in candidate.parts:
+            safe_source_files = []
+            break
+        safe_source_files.append(candidate.as_posix())
+    if (
+        safe_source_files
+        and set(safe_source_files).issubset(copied_files)
+        and all((output_dir / Path(source_file)).is_file() for source_file in safe_source_files)
+    ):
+        source_dir = str(output_dir.resolve())
+        warnings = list(data.get("warnings") or [])
+        warnings.append(
+            "reproducer.source_dir remapped from ephemeral Codex workdir to the durable workflow session"
+        )
+        data["warnings"] = warnings
     # Only infer the conventional file when it is present on disk and is C.
     # This is an observed artifact, not a generated fallback.
     if not source_files and (output_dir / "repro.c").is_file():
