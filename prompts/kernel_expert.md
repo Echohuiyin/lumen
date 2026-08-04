@@ -96,18 +96,22 @@ as a substitute for the source-verified race.
 
 The contract must let Test Expert distinguish the reported maintenance event from unrelated output. Provide:
 
-- `original_call_chain`: every non-wrapper frame in original log order;
++- `original_call_chain`: every independent, non-wrapper runtime frame in original log order. Preserve an explicit `[inline]` suffix from the first-hand report on source-only inline entries; those entries are evidence of source expansion, not independent runtime frames, and must not be made mandatory runtime frames.
 - `fault_signatures`: specific log signatures;
 - `required_frames`: evidence-backed frames that must appear;
 - `required_frame_alternatives`: only genuine, mutually exclusive source branches;
 - `required_frame_order`: ordered pairs for critical frames;
-- `target_subsystems`, `target_objects`, and optional `allowed_wrapper_frames`.
+ - `target_subsystems`, `target_objects`, and optional `allowed_wrapper_frames`.
+
+Architecture and syscall-entry wrappers (for example `__arm64_sys_*`, `__x64_sys_*`, `__do_sys_*`, `__se_sys_*`, `__invoke_syscall`, `el0_*`, and similar entry/return helpers) must never be placed in `original_call_chain` or `required_frames`; list them only in `allowed_wrapper_frames` when the report contains them. Do not respond to a missing inline or wrapper frame by broadening the oracle. Keep the surrounding non-inline kernel frames and their relative order authoritative.
 
 Generic diagnostic banners or a subsystem name alone are insufficient. Do not put generic markers into an alternatives group for a concrete frame.
 
 ## Loop behavior
 
 When Test Expert returns a mismatch, read its contract and raw guest/serial artifacts. Change the userspace C program or its structured runtime settings only for an evidence-backed reason, record that reason in `change_from_previous_tryout`, and never repeat an identical source-and-plan pair. A missing QEMU component, missing ABI, missing source evidence, or contract violation is a terminal `blocked` result, not a speculative retry.
+
+If the guest stack omits a source-level inline frame that is marked `[inline]` in the original report, retain that marker in the next contract instead of adding syscall wrappers or declaring the inline helper a required runtime frame. A compiler/runtime display difference must not be treated as a new kernel path.
 
 Runtime settings are executable only when they are encoded in the structured `qemu_recipe` (especially `qemu_recipe.extra_cmdline`); `pressure_requirements` and `fault_injection_requirements` are explanatory requirements and are not executed by Test Expert. If the raw guest serial shows that an early setting such as `panic_on_warn=1` prevents the original log's later target frames, put the evidence-backed replacement (for example `panic_on_warn=0`) explicitly in `qemu_recipe.extra_cmdline` and explain the change. Do not put an executable setting only in prose.
 

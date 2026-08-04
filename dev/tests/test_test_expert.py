@@ -12,6 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.persistent_qemu import PersistentQemuPaths
 from agents.test_expert import _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
+from agents.test_expert import _strict_call_chain_oracle
 
 
 def _contract(root: Path) -> KernelExpertOutput:
@@ -119,6 +120,20 @@ def test_inline_source_frames_are_not_required_as_runtime_frames(tmp_path):
     assert plan.original_call_chain == contract.original_call_chain
     assert plan.call_chain_oracle.required_frames == ["caller", "leaf"]
 
+
+def test_architecture_wrappers_are_context_only(tmp_path):
+    contract = _contract(tmp_path)
+    contract.original_call_chain = [
+        "ocfs2_block_group_set_bits",
+        "ocfs2_move_extents",
+        "__arm64_sys_ioctl",
+        "el0t_64_sync",
+    ]
+    contract.call_chain_oracle.required_frames = list(contract.original_call_chain)
+    oracle = _strict_call_chain_oracle(contract)
+    assert oracle.required_frames == ["ocfs2_block_group_set_bits", "ocfs2_move_extents"]
+    assert "__arm64_sys_ioctl" in oracle.allowed_wrapper_frames
+    assert "el0t_64_sync" in oracle.allowed_wrapper_frames
 
 def test_qemu_runtime_root_is_configurable(tmp_path, monkeypatch):
     scratch = tmp_path / "scratch"

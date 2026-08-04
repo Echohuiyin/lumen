@@ -169,19 +169,45 @@ def _is_inline_source_annotation(frame: str) -> bool:
     lowered = str(frame).lower()
     return bool(re.search(
         r"\[(?:[^]]*\bstatic\s+inline\b[^]]*|[^]]*\binlined\s+into\b[^]]*)\]"
+        r"|\[\s*inline(?:\s*,|\s*\])"
         r"|\binlined\s+into\b|\binline\s+at\b",
         lowered,
     ))
 
 
+def _frame_symbol(frame: str) -> str:
+    """Return the symbol identity without offsets or source annotations."""
+    value = str(frame).strip()
+    value = re.sub(r"^\s*(?:pc|lr|rip)\s*:\s*", "", value, flags=re.IGNORECASE)
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)", value)
+    return match.group(1) if match else value
+
+
+def _is_arch_wrapper_frame(frame: str) -> bool:
+    """Recognize generic syscall/architecture entry wrappers.
+
+    These wrappers are useful context but are not the maintenance subsystem
+    path.  The classification is based on stable symbol naming conventions,
+    not on a host path or a case-specific function name.
+    """
+    symbol = _frame_symbol(frame)
+    return bool(re.match(
+        r"^(?:__?(?:do|se|arm64|x64|ia32|x86_64)_sys_|"
+        r"__invoke_syscall$|invoke_syscall$|"
+        r"el[0-9](?:t)?(?:_|$)|do_el[0-9](?:_|$)|"
+        r"entry_SYSCALL|ret_to_user|syscall_(?:enter|exit))",
+        symbol,
+    ))
+
+
 def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
     """Make the original log chain authoritative for a real Test Expert plan."""
-    original = [
+    raw_original = [
         str(frame).strip()
         for frame in contract.original_call_chain
-        if str(frame).strip() and not _is_inline_source_annotation(frame)
+        if str(frame).strip()
     ]
-    if not original:
+    if not raw_original:
         return contract.call_chain_oracle
 
     data = model_to_dict(contract.call_chain_oracle)
@@ -190,40 +216,76 @@ def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
         for frame in data.get("allowed_wrapper_frames") or []
         if str(frame).strip()
     }
-    exact: list[str] = []
-    for frame in original:
-        if frame not in allowed and frame not in exact:
-            exact.append(frame)
-    exact_set = set(exact)
+    allowed_symbols = {_frame_symbol(frame) for frame in allowed}
+    for frame in raw_original:
+        if _is_arch_wrapper_frame(frame):
+            allowed.add(frame)
+            allowed_symbols.add(_frame_symbol(frame))
 
-    configured_required = [
-        str(frame).strip()
-        for frame in data.get("required_frames") or []
-        if (
-            str(frame).strip()
-            and not _is_inline_source_annotation(frame)
-            and str(frame).strip() not in exact_set
-        )
+    original = [
+        frame for frame in raw_original
+        if not _is_inline_source_annotation(frame)
+        and _frame_symbol(frame) not in allowed_symbols
     ]
+    exact: list[str] = []
+    exact_symbols: set[str] = set()
+    for frame in original:
+        symbol = _frame_symbol(frame)
+        if symbol not in exact_symbols:
+            exact.append(frame)
+            exact_symbols.add(symbol)
+
+    configured_required: list[str] = []
+    configured_symbols: set[str] = set()
+    for raw_frame in data.get("required_frames") or []:
+        frame = str(raw_frame).strip()
+        symbol = _frame_symbol(frame)
+        if (
+            not frame
+            or _is_inline_source_annotation(frame)
+            or symbol in allowed_symbols
+            or symbol in exact_symbols
+            or symbol in configured_symbols
+        ):
+            continue
+        configured_required.append(frame)
+        configured_symbols.add(symbol)
     required = [*exact, *configured_required]
     alternatives: list[list[str]] = []
     for group in data.get("required_frame_alternatives") or []:
-        members = [
-            str(frame).strip()
-            for frame in group
-            if str(frame).strip() and not _is_inline_source_annotation(frame)
-        ]
-        if members and not any(member in exact_set for member in members):
+        members: list[str] = []
+        member_symbols: set[str] = set()
+        for raw_frame in group:
+            frame = str(raw_frame).strip()
+            symbol = _frame_symbol(frame)
+            if (
+                not frame
+                or _is_inline_source_annotation(frame)
+                or symbol in allowed_symbols
+                or symbol in exact_symbols
+                or symbol in member_symbols
+            ):
+                continue
+            members.append(frame)
+            member_symbols.add(symbol)
+        if members:
             alternatives.append(members)
     data["required_frames"] = required
     data["required_frame_alternatives"] = alternatives
+    data["allowed_wrapper_frames"] = sorted(allowed)
 
-    valid = set(required)
-    valid.update(member for group in alternatives for member in group)
+    valid_symbols = {_frame_symbol(frame) for frame in required}
+    valid_symbols.update(
+        _frame_symbol(member) for group in alternatives for member in group
+    )
     order = [
         [str(pair[0]).strip(), str(pair[1]).strip()]
         for pair in data.get("required_frame_order") or []
-        if len(pair) == 2 and str(pair[0]).strip() in valid and str(pair[1]).strip() in valid
+        if (
+            len(pair) == 2
+            and _frame_symbol(pair[0]) in valid_symbols
+            and _frame_symbol(pair[1]) in valid_symbols
+        )
     ]
     for pair in zip(exact, exact[1:]):
         pair_list = list(pair)
@@ -231,6 +293,8 @@ def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
             order.append(pair_list)
     data["required_frame_order"] = order
     return _model_validate(CallChainOracle, data)
+
+
 _UNRESOLVED_REPRODUCER_ARG_RE = re.compile(r"<[^>\r\n]+>")
 
 

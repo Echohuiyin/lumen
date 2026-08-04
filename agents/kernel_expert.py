@@ -1954,6 +1954,93 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
     )
 
 
+def _contract_frame_symbol(frame: object) -> str:
+    """Return a call-chain symbol name without offsets or source annotations."""
+    value = str(frame or "").strip()
+    value = re.sub(r"^\s*(?:pc|lr|rip)\s*:\s*", "", value, flags=re.IGNORECASE)
+    match = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)", value)
+    return match.group(1) if match else value
+
+
+def _inline_symbols_from_declared_logs(input_artifacts: dict) -> set[str]:
+    """Read only declared first-hand logs to preserve explicit inline frames."""
+    symbols: set[str] = set()
+    seen: set[str] = set()
+    for field in ("crash_report_path", "log_path"):
+        declared = str(input_artifacts.get(field, "") or "").strip()
+        if not declared:
+            continue
+        try:
+            path = Path(declared).expanduser().resolve()
+            key = str(path)
+            if key in seen or not path.is_file():
+                continue
+            seen.add(key)
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            lowered = line.lower()
+            if not (
+                "[inline]" in lowered
+                or "inlined into" in lowered
+                or "inline at" in lowered
+            ):
+                continue
+            body = re.sub(r"^\s*(?:pc|lr|rip)\s*:\s*", "", line, flags=re.IGNORECASE)
+            match = re.match(r"\s*([A-Za-z_][A-Za-z0-9_.]*)", body)
+            if match:
+                symbols.add(match.group(1))
+    return symbols
+
+
+def _preserve_inline_call_chain_annotations(
+    data: dict, input_artifacts: dict,
+) -> dict:
+    """Mark source-level inline frames before Test Expert builds its oracle.
+
+    Kernel reports may expand inline source frames while the guest console
+    prints only the concrete runtime symbols.  The model must retain that
+    distinction in the structured handoff; this enrichment is limited to
+    explicit [inline] evidence in the declared report/log.
+    """
+    inline_symbols = _inline_symbols_from_declared_logs(input_artifacts)
+    if not inline_symbols:
+        return data
+
+    def annotate(frame: object) -> str:
+        value = str(frame or "").strip()
+        if not value or _contract_frame_symbol(value) not in inline_symbols:
+            return value
+        if re.search(
+            r"\[\s*(?:static\s+)?inline\b|\binlined\s+into\b|\binline\s+at\b",
+            value,
+            flags=re.IGNORECASE,
+        ):
+            return value
+        return f"{value} [inline]"
+
+    data = dict(data)
+    data["original_call_chain"] = [
+        annotate(frame) for frame in data.get("original_call_chain") or []
+    ]
+    oracle = dict(data.get("call_chain_oracle") or {})
+    oracle["required_frames"] = [
+        annotate(frame) for frame in oracle.get("required_frames") or []
+    ]
+    oracle["required_frame_alternatives"] = [
+        [annotate(frame) for frame in group]
+        for group in oracle.get("required_frame_alternatives") or []
+    ]
+    oracle["required_frame_order"] = [
+        [annotate(pair[0]), annotate(pair[1])]
+        for pair in oracle.get("required_frame_order") or []
+        if isinstance(pair, (list, tuple)) and len(pair) == 2
+    ]
+    data["call_chain_oracle"] = oracle
+    return data
+
+
 def _enrich_kernel_contract_from_runtime(
     contract: KernelExpertOutput,
     *,
@@ -1967,7 +2054,9 @@ def _enrich_kernel_contract_from_runtime(
     it created.  Joining those two sources makes the handoff deterministic
     while keeping the no-fallback rule: a missing file remains missing.
     """
-    data = model_to_dict(contract)
+    data = _preserve_inline_call_chain_annotations(
+        model_to_dict(contract), input_artifacts,
+    )
     # Paths and architecture declared by the user are authoritative runtime
     # inputs.  A model must not redirect Test Expert to an old case image or
     # kernel merely by emitting a different existing path in its JSON.

@@ -90,9 +90,29 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "OCFS2 userspace fixture" in prompt
     assert "absence of a pre-mounted OCFS2 directory" in prompt
     assert "mkfs.ocfs2 -M local" in prompt
+    assert "source-only inline entries" in prompt
+    assert "allowed_wrapper_frames" in prompt
+    assert "must never be placed" in prompt
     assert "do not repeat them through interactive MCP" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
     assert '"source_files": ["diagnostic_test.c"]' in prompt
+
+def test_inline_report_annotations_are_preserved(tmp_path):
+    report = tmp_path / "report.txt"
+    report.write_text(
+        "Call trace:\n helper fs/example.c:10 [inline]\n caller+0x1/0x2\n",
+        encoding="utf-8",
+    )
+    data = model_to_dict(_contract(tmp_path))
+    data["original_call_chain"] = ["helper", "caller"]
+    data["call_chain_oracle"]["required_frames"] = ["helper", "caller"]
+    enriched = _enrich_kernel_contract_from_runtime(
+        KernelExpertOutput(**data),
+        input_artifacts={"crash_report_path": str(report)},
+        output_dir=tmp_path,
+    )
+    assert enriched.original_call_chain == ["helper [inline]", "caller"]
+    assert enriched.call_chain_oracle.required_frames == ["helper [inline]", "caller"]
 
 
 def test_codex_case_text_uses_maintenance_language():
