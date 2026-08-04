@@ -79,10 +79,21 @@ pthread or process workers, explicit barriers/joins, and safe descriptor
 ownership; do not introduce userspace undefined behavior or use generic load
 as a substitute for the source-verified race.
 
+For the J1939 TX-session case, verify the exact boolean branch before writing
+the CAN ID: `j1939_tp_cmd_recv()` calls
+`j1939_xtp_rx_abort(..., true)` only for
+`j1939_tp_im_transmitter(skcb)`, and `j1939_tp_send()` sets
+`session->transmission = true`. Thus a raw TP.CM ABORT intended to reach
+that session must have CAN-ID SA equal to the local bound address and the
+PDU1 destination equal to the peer address. SA=peer/DA=local selects the
+receiver lookup (`transmitter=false`) and is not a valid TX-session
+precondition. A source-level review must state this mapping explicitly.
+
 ## Userspace ABI layout audit
 
 - For every ioctl, derive the command number and payload layout from the exact target commit's UAPI definition or the exact in-tree userspace ABI header. Copy every field, including reserved, padding, compat, and trailing fields; never infer a struct from only the fields used by the kernel implementation.
 - In the generated C, assert the ABI size before issuing the operation (for example `_IOC_SIZE(command) == sizeof(payload)`) and record the command value/size in bounded diagnostic output. If the guest lacks the header, reproduce the exact layout locally from source, including all reserved fields, rather than silently using a shortened fallback.
+- When a netlink request is followed by `NLMSG_ERROR` acknowledgement parsing, set `NLM_F_ACK` in the request flags and treat an `EAGAIN` acknowledgement timeout as setup failure; do not proceed to the kernel trigger.
 - Treat `ENOTTY`, `_IOC_SIZE` mismatch, `EINVAL` caused by an ABI/layout mismatch, and an unaccepted command as a failed precondition. Do not claim that the target kernel function was reached, and do not broaden the oracle to accept the errno.
 - When Test Expert reports such a mismatch, repair the C payload/command definition first and state the evidence-backed ABI correction in `change_from_previous_tryout`; do not repeat an identical ioctl encoding.
 

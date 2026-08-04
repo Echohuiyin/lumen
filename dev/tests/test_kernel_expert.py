@@ -82,6 +82,9 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "j1939_session_get_by_addr(..., transmitter=true)" in prompt
     assert "reason (3)" in prompt
     assert "bounded userspace" in prompt
+    assert "j1939_tp_cmd_recv()" in prompt
+    assert "SA=peer/DA=local" in prompt
+    assert "NLM_F_ACK" in prompt
     assert "Userspace ABI layout audit" in prompt
     assert "reserved, padding, compat, and trailing fields" in prompt
     assert "_IOC_SIZE(command) == sizeof(payload)" in prompt
