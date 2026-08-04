@@ -291,7 +291,15 @@ def _stage_codex_evidence(
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from agents.contracts import CallChainOracle, KernelExpertOutput, RefcountPath, TestResultContract, UafAnalysisContract, model_to_dict
+from agents.contracts import (
+    CallChainOracle,
+    KernelExpertOutput,
+    PathAnalysisScope,
+    RefcountPath,
+    TestResultContract,
+    UafAnalysisContract,
+    model_to_dict,
+)
 from agents.error_handling import classify_error, error_to_evidence
 from agents.semcode_path_analysis import (
     SemcodeMcpClient,
@@ -873,6 +881,25 @@ def _materialize_semcode_evidence(
         if len(names) >= 32:
             break
     evidence_path = Path(output_dir) / "semcode-evidence.json"
+    # A retry in the same workflow session has the same exact source checkout
+    # and commit.  Reuse only a durable, status-ok adapter result whose
+    # identity matches both values; this is not a contract/source fallback and
+    # avoids re-indexing the same tree before every try-out.
+    try:
+        cached = json.loads(evidence_path.read_text(encoding="utf-8"))
+        cached_source = Path(str(cached.get("kernel_source") or "")).resolve()
+        requested_source = Path(str(source_path or "")).resolve()
+        if (
+            cached.get("status") == "ok"
+            and not cached.get("failures")
+            and cached.get("entries")
+            and str(cached.get("expected_kernel_commit") or "").strip().lower()
+            == str(expected_commit or "").strip().lower()
+            and cached_source == requested_source
+        ):
+            return str(evidence_path.resolve())
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
     entries: list[dict[str, str]] = []
     failures: list[dict[str, str]] = []
     if names and source_path and expected_commit and command:
@@ -1194,39 +1221,53 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         # evidence: on ARM64 Codex 0.146 it can hang after the result arrives.
         # A blocked/partial adapter result keeps the required MCP path intact.
         llm_agent_config["semcode_mcp"] = {"disabled": True}
-    llm = get_llm_with_config(
-        llm_agent_config,
-        default_config=default_config,
-        agent_name="kernel_expert",
-    )
     path_analysis_required = _requires_path_analysis(
         state.get("user_input", ""),
         "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
     )
     semcode_path_analysis: SemcodePathAnalysisResult | None = None
     if path_analysis_required:
-        semcode_config = agent_config.get("semcode_mcp") or {}
-        declared_entries = extract_semcode_entry_points(state.get("user_input", ""))
-        if declared_entries:
-            entry_points = declared_entries
-        else:
-            entry_evidence = [state.get("user_input", "")]
-            if original_log_text:
-                entry_evidence.append(original_log_text)
-            entry_points = extract_semcode_entry_points(
-                *entry_evidence,
-                expert_results=expert_results,
-            )
-        semcode_path_analysis = analyze_uaf_paths(
+        semcode_path_analysis = _restore_cached_semcode_path_analysis(
+            state.get("semcode_path_analysis"),
+            expected_commit=expected_kernel_commit,
             kernel_source_path=kernel_source_path,
-            semcode_source_path=semcode_source_path,
-            entry_points=entry_points,
-            expected_kernel_commit=expected_kernel_commit,
-            semcode_command=str(semcode_config.get("command", "")),
-            semcode_args=semcode_config.get("args", []) or [],
         )
+        if semcode_path_analysis is None:
+            semcode_config = agent_config.get("semcode_mcp") or {}
+            declared_entries = extract_semcode_entry_points(state.get("user_input", ""))
+            if declared_entries:
+                entry_points = declared_entries
+            else:
+                entry_evidence = [state.get("user_input", "")]
+                if original_log_text:
+                    entry_evidence.append(original_log_text)
+                entry_points = extract_semcode_entry_points(
+                    *entry_evidence,
+                    expert_results=expert_results,
+                )
+            semcode_path_analysis = analyze_uaf_paths(
+                kernel_source_path=kernel_source_path,
+                semcode_source_path=semcode_source_path,
+                entry_points=entry_points,
+                expected_kernel_commit=expected_kernel_commit,
+                semcode_command=str(semcode_config.get("command", "")),
+                semcode_args=semcode_config.get("args", []) or [],
+            )
         if semcode_path_analysis.status != "ok":
             return _blocked_semcode_path_analysis(semcode_path_analysis)
+
+        # The deterministic UAF path analysis has now queried the exact
+        # checkout and commit, including direct-call evidence.  Do not make
+        # Codex repeat those same MCP queries: on ARM64 this can leave the
+        # interactive client waiting on a second cold index indefinitely.
+        # Non-UAF cases retain the stricter complete-evidence gate above.
+        llm_agent_config["semcode_mcp"] = {"disabled": True}
+
+    llm = get_llm_with_config(
+        llm_agent_config,
+        default_config=default_config,
+        agent_name="kernel_expert",
+    )
 
     case_text = _codex_case_text(state.get("user_input", ""))
     user_content = (
@@ -1514,6 +1555,55 @@ def _blocked_semcode_path_analysis(result: SemcodePathAnalysisResult) -> dict:
         "kernel_contract": model_to_dict(contract),
         "final_response": reason,
     }
+
+
+def _restore_cached_semcode_path_analysis(
+    raw: object,
+    *,
+    expected_commit: str,
+    kernel_source_path: str,
+) -> SemcodePathAnalysisResult | None:
+    """Restore same-session exact-source P2 evidence for a retry.
+
+    A cache hit is accepted only when its serialized scope identifies the
+    same kernel commit and source checkout. Malformed, partial, or cross-case
+    data returns ``None`` and the normal exact query runs.
+    """
+    if not isinstance(raw, dict) or raw.get("status") != "ok":
+        return None
+    scope_data = raw.get("scope")
+    analysis_data = raw.get("analysis")
+    if not isinstance(scope_data, dict) or not isinstance(analysis_data, dict):
+        return None
+    try:
+        scope = PathAnalysisScope(**scope_data)
+        if scope.kernel_commit.strip().lower() != str(expected_commit or "").strip().lower():
+            return None
+        expected_source = Path(str(kernel_source_path or "")).resolve()
+        roots = {
+            Path(str(domain.get("root") or "")).resolve()
+            for domain in scope.source_domains
+            if isinstance(domain, dict) and str(domain.get("root") or "").strip()
+        }
+        if roots and expected_source not in roots:
+            return None
+        analysis = UafAnalysisContract(**analysis_data)
+    except (OSError, TypeError, ValueError):
+        return None
+    evidence = list(raw.get("evidence") or [])
+    evidence.append({
+        "kind": "semcode_path_analysis_cache",
+        "status": "reused_same_session_exact_source",
+        "kernel_commit": scope.kernel_commit,
+        "kernel_source": str(expected_source),
+    })
+    return SemcodePathAnalysisResult(
+        status="ok",
+        analysis=analysis,
+        scope=scope,
+        evidence=evidence,
+        blocked_reason="",
+    )
 
 
 def _blocked_source_verification(result: dict) -> dict:

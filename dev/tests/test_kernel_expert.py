@@ -17,6 +17,7 @@ from agents.kernel_expert import (
     _pin_semcode_mcp_to_source,
     _materialize_primary_log,
     _materialize_semcode_evidence,
+    _restore_cached_semcode_path_analysis,
     _semcode_evidence_is_complete,
     _resolve_primary_log_path,
     _read_primary_log_text,
@@ -461,6 +462,75 @@ def test_semcode_evidence_retries_cold_index(tmp_path, monkeypatch):
     assert FakeClient.calls == 2
     assert data["status"] == "ok"
     assert not data["failures"]
+
+
+def test_semcode_path_analysis_cache_requires_exact_commit_and_source(tmp_path):
+    source = tmp_path / "linux"
+    source.mkdir()
+    commit = "b" * 40
+    raw = {
+        "status": "ok",
+        "scope": {
+            "kernel_commit": commit,
+            "source_domains": [{"kind": "kernel", "root": str(source)}],
+        },
+        "analysis": {"case_id": "same-session-case"},
+        "evidence": [],
+    }
+
+    restored = _restore_cached_semcode_path_analysis(
+        raw,
+        expected_commit=commit,
+        kernel_source_path=str(source),
+    )
+    assert restored is not None
+    assert restored.analysis.case_id == "same-session-case"
+    assert restored.evidence[-1]["status"] == "reused_same_session_exact_source"
+
+    assert _restore_cached_semcode_path_analysis(
+        raw,
+        expected_commit="c" * 40,
+        kernel_source_path=str(source),
+    ) is None
+    other_source = tmp_path / "other-linux"
+    other_source.mkdir()
+    assert _restore_cached_semcode_path_analysis(
+        raw,
+        expected_commit=commit,
+        kernel_source_path=str(other_source),
+    ) is None
+
+
+def test_semcode_evidence_reuses_exact_cached_identity(tmp_path, monkeypatch):
+    output = tmp_path / "session"
+    output.mkdir()
+    source = tmp_path / "linux"
+    source.mkdir()
+    commit = "d" * 40
+    evidence_path = output / "semcode-evidence.json"
+    evidence_path.write_text(json.dumps({
+        "status": "ok",
+        "kernel_source": str(source.resolve()),
+        "expected_kernel_commit": commit,
+        "entries": [{"function": "target", "result": "cached"}],
+        "failures": [],
+    }), encoding="utf-8")
+
+    class UnexpectedClient:
+        def __init__(self, **_kwargs):
+            raise AssertionError("valid exact evidence must be reused")
+
+    monkeypatch.setattr("agents.kernel_expert.SemcodeMcpClient", UnexpectedClient)
+    path = _materialize_semcode_evidence(
+        output,
+        source_path=str(source),
+        expected_commit=commit,
+        command="semcode-mcp",
+        args=[],
+        evidence_text="RIP: target+0x10/0x20",
+    )
+    assert Path(path) == evidence_path.resolve()
+    assert json.loads(evidence_path.read_text(encoding="utf-8"))["entries"][0]["result"] == "cached"
 
 
 def test_declared_qemu_cmdline_is_preserved_when_model_has_other_recipe(tmp_path):
