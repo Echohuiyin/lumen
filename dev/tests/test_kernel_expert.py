@@ -25,6 +25,7 @@ from agents.kernel_expert import (
     _static_check_userspace_reproducer,
     _sync_codex_artifacts,
     _validate_kernel_contract_artifacts,
+    _kernel_expert_contract_is_terminal,
 )
 
 
@@ -166,6 +167,17 @@ def test_structured_kernel_contract_round_trips_without_module_build():
         assert validated.status == "ok"
         assert _kernel_contract_ready_for_test(validated)
         assert validated.reproducer.output_binary == "lumen-repro"
+
+
+def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
+    blocked = KernelExpertOutput(
+        status="blocked", blocked_reason="guest lacks the required MTD master",
+    )
+    empty_block = KernelExpertOutput(status="blocked")
+    degraded = KernelExpertOutput(status="degraded", blocked_reason="incomplete")
+    assert _kernel_expert_contract_is_terminal(blocked) is True
+    assert _kernel_expert_contract_is_terminal(empty_block) is False
+    assert _kernel_expert_contract_is_terminal(degraded) is False
 
 
 def test_required_top_frames_round_trip_and_compatibility_alias(tmp_path):

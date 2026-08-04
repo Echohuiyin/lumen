@@ -528,6 +528,28 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
     return "\n".join(parts)
 
 
+def _kernel_expert_contract_is_terminal(contract: KernelExpertOutput | None) -> bool:
+    """Return whether the model supplied a complete handoff or terminal block.
+
+    A structured ``blocked`` contract with an explicit reason is a valid
+    outcome: retrying the same source/image cannot create a missing guest
+    capability or source prerequisite.  Empty/degraded responses still need
+    the existing single repair turn.
+    """
+    if contract is None:
+        return False
+    if contract.status == "blocked":
+        return bool(str(contract.blocked_reason or "").strip())
+    return bool(
+        contract.status not in {"degraded", "blocked"}
+        and contract.root_cause
+        and (
+            contract.call_chain_oracle.required_top_frames
+            or contract.call_chain_oracle.required_frames
+        )
+    )
+
+
 def _run_kernel_expert_with_agent_loop(
     llm,
     system_prompt: str,
@@ -629,15 +651,7 @@ def _run_kernel_expert_with_agent_loop(
         # trigger a second expensive Codex run even when the contract was
         # complete and only the heading punctuation differed.
         parsed_contract = _extract_kernel_contract(output_content) if output_content.strip() else None
-        has_structured_contract = bool(
-            parsed_contract is not None
-            and parsed_contract.status not in {"degraded", "blocked"}
-            and parsed_contract.root_cause
-            and (
-                parsed_contract.call_chain_oracle.required_top_frames
-                or parsed_contract.call_chain_oracle.required_frames
-            )
-        )
+        has_structured_contract = _kernel_expert_contract_is_terminal(parsed_contract)
         if not output_content.strip() or not has_structured_contract:
             retry_messages = messages + [HumanMessage(content=(
                 "当前最终输出缺少可解析的 KERNEL_CONTRACT。请在本次 loop 内补交完整结构化 JSON，"
