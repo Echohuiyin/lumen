@@ -7,6 +7,8 @@
 
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -88,6 +90,151 @@ def _check_file_exists(path: str | None) -> bool:
         return False
     resolved = _resolve_file_path(path, try_suffixes=[".elf"])
     return os.path.exists(resolved)
+
+
+_MEMORY_FAULT_MARKERS = (
+    "unable to handle kernel null pointer",
+    "null pointer dereference",
+    "paging request",
+    "general protection fault",
+    "invalid memory",
+    "invalid address",
+    "bad address",
+    "data abort",
+    "translation fault",
+    "kasan:",
+    "use-after-free",
+    "slab-out-of-bounds",
+    "out-of-bounds",
+    "wild-memory-access",
+)
+
+
+def _memory_fault_requires_disassembly(log_text: str) -> bool:
+    """Return whether the log contains a fault where instruction evidence helps.
+
+    This is deliberately a permissive signal.  It only decides whether to try
+    optional objdump evidence; it never changes the expert's status or blocks
+    text/log analysis.
+    """
+    lowered = (log_text or "").lower()
+    return any(marker in lowered for marker in _MEMORY_FAULT_MARKERS)
+
+
+def _extract_disassembly_targets(log_text: str, *, limit: int = 6) -> list[str]:
+    """Extract symbol names mentioned at crash PC/RIP/LR and nearby frames."""
+    if not log_text:
+        return []
+    patterns = (
+        # Linux crash reports commonly use ``PC is at foo+0x...`` or
+        # ``RIP: ... foo+0x...``.
+        r"\b(?:pc|rip|lr|ip)\b\s*(?:is\s+at\s*)?(?:[:=]\s*)?(?:[<\[(])?"
+        r"([A-Za-z_][A-Za-z0-9_.$]*)",
+        # Call-trace frames are useful when the faulting symbol is printed
+        # without an explicit PC/RIP label.
+        r"<([A-Za-z_][A-Za-z0-9_.$]*)\+0x[0-9a-fA-F]+(?:/0x[0-9a-fA-F]+)?>",
+        r"\b([A-Za-z_][A-Za-z0-9_.$]*)\+0x[0-9a-fA-F]+(?:/0x[0-9a-fA-F]+)?",
+    )
+    targets: list[str] = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, log_text, re.IGNORECASE):
+            symbol = match.group(1).strip("<>()[]")
+            if symbol and symbol not in targets:
+                targets.append(symbol)
+                if len(targets) >= limit:
+                    return targets
+    return targets
+
+
+def _extract_register_hints(log_text: str, *, limit: int = 24) -> dict[str, str]:
+    """Collect register values printed around a crash site."""
+    if not log_text:
+        return {}
+    hints: dict[str, str] = {}
+    # Keep this intentionally limited to register-like names so unrelated
+    # hexadecimal values in timestamps/addresses do not become evidence.
+    pattern = re.compile(
+        r"\b(pc|rip|lr|sp|fp|cr2|far|esr|x(?:[0-9]|[12][0-9]|30)|r(?:[0-9]|1[0-5]))\b"
+        r"\s*(?:is\s*)?(?:[:=])\s*(0x[0-9a-fA-F]+|[0-9a-fA-F]{4,})",
+        re.IGNORECASE,
+    )
+    for match in pattern.finditer(log_text):
+        name = match.group(1).lower()
+        if name not in hints:
+            hints[name] = match.group(2)
+        if len(hints) >= limit:
+            break
+    return hints
+
+
+def _disassemble_vmlinux(vmlinux_path: str | None, log_text: str) -> dict | None:
+    """Best-effort objdump evidence for memory faults.
+
+    The helper is intentionally optional: missing/unreadable files, tools,
+    symbols, or an objdump failure simply result in no additional evidence.
+    The normal log and source analysis path continues unchanged.
+    """
+    if not _memory_fault_requires_disassembly(log_text):
+        return None
+    resolved = _resolve_file_path(vmlinux_path) if vmlinux_path else None
+    if not resolved or not os.path.isfile(resolved) or not os.access(resolved, os.R_OK):
+        return None
+
+    configured_tool = os.environ.get("LUMEN_OBJDUMP", "").strip()
+    tool = configured_tool or next(
+        (
+            candidate
+            for name in ("aarch64-linux-gnu-objdump", "llvm-objdump", "objdump")
+            if (candidate := shutil.which(name))
+        ),
+        None,
+    )
+    targets = _extract_disassembly_targets(log_text)
+    register_hints = _extract_register_hints(log_text)
+    if not tool or not targets:
+        return None
+
+    try:
+        timeout = max(1, int(os.environ.get("LUMEN_OBJDUMP_TIMEOUT_SEC", "15")))
+    except ValueError:
+        timeout = 15
+
+    outputs: list[str] = []
+    errors: list[str] = []
+    successful_targets: list[str] = []
+    for target in targets:
+        command = [tool, "-d", "--line-numbers", f"--disassemble={target}", resolved]
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"{target}: {exc}")
+            continue
+        output = (result.stdout or "").strip()
+        if result.returncode == 0 and output:
+            successful_targets.append(target)
+            outputs.append(f"### {target}\n{output[:8000]}")
+        elif result.stderr:
+            errors.append(f"{target}: {result.stderr.strip()[:500]}")
+
+    if not outputs and not errors:
+        return None
+    return {
+        "kind": "vmlinux_disassembly",
+        "status": "ok" if outputs else "unavailable",
+        "vmlinux": resolved,
+        "tool": tool,
+        "targets": successful_targets or targets,
+        "register_hints": register_hints,
+        "output": "\n\n".join(outputs)[:24000],
+        "errors": errors,
+    }
 
 
 def _read_declared_text_artifact(
@@ -862,6 +1009,9 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
                     "output": log_content,
                 })]
                 evidence.extend(_parse_log_evidence(log_content))
+                disassembly = _disassemble_vmlinux(vmlinux_path, log_content)
+                if disassembly:
+                    evidence.append(disassembly)
 
                 # Build context with extracted log.
                 # Override system prompt — the prompt file describes MCP-based
@@ -878,9 +1028,26 @@ Your task:
 3. Match log entries to the reported hung task problem
 4. Identify which processes are mentioned, what they were doing
 5. Provide a data-driven analysis citing specific log lines
+6. If optional vmlinux instruction evidence is included, correlate the crash
+   PC/offset and registers with the actual load/store instruction. Never invent
+   disassembly or register values; treat the evidence as supplemental to the
+   normal log analysis.
 
 OUTPUT: Direct analysis of the log content. Reference specific timestamps,
 process names, and error messages from the log."""
+
+                disassembly_context = ""
+                if disassembly:
+                    disassembly_context = f"""
+## Optional vmlinux instruction evidence
+The following deterministic objdump output is supplemental evidence. Correlate
+the crash PC/offset and register values with the load/store instruction; do not
+infer instructions or register values that are not present.
+```
+{disassembly.get('output', '')[:12000]}
+```
+Register hints: {disassembly.get('register_hints', {})}
+"""
 
                 context_info = f"""Kernel log extracted from vmcore:
 
@@ -889,7 +1056,8 @@ process names, and error messages from the log."""
 {log_content[:8000]}
 ```
 
-Analyze the kernel log above, extracting key error information, anomaly patterns, and timing relationships."""
+Analyze the kernel log above, extracting key error information, anomaly patterns, and timing relationships.
+{disassembly_context}"""
 
                 messages = [
                     SystemMessage(content=log_analysis_prompt),
@@ -911,6 +1079,7 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                             "vmlinux_path": vmlinux_path or "",
                             "output_file": str(output_file),
                             "raw_log_file": str(raw_log_file),
+                            "disassembly": bool(disassembly),
                         },
                     )],
                 }
@@ -957,6 +1126,24 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
             if supplied_log:
                 user_content += f"\n\nFIRST_HAND_LOG:\n```\n{supplied_log}\n```"
 
+            disassembly_input = "\n".join(
+                item for item in (user_input, supplied_report, supplied_log) if item
+            )
+            disassembly = _disassemble_vmlinux(vmlinux_path, disassembly_input)
+            if disassembly:
+                evidence.append(disassembly)
+                user_content += f"""
+
+OPTIONAL_VMLINUX_INSTRUCTION_EVIDENCE:
+Use this deterministic objdump output as supplemental evidence. Correlate the
+faulting PC/offset and register values with the actual load/store instruction;
+do not invent missing instructions or register values.
+```
+{disassembly.get('output', '')[:12000]}
+```
+Register hints: {disassembly.get('register_hints', {})}
+"""
+
             response = call_llm_with_display(
                 expert_name, "分析中", llm,
                 [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
@@ -971,6 +1158,10 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                     analysis_output=response.content.strip(),
                     status="degraded",
                     evidence=evidence,
+                    artifacts={
+                        "vmlinux_path": vmlinux_path or "",
+                        "disassembly": bool(disassembly),
+                    },
                 )],
             }
 

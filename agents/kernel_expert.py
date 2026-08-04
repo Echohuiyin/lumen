@@ -297,6 +297,7 @@ from agents.semcode_path_analysis import (
     SemcodeMcpClient,
     SemcodePathAnalysisResult,
     analyze_uaf_paths,
+    configured_semcode_timeout_sec,
     extract_semcode_entry_points,
     render_semcode_analysis_context,
     resolve_kernel_commit,
@@ -881,7 +882,7 @@ def _materialize_semcode_evidence(
                 args=args,
                 kernel_source_path=semcode_source_path or source_path,
                 git_sha=expected_commit,
-                timeout_sec=120,
+                timeout_sec=configured_semcode_timeout_sec(),
             )
             batch_call = getattr(client, "_call_many", None)
             if callable(batch_call):

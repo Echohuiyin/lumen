@@ -78,6 +78,16 @@ _GIT_AWARE_TOOLS = {
 }
 
 
+def configured_semcode_timeout_sec(default: int = 300) -> int:
+    """Return the bounded Semcode query timeout from deployment environment."""
+    raw = os.environ.get("LUMEN_SEMCODE_TIMEOUT_SEC", "").strip()
+    try:
+        value = int(raw) if raw else int(default)
+    except (TypeError, ValueError):
+        value = int(default)
+    return max(30, value)
+
+
 class SemcodePathAnalysisError(RuntimeError):
     """A semcode dependency/protocol failure that must block P2 analysis."""
 
@@ -336,13 +346,15 @@ class SemcodeMcpClient:
         args: Iterable[str],
         kernel_source_path: str,
         git_sha: str = "",
-        timeout_sec: int = 120,
+        timeout_sec: int | None = None,
     ) -> None:
         self.command = command
         self.args = tuple(args)
         self.kernel_source_path = kernel_source_path
         self.git_sha = git_sha.strip()
-        self.timeout_sec = timeout_sec
+        self.timeout_sec = (
+            configured_semcode_timeout_sec() if timeout_sec is None else max(int(timeout_sec), 1)
+        )
 
     def find_function(self, name: str) -> SemcodeFunction:
         function_text = self._call("find_function", {"name": name})

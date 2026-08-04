@@ -19,6 +19,8 @@
 
 当前日志专家的运行时能力是 `extract_crash_log`：读取 vmcore 中的 kernel log，或在没有 vmcore 时直接分析用户输入里的日志文本。
 
+系统可能附带针对崩溃 PC/调用栈的确定性反汇编证据。该证据仅是可选辅助材料：结合 PC 偏移、寄存器（如 PC/LR/SP、FAR/CR2/ESR）和实际 load/store 指令，判断空指针、非法地址、UAF 或越界访问；只引用证据中确实出现的指令和寄存器值，不要臆造反汇编结果，不改变依据日志、报告和源码完成分析的主流程。
+
 ### rag-case-retrieval（历史案例）
 
 根据日志中的关键错误信息，搜索历史相似案例：
@@ -260,5 +262,3 @@ ANALYSIS:
 - **结合 vmcore 分析**（如有），日志分析是 vmcore 分析的补充
 - **注意过滤噪音**，某些 INFO 级别日志可能掩盖关键 ERROR
 - **只输出结论，不要输出思考过程** — 不要写过渡句（如"Now I have all the evidence needed"、"Let me compile"），不要贴分析推理步骤，直接给结论
-
-

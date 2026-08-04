@@ -22,6 +22,7 @@ from agents.semcode_path_analysis import (
     resolve_kernel_source_for_commit,
     verify_semcode_target,
     analyze_uaf_paths,
+    configured_semcode_timeout_sec,
     extract_semcode_entry_points,
     render_semcode_analysis_context,
     _without_database_args,
@@ -138,6 +139,13 @@ for line in sys.stdin:
     assert function.name == "foo_ioctl"
     assert function.location == "drivers/foo.c:42"
     assert function.direct_calls == ("foo_access",)
+
+
+def test_semcode_timeout_is_deployment_configurable(monkeypatch):
+    monkeypatch.setenv("LUMEN_SEMCODE_TIMEOUT_SEC", "480")
+    assert configured_semcode_timeout_sec() == 480
+    monkeypatch.setenv("LUMEN_SEMCODE_TIMEOUT_SEC", "bad")
+    assert configured_semcode_timeout_sec() == 300
 
 
 def test_semcode_client_keeps_parseable_functions_when_wrapper_is_missing(tmp_path):
