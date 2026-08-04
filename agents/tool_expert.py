@@ -1079,7 +1079,11 @@ Analyze the kernel log above, extracting key error information, anomaly patterns
                             "vmlinux_path": vmlinux_path or "",
                             "output_file": str(output_file),
                             "raw_log_file": str(raw_log_file),
-                            "disassembly": bool(disassembly),
+                            # ToolExpertOutput.artifacts is a string-valued
+                            # contract. Keep the optional-evidence marker
+                            # machine-readable without leaking a Python bool
+                            # into Pydantic's strict string field.
+                            "disassembly": "true" if disassembly else "false",
                         },
                     )],
                 }
@@ -1160,7 +1164,10 @@ Register hints: {disassembly.get('register_hints', {})}
                     evidence=evidence,
                     artifacts={
                         "vmlinux_path": vmlinux_path or "",
-                        "disassembly": bool(disassembly),
+                        # ToolExpertOutput.artifacts is a string-valued
+                        # contract; serialize the optional-evidence marker
+                        # instead of passing a bool that fails validation.
+                        "disassembly": "true" if disassembly else "false",
                     },
                 )],
             }
