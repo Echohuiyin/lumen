@@ -291,7 +291,7 @@ def _stage_codex_evidence(
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
-from agents.contracts import KernelExpertOutput, RefcountPath, TestResultContract, UafAnalysisContract, model_to_dict
+from agents.contracts import CallChainOracle, KernelExpertOutput, RefcountPath, TestResultContract, UafAnalysisContract, model_to_dict
 from agents.error_handling import classify_error, error_to_evidence
 from agents.semcode_path_analysis import (
     SemcodeMcpClient,
@@ -633,7 +633,10 @@ def _run_kernel_expert_with_agent_loop(
             parsed_contract is not None
             and parsed_contract.status not in {"degraded", "blocked"}
             and parsed_contract.root_cause
-            and parsed_contract.call_chain_oracle.required_frames
+            and (
+                parsed_contract.call_chain_oracle.required_top_frames
+                or parsed_contract.call_chain_oracle.required_frames
+            )
         )
         if not output_content.strip() or not has_structured_contract:
             retry_messages = messages + [HumanMessage(content=(
@@ -2025,6 +2028,9 @@ def _preserve_inline_call_chain_annotations(
         annotate(frame) for frame in data.get("original_call_chain") or []
     ]
     oracle = dict(data.get("call_chain_oracle") or {})
+    oracle["required_top_frames"] = [
+        annotate(frame) for frame in oracle.get("required_top_frames") or []
+    ]
     oracle["required_frames"] = [
         annotate(frame) for frame in oracle.get("required_frames") or []
     ]
@@ -2168,7 +2174,10 @@ def _kernel_contract_has_handoff(contract: KernelExpertOutput) -> bool:
         and contract.reproducer.source_files
         and contract.reproducer.entry_source
         and contract.call_chain_oracle.fault_signatures
-        and contract.call_chain_oracle.required_frames
+        and (
+            contract.call_chain_oracle.required_top_frames
+            or contract.call_chain_oracle.required_frames
+        )
     )
 
 
@@ -2521,7 +2530,16 @@ def _validate_kernel_contract_artifacts(
                     errors.append(f"reproducer source does not exist: {source_file}")
     if reproducer.entry_source not in reproducer.source_files:
         errors.append("reproducer.entry_source must be included in source_files")
-    oracle = contract.call_chain_oracle
+    oracle_data = dict(data.get("call_chain_oracle") or {})
+    if (
+        not oracle_data.get("required_frames")
+        and oracle_data.get("required_top_frames")
+    ):
+        # Keep old consumers compatible while making the bounded core chain
+        # the single runtime requirement.
+        oracle_data["required_frames"] = list(oracle_data["required_top_frames"])
+        data["call_chain_oracle"] = oracle_data
+    oracle = _model_validate(CallChainOracle, oracle_data)
     if not oracle.fault_signatures:
         errors.append("missing call_chain_oracle.fault_signatures")
     elif not contract.expected_signal:

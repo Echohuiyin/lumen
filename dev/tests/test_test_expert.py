@@ -135,6 +135,24 @@ def test_architecture_wrappers_are_context_only(tmp_path):
     assert "__arm64_sys_ioctl" in oracle.allowed_wrapper_frames
     assert "el0t_64_sync" in oracle.allowed_wrapper_frames
 
+
+def test_required_top_frames_bound_runtime_oracle(tmp_path):
+    contract = _contract(tmp_path)
+    contract.original_call_chain = ["fault", "caller", "context_sensitive_lower"]
+    contract.call_chain_oracle.required_top_frames = ["fault", "caller"]
+    contract.call_chain_oracle.required_frames = list(contract.original_call_chain)
+    oracle = _strict_call_chain_oracle(contract)
+    assert oracle.required_top_frames == ["fault", "caller"]
+    assert oracle.required_frames == ["fault", "caller"]
+
+
+def test_legacy_required_frames_use_only_bounded_prefix(tmp_path):
+    contract = _contract(tmp_path)
+    contract.original_call_chain = ["fault", "caller", "context_sensitive_lower", "syscall_wrapper"]
+    contract.call_chain_oracle.required_frames = list(contract.original_call_chain)
+    oracle = _strict_call_chain_oracle(contract)
+    assert oracle.required_frames == ["fault", "caller", "context_sensitive_lower"]
+
 def test_qemu_runtime_root_is_configurable(tmp_path, monkeypatch):
     scratch = tmp_path / "scratch"
     session = tmp_path / "session-id"

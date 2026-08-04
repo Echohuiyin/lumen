@@ -135,9 +135,20 @@ class ExecutionStep(BaseModel):
 
 
 class CallChainOracle(BaseModel):
-    """Evidence-backed criteria for matching a maintenance incident call chain."""
+    """Evidence-backed criteria for matching a maintenance incident call chain.
+
+    ``original_call_chain`` lives on the surrounding contract as complete
+    first-hand evidence. ``required_top_frames`` is the bounded runtime gate;
+    lower callers can vary with the userspace trigger and scheduler context.
+    ``required_frames`` remains an additive/legacy alias populated with the
+    same core frames for older consumers.
+    """
 
     fault_signatures: list[str] = Field(default_factory=list)
+    required_top_frames: list[str] = Field(default_factory=list)
+    # Core fault-site frames are required for the verdict. The complete
+    # original_call_chain remains audit evidence; lower callers may vary
+    # with the userspace trigger and execution context.
     required_frames: list[str] = Field(default_factory=list)
     # Mutually exclusive evidence-backed frames for one call-chain position.
     # A group is satisfied when at least one member is present; members must

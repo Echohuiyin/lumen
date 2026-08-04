@@ -227,30 +227,30 @@ def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
         if not _is_inline_source_annotation(frame)
         and _frame_symbol(frame) not in allowed_symbols
     ]
-    exact: list[str] = []
-    exact_symbols: set[str] = set()
-    for frame in original:
-        symbol = _frame_symbol(frame)
-        if symbol not in exact_symbols:
-            exact.append(frame)
-            exact_symbols.add(symbol)
+    requested_top = [
+        str(frame).strip()
+        for frame in data.get("required_top_frames") or []
+        if str(frame).strip()
+        and not _is_inline_source_annotation(frame)
+        and _frame_symbol(frame) not in allowed_symbols
+    ]
+    requested_symbols = {_frame_symbol(frame) for frame in requested_top}
+    if requested_symbols:
+        by_symbol = {_frame_symbol(frame): frame for frame in original}
+        # Preserve the order declared by the Kernel Expert, not set order.
+        exact = [
+            by_symbol[_frame_symbol(frame)] for frame in requested_top
+            if _frame_symbol(frame) in by_symbol
+        ]
+    else:
+        # Legacy contracts have only the complete chain. Require the first
+        # three concrete fault-site/caller frames and allow lower context to vary.
+        exact = original[:3]
+    exact_symbols = {_frame_symbol(frame) for frame in exact}
 
-    configured_required: list[str] = []
-    configured_symbols: set[str] = set()
-    for raw_frame in data.get("required_frames") or []:
-        frame = str(raw_frame).strip()
-        symbol = _frame_symbol(frame)
-        if (
-            not frame
-            or _is_inline_source_annotation(frame)
-            or symbol in allowed_symbols
-            or symbol in exact_symbols
-            or symbol in configured_symbols
-        ):
-            continue
-        configured_required.append(frame)
-        configured_symbols.add(symbol)
-    required = [*exact, *configured_required]
+    # Only the declared/derived top frames are mandatory. Lower frames in
+    # required_frames are retained as audit input but are context-sensitive.
+    required = list(exact)
     alternatives: list[list[str]] = []
     for group in data.get("required_frame_alternatives") or []:
         members: list[str] = []
@@ -269,8 +269,14 @@ def _strict_call_chain_oracle(contract: KernelExpertOutput) -> CallChainOracle:
             members.append(frame)
             member_symbols.add(symbol)
         if members:
+            members = [
+                member for member in members
+                if _frame_symbol(member) in exact_symbols
+            ]
+        if members:
             alternatives.append(members)
     data["required_frames"] = required
+    data["required_top_frames"] = required
     data["required_frame_alternatives"] = alternatives
     data["allowed_wrapper_frames"] = sorted(allowed)
 

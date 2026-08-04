@@ -285,9 +285,10 @@ def test_call_chain_accepts_leaf_to_caller_stack_orientation(tmp_path):
     assert match["frame_order_direction"] == "reverse"
 
 
-def test_original_log_chain_cannot_be_shortened(tmp_path):
+def test_lower_original_chain_frames_are_audit_only(tmp_path):
     plan = _plan(tmp_path)
     plan.original_call_chain = ["strlen", "audit_log", "smack_log", "smk_access"]
+    plan.call_chain_oracle.required_top_frames = ["smk_access"]
     plan.call_chain_oracle.required_frames = ["smk_access"]
     content = "\n".join([
         "LUMEN_REPRO_START:case:path",
@@ -295,10 +296,26 @@ def test_original_log_chain_cannot_be_shortened(tmp_path):
         "[   1.1]  smk_access+0x1/0x2",
     ])
     match = _check_call_chain_match(content, plan)
-    assert "strlen" in match["missing_frames"]
-    assert "audit_log" in match["missing_frames"]
-    assert "smack_log" in match["missing_frames"]
-    assert match["frame_order_matched"] is False
+    assert match["missing_frames"] == []
+    assert match["required_frames_found"] == ["smk_access"]
+    assert match["frame_order_matched"] is True
+
+
+def test_required_top_frames_keep_core_order_but_ignore_lower_context(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "caller", "scheduler_context", "syscall_wrapper"]
+    plan.call_chain_oracle.required_top_frames = ["leaf", "caller"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "Call Trace:",
+        " leaf+0x1/0x2",
+        " caller+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["required_frames_found"] == ["leaf", "caller"]
+    assert match["frame_order_matched"] is True
 
 
 def test_call_chain_order_uses_trace_not_printk_or_question_mark_frames(tmp_path):
@@ -506,6 +523,7 @@ def test_call_chain_ignores_mixed_supplementary_order_edges(tmp_path):
 def test_call_chain_selects_complete_later_trace_block(tmp_path):
     plan = _plan(tmp_path)
     plan.original_call_chain = ["leaf", "caller"]
+    plan.call_chain_oracle.required_top_frames = ["leaf", "caller"]
     plan.call_chain_oracle.required_frames = ["caller"]
     content = "\n".join([
         "LUMEN_REPRO_START:case:path",

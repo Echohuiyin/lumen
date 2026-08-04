@@ -21,9 +21,14 @@ You must:
 7. Compare the post-start serial call chain with the original oracle.
 8. Return a structured attempt result and concise feedback for Kernel Expert when the chains differ.
 
-The original_call_chain from the Kernel Expert is the original-log fact
-source. In a real maintenance run, every non-wrapper frame in that sequence
-must be observed after the start marker and in the same relative order.
+The original_call_chain from the Kernel Expert is the complete original-log
+fact source and must be retained in the artifacts. Runtime consistency is
+bounded by call_chain_oracle.required_top_frames (with required_frames as a
+legacy alias): these are the faulting function and the next 2–3
+evidence-backed, non-inline, non-architecture-wrapper target callers. Every
+required core frame must be observed after the start marker and in the same
+relative order. Lower frames from original_call_chain are context-sensitive
+audit evidence and are not independently required.
 Generic KASAN, kasan_report, BUG, WARNING, or panic text can confirm
 the fault class but can never substitute for a missing function frame.
 The deterministic runner performs commands and captures artifacts. You provide the maintenance-domain semantic review. You may reject an apparent match as inconsistent; you may never convert a deterministic failure into success.
@@ -52,7 +57,7 @@ QEMU booted and SSH became ready
 AND guest C compilation succeeded
 AND LUMEN_REPRO_START was found
 AND the target signal occurred after START
-AND every required frame was found
+AND every required core/top frame was found
 AND required frame ordering matched
 AND target subsystem/object context matched
 AND the maintenance mechanism is semantically consistent with the supplied root cause

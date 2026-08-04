@@ -101,6 +101,8 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "mkfs.ocfs2 -M local" in prompt
     assert "source-only inline entries" in prompt
     assert "allowed_wrapper_frames" in prompt
+    assert "required_top_frames" in prompt
+    assert "context-sensitive" in prompt
     assert "must never be placed" in prompt
     assert "do not repeat them through interactive MCP" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
@@ -122,6 +124,21 @@ def test_inline_report_annotations_are_preserved(tmp_path):
     )
     assert enriched.original_call_chain == ["helper [inline]", "caller"]
     assert enriched.call_chain_oracle.required_frames == ["helper [inline]", "caller"]
+
+
+def test_inline_report_annotations_are_preserved_in_required_top_frames(tmp_path):
+    report = tmp_path / "report.txt"
+    report.write_text("Call trace:\n helper fs/example.c:10 [inline]\n", encoding="utf-8")
+    data = model_to_dict(_contract(tmp_path))
+    data["original_call_chain"] = ["helper", "caller"]
+    data["call_chain_oracle"]["required_top_frames"] = ["helper", "caller"]
+    data["call_chain_oracle"]["required_frames"] = ["helper", "caller"]
+    enriched = _enrich_kernel_contract_from_runtime(
+        KernelExpertOutput(**data),
+        input_artifacts={"crash_report_path": str(report)},
+        output_dir=tmp_path,
+    )
+    assert enriched.call_chain_oracle.required_top_frames == ["helper [inline]", "caller"]
 
 
 def test_codex_case_text_uses_maintenance_language():
@@ -147,6 +164,17 @@ def test_structured_kernel_contract_round_trips_without_module_build():
         assert validated.status == "ok"
         assert _kernel_contract_ready_for_test(validated)
         assert validated.reproducer.output_binary == "lumen-repro"
+
+
+def test_required_top_frames_round_trip_and_compatibility_alias(tmp_path):
+    with tempfile.TemporaryDirectory() as directory:
+        contract = _contract(Path(directory))
+        contract.call_chain_oracle.required_top_frames = ["fault", "caller"]
+        contract.call_chain_oracle.required_frames = ["fault", "caller"]
+        text = "KERNEL_CONTRACT:\n```json\n" + json.dumps(model_to_dict(contract)) + "\n```"
+        parsed = _extract_kernel_contract(text)
+        assert parsed.call_chain_oracle.required_top_frames == ["fault", "caller"]
+        assert parsed.call_chain_oracle.required_frames == ["fault", "caller"]
 
 
 def test_bare_json_contract_survives_marker_word_in_string():

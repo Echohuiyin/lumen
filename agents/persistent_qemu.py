@@ -760,9 +760,12 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         for wrapper in oracle.allowed_wrapper_frames
         if _canonical_frame(wrapper)
     }
-    original_chain = [
+    # ``original_call_chain`` is retained as complete first-hand evidence, but
+    # only the declared core/top frames are mandatory at runtime. Lower
+    # callers and entry/return context can vary with the userspace trigger.
+    required_chain = [
         _canonical_frame(frame)
-        for frame in plan.original_call_chain
+        for frame in (oracle.required_top_frames or oracle.required_frames)
         if _canonical_frame(frame) and _canonical_frame(frame) not in allowed_wrappers
     ]
     result = {
@@ -779,7 +782,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         ]
         alternative_members = {frame for group in alternatives for frame in group}
         result["missing_frames"] = [
-            frame for frame in oracle.required_frames
+            frame for frame in required_chain
             if frame not in alternative_members
         ] + [
             group[0] if len(group) == 1 else " or ".join(group)
@@ -803,54 +806,38 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         [_canonical_frame(frame) for frame in group if _canonical_frame(frame)]
         for group in oracle.required_frame_alternatives
     ]
-    if original_chain:
-        original_set = set(original_chain)
+    if required_chain:
+        required_set = set(required_chain)
         alternative_groups = [
             group for group in alternative_groups
-            if not any(frame in original_set for frame in group)
+            if any(frame in required_set for frame in group)
         ]
     alternative_members = {
         frame for group in alternative_groups for frame in group
     }
     required_groups: list[list[str]] = [
-        [_canonical_frame(frame)] for frame in oracle.required_frames
-        if _canonical_frame(frame) and _canonical_frame(frame) not in alternative_members
+        [frame] for frame in required_chain
+        if frame not in alternative_members
     ]
     required_groups.extend(alternative_groups)
-    if original_chain:
-        required_groups = (
-            [[frame] for frame in original_chain]
-            + [group for group in required_groups if group[0] not in original_set]
-        )
 
     order_frames = {
         frame
         for group in required_groups
         for frame in group
     }
-    order_frames.update(
-        _canonical_frame(frame)
-        for pair in oracle.required_frame_order
-        if len(pair) == 2
-        for frame in pair
-        if _canonical_frame(frame)
-    )
     pairs = [
         [_canonical_frame(pair[0]), _canonical_frame(pair[1])]
         for pair in oracle.required_frame_order
-        if len(pair) == 2 and _canonical_frame(pair[0]) and _canonical_frame(pair[1])
+        if len(pair) == 2
+        and _canonical_frame(pair[0]) in order_frames
+        and _canonical_frame(pair[1]) in order_frames
     ]
-    if original_chain:
-        exact_pairs = [list(pair) for pair in zip(original_chain, original_chain[1:])]
-        authoritative_positions = {
-            frame: index for index, frame in enumerate(original_chain)
-        }
-        # The original log is authoritative.  Once it supplies a complete
-        # chain, use only its exact adjacent edges for ordering.  Supplementary
-        # frames remain mandatory, but their LLM-authored order is intentionally
-        # ignored because it can be caller-to-leaf while the report is
-        # leaf-to-caller (or vice versa) and would contradict the evidence.
-        pairs = exact_pairs
+    if required_chain and not pairs:
+        # The declared core chain is authoritative for ordering. The complete
+        # original log chain remains available in the plan for audit, but its
+        # context-sensitive lower frames must not add runtime requirements.
+        pairs = [list(pair) for pair in zip(required_chain, required_chain[1:])]
 
     def _trace_windows() -> list[list[str]]:
         """Split the post-marker log into independent Call Trace blocks."""
@@ -939,7 +926,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         # Keep that line only when the evidence-backed original chain has no
         # non-question occurrence in this same stack.
         question_fallback_frames = {
-            frame for frame in original_chain
+            frame for frame in required_chain
             if not any(frame_seen(line, frame) for line in non_question_lines)
         }
         ordering_window = [
