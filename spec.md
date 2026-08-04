@@ -531,7 +531,7 @@ paths, server addresses, credentials, fixed case names, or fixed function
 lists. Resolve paths from the project root, environment variables, or an
 explicit deployment configuration; fail with an actionable diagnostic when a
 required value is not configured. Case fixtures may retain provenance paths,
- but runtime code must not depend on a particular user's home directory.
+but runtime code must not depend on a particular user's home directory.
 
 ## Root-cause-first evaluation gate
 
