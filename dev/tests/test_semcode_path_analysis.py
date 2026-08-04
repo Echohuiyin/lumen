@@ -145,7 +145,7 @@ def test_semcode_timeout_is_deployment_configurable(monkeypatch):
     monkeypatch.setenv("LUMEN_SEMCODE_TIMEOUT_SEC", "480")
     assert configured_semcode_timeout_sec() == 480
     monkeypatch.setenv("LUMEN_SEMCODE_TIMEOUT_SEC", "bad")
-    assert configured_semcode_timeout_sec() == 300
+    assert configured_semcode_timeout_sec() == 900
 
 
 def test_semcode_client_keeps_parseable_functions_when_wrapper_is_missing(tmp_path):

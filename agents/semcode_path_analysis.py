@@ -78,7 +78,7 @@ _GIT_AWARE_TOOLS = {
 }
 
 
-def configured_semcode_timeout_sec(default: int = 300) -> int:
+def configured_semcode_timeout_sec(default: int = 900) -> int:
     """Return the bounded Semcode query timeout from deployment environment."""
     raw = os.environ.get("LUMEN_SEMCODE_TIMEOUT_SEC", "").strip()
     try:
