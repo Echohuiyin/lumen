@@ -83,6 +83,9 @@ def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> di
     if reproducer is None or reproducer.language != "c" or reproducer.artifact_type != "userspace":
         return finish("skipped", "not a userspace C reproducer")
     source_dir = Path(os.path.expanduser(str(reproducer.source_dir or ""))).resolve()
+    operator_supplied = bool(getattr(reproducer, "operator_supplied", False))
+    if operator_supplied:
+        audit_lines.append("OPERATOR_SUPPLIED: true")
     audit_lines.append("SOURCE_DIR: " + str(source_dir))
     if not source_dir.is_dir():
         return finish("failed", f"source_dir does not exist: {source_dir}")
@@ -139,7 +142,8 @@ def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> di
             return finish("failed", f"invalid link library: {library!r}")
         libraries.append(library if library.startswith("-l") else f"-l{library}")
 
-    mandatory_flags = ["-std=gnu11", "-O2", *extra_args, "-Wall", "-Wextra", "-Werror"]
+    warning_flags = [] if operator_supplied else ["-Wall", "-Wextra", "-Werror"]
+    mandatory_flags = ["-std=gnu11", "-O2", *extra_args, *warning_flags]
     source_args = [str(path) for path in source_paths]
 
     def run_check(label: str, command: list[str], timeout: int = 90) -> bool:
@@ -179,6 +183,14 @@ def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> di
         link_command = [compiler, *mandatory_flags, *source_args, *libraries, "-o", linked_binary]
         if not run_check("LINK", link_command):
             return finish("failed", "link/ABI usage check failed; repair declarations, calls, or link_libraries")
+
+    if operator_supplied:
+        return finish(
+            "passed",
+            "operator-supplied Syzbot source passed relaxed syntax and link/ABI checks; "
+            "warning-clean/static semantic gates are not applicable to the immutable upstream artifact; "
+            "guest compile/run remains mandatory",
+        )
 
     try:
         version_probe = subprocess.run(
@@ -555,8 +567,8 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
 
     assets = _scan_test_assets_for_reproducers(test_assets_dir)
     if assets:
-        parts.append("\n## test_assets 中已有的用户态测试资产（仅作接口参考）")
-        parts.append("扫描到以下现有测试资产；先核对其 ABI 与调用序列，再按本案例契约生成新的用户态 C 程序：")
+        parts.append("\n## test_assets 中已有的用户态测试资产")
+        parts.append("扫描到以下现有测试资产；输入契约明确声明的 .c 源码必须只读复用，其余资产仅作 ABI/调用序列参考：")
         for f in assets:
             kind_label = {
                 "syzbot_repro_binary": "预编译用户态测试程序（由 Test Expert 在 guest 中编译/运行）",
@@ -609,6 +621,7 @@ def _run_kernel_expert_with_agent_loop(
     test_assets_dir: str = "",
     max_reproduction_rounds: int = 9,
     evidence_files: list[tuple[str, str]] | None = None,
+    input_artifacts: dict | None = None,
 ) -> AIMessage:
     """Execute kernel expert analysis via an agent-loop CLI backend.
 
@@ -672,6 +685,12 @@ def _run_kernel_expert_with_agent_loop(
         static_preflight = None
         parsed_preflight = _extract_kernel_contract(output_content) if output_content.strip() else None
         if parsed_preflight is not None and parsed_preflight.status == "ok":
+            if input_artifacts:
+                parsed_preflight = _enrich_kernel_contract_from_runtime(
+                    parsed_preflight,
+                    input_artifacts=input_artifacts,
+                    output_dir=session_output_dir,
+                )
             static_preflight = _static_check_userspace_reproducer(
                 parsed_preflight, session_output_dir,
             )
@@ -1288,6 +1307,12 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         # Preserve the operator-supplied userspace caller byte-for-byte.  It
         # is ABI evidence for the known module, not a module build input.
         evidence_files.append(("known-trigger.c", declared_trigger))
+    declared_reproducer = str(input_artifacts.get("reproducer_path", "") or "").strip()
+    if declared_reproducer and declared_reproducer.lower().endswith(".c"):
+        # This is the exact operator-declared userspace source.  Stage it as
+        # read-only evidence so the model can verify its ABI, while the
+        # runtime enrichment below remains the authority that executes it.
+        evidence_files.append(("operator-reproducer.c", declared_reproducer))
     declared_module = str(input_artifacts.get("reproducer_module_path", "") or "").strip()
     if declared_module:
         module_path = Path(os.path.expandvars(os.path.expanduser(declared_module))).resolve()
@@ -1495,6 +1520,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 "derive the C ABI call sequence from it and the first-hand log, then "
                 "write a separate diagnostic C source in the session output.\n"
             )
+    if declared_reproducer and declared_reproducer.lower().endswith(".c"):
+        user_content += (
+            "\n\n## Explicit operator-supplied Syzbot reproducer\n"
+            "The operator declared evidence/operator-reproducer.c as the exact upstream userspace "
+            "reproducer. Read it for ABI and lifecycle validation, but do not rewrite, simplify, "
+            "or substitute a generated trigger. The final contract may describe the root cause and "
+            "oracle, while the workflow will copy and compile this immutable source verbatim in the guest.\n"
+        )
     first_hand_log_hints = _extract_first_hand_log_hints(original_log_text)
     if first_hand_log_hints:
         user_content += (
@@ -1650,6 +1683,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             test_assets_dir=test_assets_dir,
             max_reproduction_rounds=max_reproduction_rounds,
             evidence_files=evidence_files,
+            input_artifacts=input_artifacts,
         )
     except RuntimeError as e:
         # CLI startup failure, timeout, or turn-budget exhaustion ends this
@@ -2596,6 +2630,83 @@ def _enrich_kernel_contract_from_runtime(
         if missing_tokens:
             recipe["extra_cmdline"] = " ".join([*existing_tokens, *missing_tokens])
             data["qemu_recipe"] = recipe
+
+    # A structured recipe in input.txt is an operator declaration, not a
+    # model suggestion.  Preserve every declared field so WSL-specific
+    # topology (for example smp=8 for the nested-KVM race) reaches the runner
+    # without a host-specific default or an implicit fallback.
+    declared_recipe = input_artifacts.get("qemu_recipe") or {}
+    if declared_recipe:
+        if not isinstance(declared_recipe, dict):
+            data["status"] = "blocked"
+            data["blocked_reason"] = "input qemu_recipe must be a JSON object"
+        else:
+            recipe = dict(data.get("qemu_recipe") or {})
+            recipe.update(declared_recipe)
+            data["qemu_recipe"] = recipe
+            evidence = list(data.get("evidence") or [])
+            evidence.append({
+                "kind": "declared_qemu_recipe",
+                "recipe": declared_recipe,
+                "authorization": "input_artifact",
+            })
+            data["evidence"] = evidence
+
+    # An explicitly declared userspace C source is authoritative.  Copy it
+    # byte-for-byte into the durable session and make Test Expert compile that
+    # source, rather than allowing the model to substitute a different
+    # trigger.  Missing/unsupported declarations are terminal blocks; there
+    # is intentionally no generated-source fallback.
+    declared_reproducer = str(input_artifacts.get("reproducer_path") or "").strip()
+    if declared_reproducer and not declared_reproducer.lower().endswith(".ko"):
+        source = Path(os.path.expandvars(os.path.expanduser(declared_reproducer))).resolve()
+        if source.suffix.lower() != ".c" or not source.is_file():
+            data["status"] = "blocked"
+            data["blocked_reason"] = (
+                "input reproducer_path must name an existing .c source when it is not a .ko: "
+                + declared_reproducer
+            )
+        else:
+            destination = output_dir / "operator-reproducer.c"
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            except OSError as exc:
+                data["status"] = "blocked"
+                data["blocked_reason"] = f"could not materialize declared reproducer: {exc}"
+            else:
+                repro = dict(data.get("reproducer") or {})
+                recipe = dict(data.get("qemu_recipe") or {})
+                try:
+                    declared_timeout = int(recipe.get("timeout_sec") or 0)
+                except (TypeError, ValueError):
+                    declared_timeout = 0
+                try:
+                    model_timeout = int(repro.get("runtime_timeout_sec") or 0)
+                except (TypeError, ValueError):
+                    model_timeout = 0
+                repro.update({
+                    "source_dir": str(output_dir.resolve()),
+                    "source_files": [destination.name],
+                    "entry_source": destination.name,
+                    "output_binary": "operator-repro",
+                    "compiler": "gcc",
+                    "compiler_args": ["-std=gnu11", "-O2", "-static"],
+                    "link_libraries": ["pthread"],
+                    "run_args": [],
+                    "runtime_timeout_sec": max(60, model_timeout, declared_timeout),
+                    "operator_supplied": True,
+                })
+                data["reproducer"] = repro
+                evidence = list(data.get("evidence") or [])
+                evidence.append({
+                    "kind": "declared_operator_reproducer",
+                    "path": str(source),
+                    "materialized_path": str(destination.resolve()),
+                    "authorization": "input_artifact",
+                    "mode": "read_only_reuse",
+                })
+                data["evidence"] = evidence
 
     repro = dict(data.get("reproducer") or {})
     source_dir = str(repro.get("source_dir") or "")

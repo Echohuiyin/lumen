@@ -289,6 +289,78 @@ def _persist_extracted_kernel_log(output_file: Path, content: str) -> Path:
     return log_file.resolve()
 
 
+def _run_declared_log_analysis(
+    *,
+    llm,
+    system_prompt: str,
+    user_input: str,
+    expert_type: str,
+    expert_name: str,
+    output_file: Path,
+    log_path: str,
+    log_content: str,
+    vmcore_path: str = "",
+    vmlinux_path: str = "",
+) -> ToolExpertResult:
+    """Analyze an operator-declared log without starting a crash session.
+
+    A complete first-hand log is sufficient for the log/crash experts' input
+    contract.  Starting ``crash`` against a multi-gigabyte vmcore in parallel
+    can exhaust WSL memory before the useful evidence is read, and can pair a
+    stale vmlinux with the current log.  The vmcore/vmlinux paths remain in the
+    structured artifacts for audit; this branch is intentionally not a
+    fallback to another log source.
+    """
+    evidence = _parse_log_evidence(log_content)
+    excerpt = log_content
+    if len(excerpt) > 28000:
+        excerpt = excerpt[:4000] + "\n...[middle omitted for prompt size]...\n" + excerpt[-24000:]
+    prompt = (
+        system_prompt
+        + "\n\nThe operator supplied the complete first-hand kernel log below. "
+        "Analyze this log directly; do not start crash or infer missing vmcore state. "
+        "The declared log path is authoritative and is retained in the evidence.\n"
+        + f"FIRST_HAND_LOG_PATH: {log_path}\n"
+        + "FIRST_HAND_LOG:\n```text\n"
+        + excerpt
+        + "\n```"
+    )
+    try:
+        response = call_llm_with_display(
+            expert_name,
+            "分析中 (declared first-hand log)",
+            llm,
+            [SystemMessage(content=prompt), HumanMessage(content=user_input)],
+            silent=True,
+            output_file=output_file,
+        )
+        analysis = response.content.strip()
+        status = "ok"
+        errors: list[str] = []
+    except Exception as exc:
+        analysis = f"declared first-hand log analysis failed: {exc}"
+        status = "failed"
+        errors = [str(exc)]
+    artifacts = {
+        "log_path": str(Path(log_path).resolve()),
+        "raw_log_file": str(Path(log_path).resolve()),
+        "output_file": str(output_file),
+    }
+    if vmcore_path:
+        artifacts["vmcore_path"] = vmcore_path
+    if vmlinux_path:
+        artifacts["vmlinux_path"] = vmlinux_path
+    return _make_tool_result(
+        expert_type=expert_type,
+        expert_name=expert_name,
+        analysis_output=analysis,
+        status=status,
+        evidence=evidence,
+        artifacts=artifacts,
+        errors=errors,
+    )
+
+
 def _make_tool_result(
     *,
     expert_type: str,
@@ -840,6 +912,38 @@ def _tool_expert_node_impl(state: MaintenanceWorkflowState) -> dict:
         vmcore_exists = _check_file_exists(vmcore_path_raw)
         vmlinux_exists = _check_file_exists(vmlinux_path_raw)
 
+        declared_log_raw = str(
+            (state.get("input_artifacts_contract") or {}).get("log_path") or ""
+        ).strip()
+        if declared_log_raw:
+            declared_log, declared_log_path = _read_declared_text_artifact(
+                state, "log_path", max_chars=1_000_000,
+            )
+            if not declared_log_path or not os.path.isfile(declared_log_path):
+                blocked = f"declared first-hand log does not exist: {declared_log_raw}"
+                return {
+                    "expert_results": [_make_tool_result(
+                        expert_type=expert_type,
+                        expert_name=expert_name,
+                        analysis_output=blocked,
+                        status="blocked",
+                        errors=[blocked],
+                    )],
+                }
+            direct_result = _run_declared_log_analysis(
+                llm=llm,
+                system_prompt=system_prompt,
+                user_input=user_input,
+                expert_type=expert_type,
+                expert_name=expert_name,
+                output_file=output_file,
+                log_path=declared_log_path,
+                log_content=declared_log,
+                vmcore_path=vmcore_path or "",
+                vmlinux_path=vmlinux_path or "",
+            )
+            return {"expert_results": [direct_result]}
+
         # 检查必要文件是否存在
         if not vmcore_path_raw or not vmlinux_path_raw:
             # 缺少路径信息，降级为文本分析
@@ -964,6 +1068,38 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
         vmlinux_path = _resolve_file_path(vmlinux_path_raw) if vmlinux_path_raw else None
         vmcore_exists = _check_file_exists(vmcore_path_raw)
         vmlinux_exists = _check_file_exists(vmlinux_path_raw)
+
+        declared_log_raw = str(
+            (state.get("input_artifacts_contract") or {}).get("log_path") or ""
+        ).strip()
+        if declared_log_raw:
+            declared_log, declared_log_path = _read_declared_text_artifact(
+                state, "log_path", max_chars=1_000_000,
+            )
+            if not declared_log_path or not os.path.isfile(declared_log_path):
+                blocked = f"declared first-hand log does not exist: {declared_log_raw}"
+                return {
+                    "expert_results": [_make_tool_result(
+                        expert_type=expert_type,
+                        expert_name=expert_name,
+                        analysis_output=blocked,
+                        status="blocked",
+                        errors=[blocked],
+                    )],
+                }
+            direct_result = _run_declared_log_analysis(
+                llm=llm,
+                system_prompt=system_prompt,
+                user_input=user_input,
+                expert_type=expert_type,
+                expert_name=expert_name,
+                output_file=output_file,
+                log_path=declared_log_path,
+                log_content=declared_log,
+                vmcore_path=vmcore_path or "",
+                vmlinux_path=vmlinux_path or "",
+            )
+            return {"expert_results": [direct_result]}
 
         if vmcore_path_raw and vmlinux_path_raw and vmcore_exists and vmlinux_exists:
             # 使用 crash 工具提取内核日志

@@ -175,6 +175,10 @@ class UserspaceReproducer(BaseModel):
     link_libraries: list[str] = Field(default_factory=list)
     run_args: list[str] = Field(default_factory=list)
     runtime_timeout_sec: int = 60
+    # True only when the operator explicitly declared an existing source
+    # artifact (for example a Syzbot repro.c).  Such a source is copied
+    # read-only into the session and reused verbatim by Test Expert.
+    operator_supplied: bool = False
 
 
 class ErrorEnvelope(BaseModel):
@@ -264,6 +268,7 @@ class InputArtifactsContract(BaseModel):
     boot_kernel_path: str = ""
     rootfs_path: str = ""
     qemu_extra_cmdline: str = ""
+    qemu_recipe: dict[str, Any] = Field(default_factory=dict)
     expected_signal: str = ""
     guest_sysctls: list[str] = Field(default_factory=list)
     target_arch: str = ""

@@ -21,6 +21,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
                 "crash_report: /tmp/report.txt",
                 "reproducer: /tmp/repro.syz",
                 "qemu_extra_cmdline: no-kvmapf no-steal-acc init=/root/lumen-init",
+                'qemu_recipe: {"machine":"q35,accel=kvm","cpu":"host","smp":"8","timeout_sec":300}',
                 "maintenance_notes: use fork workers and a blocking userspace sendmsg sequence",
                 "kernel_source: /tmp/linux",
                 "expected_kernel_commit: bdf56c7580d267a123cc71ca0f2459c797b76fde",
@@ -44,6 +45,9 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
     assert contract.crash_report_path == "/tmp/report.txt"
     assert contract.reproducer_path == "/tmp/repro.syz"
     assert contract.qemu_extra_cmdline == "no-kvmapf no-steal-acc init=/root/lumen-init"
+    assert contract.qemu_recipe == {
+        "machine": "q35,accel=kvm", "cpu": "host", "smp": "8", "timeout_sec": 300,
+    }
     assert contract.expected_kernel_commit == "bdf56c7580d267a123cc71ca0f2459c797b76fde"
 
 

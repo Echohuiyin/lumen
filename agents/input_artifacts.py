@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import re
 import os
+import json
 from pathlib import Path
+from typing import Any
 
 from agents.contracts import InputArtifactsContract
 from agents.test_runner import detect_kernel_type, normalize_target_arch
@@ -180,6 +182,20 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     qemu_extra_cmdline, qemu_extra_label = _extract_labeled_value(
         text, ["qemu_extra_cmdline", "qemu recipe extra cmdline", "extra_cmdline"]
     )
+    qemu_recipe_text, qemu_recipe_label = _extract_labeled_value(
+        text, ["qemu_recipe"]
+    )
+    qemu_recipe: dict[str, Any] = {}
+    if qemu_recipe_text:
+        try:
+            parsed_recipe = json.loads(qemu_recipe_text)
+        except json.JSONDecodeError as exc:
+            errors.append(f"qemu_recipe is not valid JSON: {exc}")
+        else:
+            if not isinstance(parsed_recipe, dict):
+                errors.append("qemu_recipe must be a JSON object")
+            else:
+                qemu_recipe = parsed_recipe
     expected_signal, expected_signal_label = _extract_labeled_value(
         text, ["expected_signal", "expected kernel signal", "fault signal"]
     )
@@ -245,6 +261,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "boot_kernel_path": (boot_kernel_path, boot_label),
         "rootfs_path": (rootfs_path, rootfs_label),
         "qemu_extra_cmdline": (qemu_extra_cmdline, qemu_extra_label),
+        "qemu_recipe": (qemu_recipe_text, qemu_recipe_label),
         "expected_signal": (expected_signal, expected_signal_label),
         "guest_sysctls": (guest_sysctls_text, guest_sysctls_label),
         "kernel_source_path": (kernel_source_path, source_label),
@@ -273,6 +290,11 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         evidence.append({
             "kind": "input_value", "field": "guest_sysctls",
             "value": guest_sysctls, "source": guest_sysctls_label,
+        })
+    if qemu_recipe:
+        evidence.append({
+            "kind": "input_value", "field": "qemu_recipe",
+            "value": qemu_recipe, "source": qemu_recipe_label,
         })
     if log_excerpt:
         evidence.append({"kind": "input_log_excerpt", "field": "log_excerpt", "length": len(log_excerpt)})
@@ -317,6 +339,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         boot_kernel_path=boot_kernel_path,
         rootfs_path=rootfs_path,
         qemu_extra_cmdline=qemu_extra_cmdline,
+        qemu_recipe=qemu_recipe,
         expected_signal=expected_signal,
         guest_sysctls=guest_sysctls,
         expected_kernel_commit=expected_kernel_commit,
