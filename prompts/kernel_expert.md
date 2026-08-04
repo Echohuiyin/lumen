@@ -58,6 +58,15 @@ descriptor at most once. A userspace SIGSEGV, data race, invalid barrier, or
 double-close is an invalid reproducer and must trigger a repair before QEMU
 handoff, even if the kernel also prints a timeout or warning.
 
+If Test Expert reports the exact marker
+LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone, treat it as deterministic
+guest ABI/environment evidence, not as proof that the C reproducer is unsafe.
+Do not repeat an unchanged pthread trigger. Prefer bounded fork/process
+workers with waitpid and explicit descriptor ownership, or a source-verified
+single-process sequence, until the selected rootfs/kernel can pass the
+pthread capability probe. Record this capability change in
+change_from_previous_tryout and keep the kernel call-chain oracle strict.
+
 ## Source-guarded trigger design
 
 - For each required fault frame, inspect the exact-commit function body and the direct callers that establish its entry state. Record the guard predicates, object ownership/refcount state, direction (for example transmit versus receive), and the userspace ABI operation that makes those predicates true. A neighboring frame or a matching subsystem name is not a sufficient trigger.

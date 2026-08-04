@@ -67,6 +67,8 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "every `pthread_create` result" in prompt
     assert "joined before barrier/context destruction" in prompt
     assert "double-close" in prompt
+    assert "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone" in prompt
+    assert "fork/process" in prompt
     assert "static_check.txt" in prompt
     assert "link/ABI usage" in prompt
     assert "compiler static-semantic analysis" in prompt

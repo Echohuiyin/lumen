@@ -87,6 +87,30 @@ def test_kernel_feedback_keeps_historical_userspace_crash_constraint():
     assert "pthread_create segfault" in feedback
 
 
+def test_guest_pthread_runtime_incompatibility_is_retryable_environment_evidence(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone\n"
+        "diagnostic-test: Segmentation fault\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="revise trigger",
+        artifacts={"ssh_output": str(ssh_output)},
+    )
+
+    promoted = _promote_guest_capability_block(result)
+    assert promoted.status == "failed"
+    assert promoted.code == "FAILED_GUEST_RUNTIME_INCOMPATIBLE"
+    assert "environment evidence" in promoted.kernel_feedback
+
+    feedback = _augment_kernel_feedback(promoted)
+    assert "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone" in feedback
+    assert "environment evidence" in feedback
+    assert "INVALID_USERSPACE_CRASH" not in feedback
+
+
 def test_test_plan_compiles_userspace_source_inside_guest():
     with tempfile.TemporaryDirectory() as directory:
         plan = _build_plan(_contract(Path(directory)))

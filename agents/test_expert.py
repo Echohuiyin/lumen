@@ -356,7 +356,7 @@ def _blocked_attempt(*, code: str, summary: str, tryout: int, artifacts: dict[st
 
 
 def _promote_guest_capability_block(result: TestResultContract) -> TestResultContract:
-    """Turn an explicit guest ABI/configuration failure into a terminal block.
+    """Classify explicit guest ABI/configuration evidence before retrying.
 
     A missing target subsystem is not a call-chain mismatch: retrying the same
     image ten times cannot make ``mount(2)`` provide a disabled filesystem.
@@ -401,6 +401,31 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
         )
         result.kernel_feedback = result.summary
         result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+    # A successfully compiled pthread probe that cannot create/join a worker
+    # is deterministic guest ABI evidence. Keep this retryable so Kernel
+    # Expert can switch to process workers or a single-process trigger; do not
+    # relabel the probe's SIGSEGV as an unsafe diagnostic C program.
+    for key, raw_path, text in evidence:
+        match = re.search(
+            r"LUMEN_GUEST_RUNTIME_INCOMPATIBLE:([A-Za-z0-9_.+-]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        capability = match.group(1)
+        result.status = "failed"
+        result.code = "FAILED_GUEST_RUNTIME_INCOMPATIBLE"
+        result.summary = (
+            f"Guest runtime capability check failed for {capability}; "
+            "this is environment evidence, not a reproducer C-safety verdict. "
+            "Use a compatible rootfs/kernel or revise the trigger to avoid "
+            "the unavailable userspace runtime ABI."
+        )
+        result.kernel_feedback = result.summary
+        result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+        return result
+
     # A userspace USB diagnostic can run successfully yet report that the
     # required target device was never enumerated. This is a QEMU hardware/
     # emulation capability block, not a call-chain mismatch; retrying the same
@@ -645,6 +670,7 @@ def _augment_kernel_feedback(
         return feedback
     historical = _historical_userspace_crash_feedback(previous_rounds)
     runtime_text: list[str] = []
+    guest_runtime_incompatibility: list[str] = []
     for artifact_name in ("serial_log", "ssh_output"):
         runtime_path = str((result.artifacts or {}).get(artifact_name, "") or "").strip()
         if not runtime_path:
@@ -653,6 +679,14 @@ def _augment_kernel_feedback(
             text = Path(runtime_path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
+        for match in re.finditer(
+            r"LUMEN_GUEST_RUNTIME_INCOMPATIBLE:([A-Za-z0-9_.+-]+)",
+            text,
+            flags=re.IGNORECASE,
+        ):
+            capability = match.group(1)
+            if capability not in guest_runtime_incompatibility:
+                guest_runtime_incompatibility.append(capability)
         marker_at = text.find("LUMEN_REPRO_START:")
         if marker_at >= 0:
             text = text[marker_at:]
@@ -663,6 +697,7 @@ def _augment_kernel_feedback(
         return f"{historical}\n{feedback}".strip() if historical else feedback
     evidence_re = re.compile(
         r"(?:segfault|kasan|j1939|lumen_guest_component_missing|"
+        r"lumen_guest_runtime_incompatible|"
         r"cannot|failed|error|warning|bug:|no such|abort|connection exists|"
         r"unknown parameter|invalid(?:\s+\S+){0,3}|resource busy|"
         r"lumen_diagnostic_[a-z0-9_]+)",
@@ -677,6 +712,15 @@ def _augment_kernel_feedback(
             evidence.append(text[:320])
         if len(evidence) >= 8:
             break
+    if guest_runtime_incompatibility:
+        capability_text = ", ".join(guest_runtime_incompatibility)
+        environment_feedback = (
+            "GUEST_RUNTIME_INCOMPATIBLE: environment evidence shows that the "
+            f"guest cannot execute the required runtime capability ({capability_text}); "
+            "do not classify its probe crash as userspace C unsafety."
+        )
+        if environment_feedback not in feedback:
+            feedback = f"{environment_feedback}\n{feedback}".strip()
     if not evidence:
         return feedback
     summary = "Runtime evidence: " + " | ".join(evidence)
@@ -687,7 +731,7 @@ def _augment_kernel_feedback(
             re.IGNORECASE,
         )
         for line in evidence
-    ):
+    ) and not guest_runtime_incompatibility:
         feedback = (
             "INVALID_USERSPACE_CRASH: the guest reproducer crashed in userspace; "
             "repair its C safety and lifetime handling before changing the kernel oracle.\n"

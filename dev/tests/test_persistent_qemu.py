@@ -197,6 +197,23 @@ def test_xz_kernel_is_decompressed_into_private_runtime(tmp_path):
     assert prepared.read_bytes() == expected
 
 
+def test_runner_preflights_guest_pthread_runtime(tmp_path):
+    plan = _plan(tmp_path)
+    (Path(plan.reproducer.source_dir) / "repro.c").write_text(
+        "#include <pthread.h>\n"
+        "static void *worker(void *arg) { return arg; }\n"
+        "int main(void) { pthread_t t; pthread_create(&t, 0, worker, 0); return pthread_join(t, 0); }\n",
+        encoding="utf-8",
+    )
+
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+
+    assert ".lumen-pthread-probe.c" in script
+    assert "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone" in script
+    assert "pthread_create" in script
+    assert "-pthread" in script
+
+
 def test_missing_guest_artifacts_are_blocked_without_reuse(tmp_path):
     result = run_persistent_qemu_test_plan(_plan(tmp_path), attempt=1, runtime_root=tmp_path / "guests")
     assert result.status == "blocked"

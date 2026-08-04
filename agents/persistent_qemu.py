@@ -343,6 +343,23 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
     compiler_args = [arg for arg in reproducer.compiler_args if "\n" not in arg and "\x00" not in arg]
     if len(compiler_args) != len(reproducer.compiler_args):
         raise ValueError("unsafe compiler argument")
+    c_sources = [source for source in reproducer.source_files if source.endswith(".c")]
+    if not c_sources:
+        raise ValueError("userspace reproducer requires at least one C translation unit")
+    pthread_pattern = re.compile(
+        r"#\s*include\s*[<\"]pthread\.h[>\"]|"
+        r"\bpthread_(?:create|join|barrier_|mutex_|cond_)"
+    )
+    uses_pthread = False
+    source_root = Path(reproducer.source_dir)
+    for source in c_sources:
+        try:
+            source_text = (source_root / source).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_text = ""
+        if pthread_pattern.search(source_text):
+            uses_pthread = True
+            break
     libraries = [lib if lib.startswith("-l") else f"-l{lib}" for lib in reproducer.link_libraries]
     compile_command = " ".join([
         shlex.quote(reproducer.compiler), *(shlex.quote(source) for source in reproducer.source_files
@@ -354,6 +371,63 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
     lines.extend([
         f"if ! command -v {shlex.quote(reproducer.compiler)} >/dev/null 2>&1; then printf '%s\\n' {shlex.quote(component_marker)} > /dev/console 2>/dev/null || true; printf '%s\\n' {shlex.quote(component_marker)} >&2; exit 125; fi",
         compile_command,
+    ])
+    if uses_pthread:
+        probe_source = [
+            "#define _GNU_SOURCE",
+            "#include <pthread.h>",
+            "static void *lumen_probe_worker(void *opaque) {",
+            "    (void)opaque;",
+            "    return 0;",
+            "}",
+            "int main(void) {",
+            "    pthread_t thread;",
+            "    int rc = pthread_create(&thread, 0, lumen_probe_worker, 0);",
+            "    if (rc != 0) return rc;",
+            "    return pthread_join(thread, 0) != 0;",
+            "}",
+        ]
+        probe_path = f"{guest_reproducer}/.lumen-pthread-probe.c"
+        probe_binary = f"{guest_bin}/.lumen-pthread-probe"
+        probe_error = f"{guest_root}/.lumen-pthread-probe.err"
+        probe_component_marker = "LUMEN_GUEST_COMPONENT_MISSING:pthread:headers"
+        probe_runtime_marker = "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone"
+        probe_lines = [
+            "if ! command -v grep >/dev/null 2>&1; then",
+            "    printf '%s\\n' LUMEN_GUEST_COMPONENT_MISSING:grep:runtime > /dev/console 2>/dev/null || true",
+            "    printf '%s\\n' LUMEN_GUEST_COMPONENT_MISSING:grep:runtime >&2",
+            "    exit 125",
+            "fi",
+            "if grep -Eq "
+            + shlex.quote(r"#\s*include\s*[<\"]pthread\.h[>\"]|\bpthread_(create|join|barrier_|mutex_|cond_)")
+            + " -- "
+            + " ".join(shlex.quote(source) for source in c_sources)
+            + "; then",
+        ]
+        probe_lines.extend(
+            f"    printf '%s\\n' {shlex.quote(line)} >> {shlex.quote(probe_path)}"
+            for line in probe_source
+        )
+        probe_compile = (
+            f"{shlex.quote(reproducer.compiler)} -std=gnu11 -O2 -Wall -Wextra -Werror "
+            f"-pthread {shlex.quote(probe_path)} -o {shlex.quote(probe_binary)}"
+        )
+        probe_lines.extend([
+            f"    if ! {probe_compile}; then",
+            f"        printf '%s\\n' {shlex.quote(probe_component_marker)} > /dev/console 2>/dev/null || true",
+            f"        printf '%s\\n' {shlex.quote(probe_component_marker)} >&2",
+            "        exit 125",
+            "    fi",
+            f"    if ! timeout --signal=KILL 5 {shlex.quote(probe_binary)} > {shlex.quote(probe_error)} 2>&1; then",
+            f"        printf '%s\\n' {shlex.quote(probe_runtime_marker)} > /dev/console 2>/dev/null || true",
+            f"        printf '%s\\n' {shlex.quote(probe_runtime_marker)} >&2",
+            f"        cat {shlex.quote(probe_error)} >&2 || true",
+            "        exit 125",
+            "    fi",
+            "fi",
+        ])
+        lines.extend(probe_lines)
+    lines.extend([
         f"cd {shlex.quote(guest_root)}",
         f"echo {shlex.quote(marker)} > /dev/console",
     ])
