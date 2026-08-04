@@ -77,6 +77,9 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "_IOC_SIZE(command) == sizeof(payload)" in prompt
     assert "ENOTTY" in prompt
     assert "failed precondition" in prompt
+    assert "OCFS2 userspace fixture" in prompt
+    assert "absence of a pre-mounted OCFS2 directory" in prompt
+    assert "mkfs.ocfs2 -M local" in prompt
     assert "do not repeat them through interactive MCP" in prompt
     assert '"source_files": ["repro.c"]' not in prompt
     assert '"source_files": ["diagnostic_test.c"]' in prompt

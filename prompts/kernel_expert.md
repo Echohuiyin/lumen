@@ -57,6 +57,12 @@ You are the Kernel Expert. Work with the Test Expert as one bounded loop (at mos
 - Treat `ENOTTY`, `_IOC_SIZE` mismatch, `EINVAL` caused by an ABI/layout mismatch, and an unaccepted command as a failed precondition. Do not claim that the target kernel function was reached, and do not broaden the oracle to accept the errno.
 - When Test Expert reports such a mismatch, repair the C payload/command definition first and state the evidence-backed ABI correction in `change_from_previous_tryout`; do not repeat an identical ioctl encoding.
 
+## OCFS2 userspace fixture
+
+- For an OCFS2 move-extents case, absence of a pre-mounted OCFS2 directory is not by itself a missing ABI. If the guest has `mkfs.ocfs2` and `/dev/loop-control`, the C test must create a bounded private image under `/tmp`, invoke the documented formatter through `fork`/`execve` (never a shell), attach it with the loop ioctl ABI, mount it with the source-verified local options, create the regular test file, and clean up every resource.
+- Use the exact filesystem mode and mount options established from the kernel source (for example `mkfs.ocfs2 -M local` with `heartbeat=none` for a local fixture); do not assume an ext4 rootfs is itself an OCFS2 test volume.
+- Emit bounded setup diagnostics for formatter, loop attachment, mount, and ioctl ABI acceptance. Return `blocked` only when the required guest capability is actually absent, and include the exact missing command/device evidence; a missing pre-mounted fixture is not sufficient grounds to stop.
+
 ## Call-chain oracle
 
 The contract must let Test Expert distinguish the reported maintenance event from unrelated output. Provide:
