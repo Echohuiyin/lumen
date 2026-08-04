@@ -44,13 +44,16 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
     source_audit = _audit_source_evidence(
         source_root, evidence, str(artifacts.get("expected_kernel_commit") or ""),
     )
-    fix_audit = _audit_fix_evidence(artifacts)
+    fix_audit = _audit_fix_evidence(artifacts, source_root)
     dimensions = _score_dimensions(
         root_cause=root_cause, observed=observed,
         source_audit=source_audit, fix_audit=fix_audit,
         first_hand_text=first_hand,
     )
     score = _normalised_score(dimensions)
+    public_fix_audit = dict(fix_audit)
+    patch_text = str(public_fix_audit.pop("patch_text", "") or "")
+    public_fix_audit["patch_bytes"] = len(patch_text.encode("utf-8"))
     return {
         "schema_version": SCHEMA_VERSION,
         "method": "deterministic evidence alignment; human review remains authoritative",
@@ -73,7 +76,7 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
             "source_commit_matches": source_audit.get("source_commit_matches"),
             "observed": observed,
             "source_audit": source_audit,
-            "fix_audit": fix_audit,
+            "fix_audit": public_fix_audit,
         },
         "tool_experts": _score_tool_experts(
             state.get("expert_results") or [],
@@ -270,7 +273,9 @@ def _walk_json(value: Any, path: str = ""):
             yield from _walk_json(item, f"{path}[{index}]")
 
 
-def _audit_fix_evidence(artifacts: dict[str, Any]) -> dict[str, Any]:
+def _audit_fix_evidence(
+    artifacts: dict[str, Any], source_root: Path | None,
+) -> dict[str, Any]:
     """Find explicit fix/patch metadata without treating source commit as fix."""
     report_path = _path(artifacts.get("crash_report_path"))
     case_dir = report_path.parent if report_path else None
@@ -293,13 +298,41 @@ def _audit_fix_evidence(artifacts: dict[str, Any]) -> dict[str, Any]:
                 )
                 if not explicit_fix_key:
                     continue
-                if isinstance(value, (str, int, float, bool)):
+                if isinstance(value, (str, int, float)) and str(value).strip():
                     candidates.append({
                         "file": str(metadata), "field": key_path, "value": value,
                     })
+    patch_text = ""
+    fix_commits: list[str] = []
+    for item in candidates:
+        field = str(item.get("field") or "").lower()
+        value = str(item.get("value") or "").strip()
+        if "commit" in field and re.fullmatch(r"[0-9a-fA-F]{7,40}", value):
+            fix_commits.append(value)
+            if source_root is not None:
+                try:
+                    result = subprocess.run(
+                        ["git", "-C", str(source_root), "show", "--format=", "--no-ext-diff", value],
+                        check=False, capture_output=True, text=True, timeout=20,
+                    )
+                except (OSError, subprocess.SubprocessError):
+                    result = None
+                if result is not None and result.returncode == 0:
+                    patch_text += result.stdout
+        if "patch" in field:
+            patch_path = _path(value)
+            if patch_path is None and report_path is not None:
+                patch_path = (report_path.parent / value).resolve()
+            if patch_path is not None and patch_path.is_file():
+                try:
+                    patch_text += patch_path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    pass
     return {
         "available": bool(candidates),
         "candidates": candidates,
+        "fix_commits": fix_commits,
+        "patch_text": patch_text,
         "patch_files": [
             item for item in candidates
             if isinstance(item.get("value"), str)
@@ -396,10 +429,28 @@ def _score_dimensions(
         },
     ]
     if fix_audit.get("available"):
+        patch_text = str(fix_audit.get("patch_text") or "")
+        patch_hits = _contains_any(
+            patch_text.lower(),
+            [
+                str(item) for item in (observed.get("fault_functions") or [])
+                if str(item).strip()
+            ] + [
+                term for term in (
+                    "free", "release", "ref", "lifetime", "race",
+                    "lock", "ownership", "invariant", "assert",
+                ) if term in lowered
+            ],
+        )
         dimensions.append({
             "id": "fix_alignment", "label": "修复补丁对应",
-            "score": 0, "max_score": 10,
-            "reason": "发现修复/补丁元数据，自动评分保守为 0，需人工核对。",
+            "score": min(10, patch_hits * 2) if patch_text else 0,
+            "max_score": 10,
+            "reason": (
+                f"修复/补丁文本与故障函数/机制词命中 {patch_hits} 个。"
+                if patch_text else
+                "发现修复/补丁元数据，但未能读取补丁内容，需人工核对。"
+            ),
         })
     else:
         dimensions.append({
