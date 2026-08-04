@@ -68,6 +68,24 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     assert "boot noise" not in feedback
 
 
+def test_kernel_feedback_keeps_historical_userspace_crash_constraint():
+    result = TestResultContract(
+        status="failed", code="FAILED_CALL_CHAIN_MISMATCH", summary="target signal mismatch",
+        kernel_feedback="Review the latest call-chain evidence.",
+    )
+    previous_rounds = [{
+        "kernel_feedback": (
+            "INVALID_USERSPACE_CRASH: the guest reproducer crashed in userspace; "
+            "repair C safety. Runtime evidence: pthread_create segfault in libc.so.6"
+        ),
+    }]
+
+    feedback = _augment_kernel_feedback(result, previous_rounds)
+
+    assert "HISTORICAL_USERSPACE_CRASH_CONSTRAINT" in feedback
+    assert "pthread_create segfault" in feedback
+
+
 def test_test_plan_compiles_userspace_source_inside_guest():
     with tempfile.TemporaryDirectory() as directory:
         plan = _build_plan(_contract(Path(directory)))

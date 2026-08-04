@@ -541,11 +541,39 @@ def _semantic_review(contract: KernelExpertOutput, result: TestResultContract) -
     return True, "observed post-start call chain satisfies the Kernel Expert oracle and root-cause context"
 
 
-def _augment_kernel_feedback(result: TestResultContract) -> str:
+def _historical_userspace_crash_feedback(previous_rounds: list[dict] | None) -> str:
+    """Keep prior userspace-crash constraints visible across loop iterations."""
+    excerpts: list[str] = []
+    for round_data in previous_rounds or []:
+        if not isinstance(round_data, dict):
+            continue
+        feedback = str(round_data.get("kernel_feedback") or "")
+        marker = "INVALID_USERSPACE_CRASH"
+        marker_at = feedback.find(marker)
+        if marker_at < 0:
+            continue
+        excerpt = feedback[marker_at:marker_at + 640].strip()
+        if excerpt and excerpt not in excerpts:
+            excerpts.append(excerpt)
+        if len(excerpts) >= 3:
+            break
+    if not excerpts:
+        return ""
+    return (
+        "HISTORICAL_USERSPACE_CRASH_CONSTRAINT: a previous try-out crashed in the guest userspace. "
+        "Do not reintroduce the same unsafe construct; audit and repair C safety before changing the kernel oracle.\n"
+        + "\n".join(excerpts)
+    )
+
+
+def _augment_kernel_feedback(
+    result: TestResultContract, previous_rounds: list[dict] | None = None,
+) -> str:
     """Add bounded post-start runtime evidence to the next Kernel turn."""
     feedback = str(result.kernel_feedback or result.summary or "").strip()
     if result.test_passed:
         return feedback
+    historical = _historical_userspace_crash_feedback(previous_rounds)
     runtime_text: list[str] = []
     for artifact_name in ("serial_log", "ssh_output"):
         runtime_path = str((result.artifacts or {}).get(artifact_name, "") or "").strip()
@@ -559,8 +587,10 @@ def _augment_kernel_feedback(result: TestResultContract) -> str:
         if marker_at >= 0:
             text = text[marker_at:]
         runtime_text.append(text)
+    if historical and not runtime_text:
+        return f"{historical}\n{feedback}".strip()
     if not runtime_text:
-        return feedback
+        return f"{historical}\n{feedback}".strip() if historical else feedback
     evidence_re = re.compile(
         r"(?:segfault|kasan|j1939|lumen_guest_component_missing|"
         r"cannot|failed|error|warning|bug:|no such|abort|connection exists|"
@@ -593,6 +623,8 @@ def _augment_kernel_feedback(result: TestResultContract) -> str:
             "repair its C safety and lifetime handling before changing the kernel oracle.\n"
             + feedback
         )
+    if historical and historical not in feedback:
+        feedback = f"{historical}\n{feedback}".strip()
     if summary in feedback:
         return feedback
     return f"{feedback}\n{summary}".strip()
@@ -623,6 +655,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     output_file = get_expert_output_file("test_expert")
     tryout = int(state.get("tryout_count", 0) or 0) + 1
     maximum = int(state.get("max_tryouts", 10) or 10)
+    previous_rounds = list(state.get("test_rounds", []) or [])
     if maximum != 10:
         raise ValueError("max_tryouts is fixed at 10 by the maintenance workflow contract")
 
@@ -682,7 +715,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                             result.code = "FAILED_CALL_CHAIN_MISMATCH_AFTER_10_TRYOUTS"
                         elif not result.kernel_feedback:
                             result.kernel_feedback = "Review missing/reordered frames and revise the userspace trigger or declared injection plan."
-                    result.kernel_feedback = _augment_kernel_feedback(result)
+                    result.kernel_feedback = _augment_kernel_feedback(result, previous_rounds)
 
     text = _format_attempt(result)
     with open(output_file, "w", encoding="utf-8") as handle:
@@ -690,7 +723,6 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
         handle.write(text + "\n")
         handle.write(_format_agent_footer_text("测试专家"))
     result_data = model_to_dict(result)
-    previous_rounds = list(state.get("test_rounds", []) or [])
     previous_rounds.append(result_data)
     return {
         "test_result": text,
