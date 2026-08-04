@@ -191,6 +191,25 @@ def test_structured_kernel_contract_round_trips_without_module_build():
         assert validated.reproducer.output_binary == "lumen-repro"
 
 
+def test_contract_accepts_evidence_path_manifest_without_dropping_handoff():
+    with tempfile.TemporaryDirectory() as directory:
+        contract = _contract(Path(directory))
+        data = model_to_dict(contract)
+        data["evidence"] = {
+            "original_log": "evidence/original.log",
+            "tool_expert_files": ["evidence/tool_expert_1.txt"],
+        }
+        text = "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+        parsed = _extract_kernel_contract(text)
+        assert parsed.status == "ok"
+        assert _kernel_contract_ready_for_test(parsed)
+        assert parsed.evidence == [{
+            "kind": "artifact_manifest",
+            "entries": data["evidence"],
+        }]
+
+
+
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
         status="blocked", blocked_reason="guest lacks the required MTD master",

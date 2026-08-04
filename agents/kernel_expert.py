@@ -2147,6 +2147,17 @@ def _coerce_contract_json(data: object) -> object:
         return data
     normalized = dict(data)
     warnings = list(normalized.get("warnings") or [])
+    # Codex may express the evidence archive as a path manifest (mapping
+    # artifact names to paths/lists) instead of the list-shaped contract
+    # field. Preserve that audit data as one structured entry so a complete
+    # contract is not rejected merely because its evidence presentation is
+    # different. Do not infer or execute anything from this field.
+    raw_evidence = normalized.get("evidence")
+    if isinstance(raw_evidence, dict):
+        normalized["evidence"] = [{
+            "kind": "artifact_manifest",
+            "entries": raw_evidence,
+        }]
     for field in ("pressure_requirements", "fault_injection_requirements"):
         raw = normalized.get(field)
         if raw is None:
