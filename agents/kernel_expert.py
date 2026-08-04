@@ -52,6 +52,163 @@ def _sync_codex_artifacts(workdir: Path, session_output_dir: Path) -> None:
         pass
 
 
+
+def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> dict[str, str]:
+    """Audit a userspace C reproducer before handing it to Test Expert.
+
+    The gate is deliberately separate from the guest verdict.  It checks the
+    exact source files with the declared toolchain for warning-clean syntax,
+    link/ABI usage, and compiler-supported static semantic diagnostics.  The
+    guest still recompiles and executes the program against its own libc and
+    kernel, and only the guest call-chain oracle can establish reproduction.
+    """
+    reproducer = getattr(contract, "reproducer", None)
+    audit_lines = [
+        "KERNEL EXPERT USERSPACE C PREFLIGHT",
+        "CHECKS: syntax-and-warnings, link-and-ABI-usage, static-semantic-analysis",
+    ]
+
+    def finish(status: str, detail: str) -> dict[str, str]:
+        audit_lines.append("STATUS: " + status)
+        audit_lines.append("DETAIL: " + detail)
+        try:
+            session_output_dir.mkdir(parents=True, exist_ok=True)
+            (session_output_dir / "static_check.txt").write_text(
+                "\n".join(audit_lines) + "\n", encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return {"status": status, "detail": detail[-6000:]}
+
+    if reproducer is None or reproducer.language != "c" or reproducer.artifact_type != "userspace":
+        return finish("skipped", "not a userspace C reproducer")
+    source_dir = Path(os.path.expanduser(str(reproducer.source_dir or ""))).resolve()
+    audit_lines.append("SOURCE_DIR: " + str(source_dir))
+    if not source_dir.is_dir():
+        return finish("failed", f"source_dir does not exist: {source_dir}")
+
+    source_paths: list[Path] = []
+    for declared in reproducer.source_files:
+        relative = Path(str(declared))
+        if relative.is_absolute() or ".." in relative.parts or relative.suffix not in {".c", ".h"}:
+            return finish("failed", f"invalid userspace source path: {declared!r}")
+        source = (source_dir / relative).resolve()
+        try:
+            source.relative_to(source_dir)
+        except ValueError:
+            return finish("failed", f"userspace source escapes source_dir: {declared!r}")
+        if not source.is_file():
+            return finish("failed", f"declared userspace source is missing: {source}")
+        audit_lines.append("SOURCE: " + relative.as_posix())
+        if source.suffix == ".c":
+            source_paths.append(source)
+    if not source_paths:
+        return finish("failed", "userspace contract declares no C source")
+
+    compiler_name = str(reproducer.compiler or "gcc")
+    compiler = shutil.which(compiler_name)
+    audit_lines.append("COMPILER: " + compiler_name)
+    if not compiler:
+        return finish("failed", f"static compiler is unavailable: {compiler_name}")
+
+    extra_args: list[str] = []
+    skip_next = False
+    forbidden_warning_flags = {"-w", "-Wno-error", "-Wno-all", "-Wno-extra"}
+    for raw_arg in reproducer.compiler_args:
+        arg = str(raw_arg)
+        if skip_next:
+            skip_next = False
+            continue
+        if arg in {"-o", "--output"}:
+            skip_next = True
+            continue
+        if arg in {"-c", "-S", "-E"} or arg.startswith("-o") or arg.startswith("--output="):
+            continue
+        if "\n" in arg or "\x00" in arg:
+            return finish("failed", "compiler argument contains a control character")
+        if arg in forbidden_warning_flags or arg.startswith("-Wno-analyzer"):
+            return finish("failed", f"compiler argument disables required diagnostics: {arg}")
+        extra_args.append(arg)
+    if skip_next:
+        return finish("failed", "compiler output option is missing its value")
+
+    libraries: list[str] = []
+    for raw_library in reproducer.link_libraries:
+        library = str(raw_library)
+        if not library or "\n" in library or "\x00" in library:
+            return finish("failed", f"invalid link library: {library!r}")
+        libraries.append(library if library.startswith("-l") else f"-l{library}")
+
+    mandatory_flags = ["-std=gnu11", "-O2", *extra_args, "-Wall", "-Wextra", "-Werror"]
+    source_args = [str(path) for path in source_paths]
+
+    def run_check(label: str, command: list[str], timeout: int = 90) -> bool:
+        audit_lines.append(label + "_COMMAND: " + repr(command))
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(source_dir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            audit_lines.append(label + "_STATUS: failed")
+            audit_lines.append(label + "_ERROR: " + str(exc))
+            return False
+        stdout = completed.stdout or ""
+        stderr = completed.stderr or ""
+        audit_lines.append(label + "_RETURN_CODE: " + str(completed.returncode))
+        audit_lines.append(label + "_STDOUT:\n" + stdout[-6000:])
+        audit_lines.append(label + "_STDERR:\n" + stderr[-6000:])
+        audit_lines.append(label + "_STATUS: " + ("passed" if completed.returncode == 0 else "failed"))
+        return completed.returncode == 0
+
+    syntax_command = [compiler, *mandatory_flags, "-fsyntax-only", *source_args]
+    if not run_check("SYNTAX", syntax_command):
+        return finish("failed", "warning-clean syntax check failed; repair the C source before guest handoff")
+
+    # Match the persistent guest runner's link order and -l normalization so
+    # missing symbols and incorrect userspace API usage are caught here.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix=".lumen-static-", dir=str(source_dir)) as temp_dir:
+        linked_binary = str(Path(temp_dir) / "lumen-repro")
+        link_command = [compiler, *mandatory_flags, *source_args, *libraries, "-o", linked_binary]
+        if not run_check("LINK", link_command):
+            return finish("failed", "link/ABI usage check failed; repair declarations, calls, or link_libraries")
+
+    try:
+        version_probe = subprocess.run(
+            [compiler, "--version"], capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=15, check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return finish("failed", f"cannot identify compiler semantic analyzer: {exc}")
+    is_clang = "clang" in ((version_probe.stdout or "") + (version_probe.stderr or "")).lower()
+    analyzer_name = "clang-analyze" if is_clang else "gcc-fanalyzer"
+    audit_lines.append("SEMANTIC_ANALYZER: " + analyzer_name)
+    # Compile each C translation unit separately. GCC/Clang reject a single
+    # -o target for multiple -c inputs; the final link above already checks
+    # cross-file declarations and userspace API usage.
+    with tempfile.TemporaryDirectory(prefix=".lumen-semantic-", dir=str(source_dir)) as temp_dir:
+        for index, source_arg in enumerate(source_args, start=1):
+            label = "SEMANTIC" if index == 1 else f"SEMANTIC_{index}"
+            if is_clang:
+                analyzer_command = [compiler, *mandatory_flags, "--analyze", source_arg]
+            else:
+                analyzer_output = str(Path(temp_dir) / f"semantic-{index}.o")
+                analyzer_command = [
+                    compiler, *mandatory_flags, "-fanalyzer", "-c", source_arg,
+                    "-o", analyzer_output,
+                ]
+            if not run_check(label, analyzer_command):
+                return finish("failed", "static semantic analysis failed; repair lifetime, bounds, control-flow, or API usage")
+
+    return finish("passed", "syntax, link/ABI usage, and static semantic analysis passed; guest compile/run remains mandatory")
+
 def _stage_codex_evidence(
     workdir: Path, evidence_files: list[tuple[str, str]] | None,
 ) -> None:
@@ -442,6 +599,30 @@ def _run_kernel_expert_with_agent_loop(
         _sync_codex_artifacts(codex_workdir, session_output_dir)
 
         output_content = response.content or ""
+        static_preflight = None
+        parsed_preflight = _extract_kernel_contract(output_content) if output_content.strip() else None
+        if parsed_preflight is not None and parsed_preflight.status == "ok":
+            static_preflight = _static_check_userspace_reproducer(
+                parsed_preflight, session_output_dir,
+            )
+        if static_preflight and static_preflight.get("status") == "failed":
+            retry_messages = messages + [HumanMessage(content=(
+                "STATIC PREFLIGHT FAILED; do not hand this C program to Test Expert.\n"
+                f"Evidence: {static_preflight.get('detail', '')}\n"
+                "Repair the userspace C compile, warning, or safety issue in the current Codex workdir, "
+                "rerun the static check, and emit a complete KERNEL_CONTRACT. "
+                "Do not change the kernel oracle to hide the failure."
+            ))]
+            retry_response = llm.invoke(
+                retry_messages,
+                workdir=str(codex_workdir),
+                add_dirs=add_dirs,
+            )
+            _sync_codex_artifacts(codex_workdir, session_output_dir)
+            if retry_response.content and retry_response.content.strip():
+                response = retry_response
+                output_content = retry_response.content
+
         # Retry once inside this same Kernel Expert loop when the final turn
         # is empty or lacks a parseable structured contract.  A bare JSON
         # object is valid too; requiring the cosmetic marker here used to
@@ -1402,6 +1583,34 @@ def _parse_kernel_expert_response(
     if not _kernel_contract_has_handoff(kernel_contract):
         kernel_contract.status = "blocked"
         kernel_contract.blocked_reason = "missing explicit structured KERNEL_CONTRACT"
+
+    # Run the static gate only after the contract has passed the explicit
+    # handoff-shape check.  Partial text contracts are still allowed to be
+    # enriched/validated by the existing recovery path; applying the gate to
+    # them would overwrite a recoverable status with a misleading build block.
+    static_preflight = (
+        _static_check_userspace_reproducer(kernel_contract, paths_get_output_dir())
+        if kernel_contract.status == "ok" else
+        {"status": "skipped", "detail": "contract is not ready for static userspace preflight"}
+    )
+    if static_preflight.get("status") == "failed":
+        data = model_to_dict(kernel_contract)
+        data["status"] = "blocked"
+        data["build_status"] = "blocked"
+        data["blocked_reason"] = (
+            "Kernel Expert static userspace preflight failed: "
+            + static_preflight.get("detail", "unknown error")
+        )
+        warnings = list(data.get("warnings") or [])
+        warnings.append("static_check.txt records the failed userspace preflight")
+        data["warnings"] = warnings
+        kernel_contract = _model_validate(KernelExpertOutput, data)
+    elif static_preflight.get("status") == "passed":
+        data = model_to_dict(kernel_contract)
+        warnings = list(data.get("warnings") or [])
+        warnings.append("static userspace C preflight passed; guest compile/run remains mandatory")
+        data["warnings"] = warnings
+        kernel_contract = _model_validate(KernelExpertOutput, data)
 
     # Preserve path findings emitted as human-readable sections even when the
     # CLI returned a contract JSON without the additive fields.

@@ -52,6 +52,55 @@ def _blocked_knowledge_base_result(state: MaintenanceWorkflowState, error) -> di
     }
 
 
+def _render_kernel_evidence_report(
+    state: MaintenanceWorkflowState, *, round_summary: str, test_passed: bool,
+) -> str:
+    """Persist root-cause evidence independently of reproduction success.
+
+    This is an evidence-preserving projection of workflow state, not an LLM
+    fallback or a fabricated diagnosis. The raw Kernel Expert text and the
+    structured contract remain visible when QEMU try-outs miss the oracle;
+    provider failures still follow the terminal no-fallback path.
+    """
+    contract = state.get("kernel_contract") or {}
+    analysis = str(state.get("kernel_analysis", "") or "").strip()
+    root_cause = str(contract.get("root_cause", "") or "").strip()
+    evidence = contract.get("root_cause_evidence") or []
+    oracle = contract.get("call_chain_oracle") or {}
+    test_contract = state.get("test_contract") or {}
+    missing_frames = test_contract.get("missing_frames") or []
+    lines = [
+        "## Kernel root-cause analysis (evidence archive)",
+        f"- Kernel Expert contract status: {contract.get('status') or 'not provided'}",
+        f"- Reproduction result: {'reproduced' if test_passed else 'not reproduced'} (not reproduced does not mean unanalyzed)",
+        "- This section is generated from collected analysis and structured evidence; it never relabels a miss as success or invents a missing root cause.",
+        "",
+        "### Root-cause conclusion",
+        root_cause or "The structured contract contains no root-cause conclusion; only available evidence and missing conditions are reported.",
+        "",
+        "### Root-cause evidence",
+        "```json",
+        json.dumps(evidence, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "### Raw Kernel Expert analysis (authoritative)",
+        analysis or "Kernel Expert produced no readable analysis text.",
+        "",
+        "### Call-chain decision evidence",
+        "```json",
+        json.dumps({
+            "original_call_chain": contract.get("original_call_chain") or [],
+            "call_chain_oracle": oracle,
+            "missing_frames": missing_frames,
+            "latest_test_contract": test_contract,
+        }, ensure_ascii=False, indent=2),
+        "```",
+        "",
+        "### Reproduction-round evidence",
+        round_summary,
+    ]
+    return "\n".join(lines)
+
 def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     """知识库生成 agent：将问题总结并形成知识库文件进行归档，并自动导入 Chroma 向量数据库。"""
     set_session_dir(state.get("session_dir"))
@@ -125,7 +174,7 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
             "知识库生成", "总结归档", llm,
             [SystemMessage(content=system_prompt), HumanMessage(content=user_content)],
         )
-        knowledge_content = response.content.strip()
+        knowledge_content = (response.content or "").strip()
     except Exception as e:
         # This is the terminal evidence-archive node. A model/API failure
         # must remain a terminal blocked result; serializing raw state as a
@@ -141,7 +190,11 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         kernel_contract=kernel_contract,
         semcode_path_analysis=semcode_path_analysis,
     )
-    knowledge_content = f"{knowledge_content.rstrip()}\n\n{path_appendix}\n"
+    evidence_report = _render_kernel_evidence_report(
+        state, round_summary=round_summary, test_passed=bool(state.get("test_passed", False)),
+    )
+    summary = knowledge_content or "The summary model returned no text; the evidence archive above remains authoritative."
+    knowledge_content = f"{evidence_report}\n\n## Knowledge-base summary\n{summary.rstrip()}\n\n{path_appendix}\n"
 
     # 保存知识库文件
     knowledge_file = _save_knowledge_file(state, knowledge_content, config)

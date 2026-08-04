@@ -22,6 +22,7 @@ from agents.kernel_expert import (
     _read_primary_log_text,
     _codex_case_text,
     _stage_codex_evidence,
+    _static_check_userspace_reproducer,
     _sync_codex_artifacts,
     _validate_kernel_contract_artifacts,
 )
@@ -60,6 +61,10 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert '"type":"fault_injection"' in prompt
     assert "These steps must remain structured JSON" in prompt
     assert "Userspace correctness gate" in prompt
+    assert "Mandatory reproducer code review" in prompt
+    assert "static_check.txt" in prompt
+    assert "link/ABI usage" in prompt
+    assert "compiler static-semantic analysis" in prompt
     assert "guest-process SIGSEGV" in prompt
     assert "userspace undefined behavior" in prompt
     assert "never relabel a userspace crash as a kernel pass" in prompt
@@ -449,6 +454,62 @@ def test_codex_evidence_extracts_uppercase_crash_signatures(tmp_path):
     assert "target_syscall_frame" in staged
     assert "target_release" in staged
 
+
+
+def test_static_userspace_preflight_requires_warning_clean_c(tmp_path):
+    contract = _contract(tmp_path)
+    result = _static_check_userspace_reproducer(contract, tmp_path)
+    assert result["status"] == "passed", result
+    assert (tmp_path / "static_check.txt").is_file()
+
+    source = Path(contract.reproducer.source_dir) / "repro.c"
+    source.write_text("#warning reject this diagnostic\nint main(void) { return 0; }\n", encoding="utf-8")
+    rejected = _static_check_userspace_reproducer(contract, tmp_path)
+    assert rejected["status"] == "failed", rejected
+    audit = (tmp_path / "static_check.txt").read_text(encoding="utf-8")
+    assert "SYNTAX_RETURN_CODE:" in audit
+    assert "SYNTAX_STATUS: failed" in audit
+
+
+
+def test_static_userspace_preflight_checks_link_and_semantics(tmp_path):
+    contract = _contract(tmp_path)
+    source = Path(contract.reproducer.source_dir) / "repro.c"
+
+    source.write_text(
+        "extern int missing_api(void); int main(void) { return missing_api(); }\n",
+        encoding="utf-8",
+    )
+    link_result = _static_check_userspace_reproducer(contract, tmp_path)
+    assert link_result["status"] == "failed", link_result
+    link_audit = (tmp_path / "static_check.txt").read_text(encoding="utf-8")
+    assert "LINK_STATUS: failed" in link_audit
+
+    source.write_text(
+        "#include <stdlib.h>\n"
+        "int main(void) { int *p = NULL; return *p; }\n",
+        encoding="utf-8",
+    )
+    semantic_result = _static_check_userspace_reproducer(contract, tmp_path)
+    assert semantic_result["status"] == "failed", semantic_result
+    semantic_audit = (tmp_path / "static_check.txt").read_text(encoding="utf-8")
+    assert "SEMANTIC_STATUS: failed" in semantic_audit
+
+
+
+def test_static_userspace_preflight_supports_multiple_translation_units(tmp_path):
+    contract = _contract(tmp_path)
+    source_dir = Path(contract.reproducer.source_dir)
+    (source_dir / "helper.c").write_text("int helper(void) { return 0; }\n", encoding="utf-8")
+    (source_dir / "repro.c").write_text(
+        "int helper(void); int main(void) { return helper(); }\n", encoding="utf-8",
+    )
+    contract.reproducer.source_files.append("helper.c")
+    result = _static_check_userspace_reproducer(contract, tmp_path)
+    assert result["status"] == "passed", result
+    audit = (tmp_path / "static_check.txt").read_text(encoding="utf-8")
+    assert "SEMANTIC_STATUS: passed" in audit
+    assert "SEMANTIC_2_STATUS: passed" in audit
 
 
 def test_ephemeral_reproducer_dir_remaps_only_from_current_sync(tmp_path):
