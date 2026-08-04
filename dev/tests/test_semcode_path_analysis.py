@@ -16,6 +16,7 @@ sys.path.insert(0, str(project_root))
 from agents.contracts import KernelExpertOutput
 from agents.kernel_expert import _apply_semcode_path_analysis
 from agents.semcode_path_analysis import (
+    SemcodeMcpClient,
     SemcodeFunction,
     resolve_kernel_commit,
     resolve_kernel_source_for_commit,
@@ -85,6 +86,58 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path]:
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
     return source, executable
+
+
+def test_semcode_client_keeps_session_alive_during_background_index(tmp_path):
+    """A transient indexing response is retried without closing the MCP server."""
+    fake_server = tmp_path / "fake-semcode-mcp.py"
+    fake_server.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+seen = {}
+for line in sys.stdin:
+    request = json.loads(line)
+    if "id" not in request:
+        continue
+    request_id = request["id"]
+    if request.get("method") == "initialize":
+        result = {"content": [{"type": "text", "text": "initialized"}]}
+    elif request.get("method") == "tools/call":
+        name = request.get("params", {}).get("name")
+        seen[name] = seen.get(name, 0) + 1
+        if name == "find_function" and seen[name] == 1:
+            text = "Database is currently being indexed (Analyzing files)."
+        elif name == "find_function":
+            text = "Function: foo_ioctl\\nFile: drivers/foo.c:42\\nBody:\\nfoo_access();\\n"
+        elif name == "find_calls":
+            text = "Direct calls:\\n1. foo_access\\n"
+        elif name == "indexing_status":
+            text = "=== Indexing Status ===\\nStatus: Completed (1 files processed)\\n"
+        else:
+            text = "ok"
+        result = {"content": [{"type": "text", "text": text}]}
+    else:
+        result = {"content": [{"type": "text", "text": "ok"}]}
+    print(json.dumps({"jsonrpc": "2.0", "id": request_id, "result": result}), flush=True)
+""",
+        encoding="utf-8",
+    )
+    fake_server.chmod(0o755)
+    source = tmp_path / "linux"
+    source.mkdir()
+    (source / ".semcode.db").mkdir()
+    client = SemcodeMcpClient(
+        command=str(fake_server), args=(), kernel_source_path=str(source),
+        git_sha="a" * 40, timeout_sec=3,
+    )
+
+    function = client.find_function("foo_ioctl")
+
+    assert function.name == "foo_ioctl"
+    assert function.location == "drivers/foo.c:42"
+    assert function.direct_calls == ("foo_access",)
 
 
 def test_semcode_event_graph_calculates_deltas_and_declares_boundaries(tmp_path):

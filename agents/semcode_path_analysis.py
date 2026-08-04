@@ -14,11 +14,14 @@ import os
 from dataclasses import dataclass, field
 import hashlib
 import json
+import queue
 from pathlib import Path
 import re
 import shlex
 import subprocess
 import tempfile
+import threading
+import time
 from typing import Any, Iterable
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -318,7 +321,13 @@ class SemcodePathAnalysisResult:
 
 
 class SemcodeMcpClient:
-    """Small synchronous client for semcode's newline-delimited MCP transport."""
+    """Synchronous client for semcode's newline-delimited MCP transport.
+
+    Semcode starts commit indexing in a background task.  Keeping the MCP
+    process alive while that task finishes is therefore part of correctness:
+    closing stdin after the first query aborts the index and makes every retry
+    start from the same incomplete database.
+    """
 
     def __init__(
         self,
@@ -365,18 +374,117 @@ class SemcodeMcpClient:
     def _call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         return self._call_many([(tool_name, arguments)])[0]
 
+    @staticmethod
+    def _response_text(response: dict[str, Any]) -> str:
+        if response.get("error") is not None:
+            raise SemcodePathAnalysisError(
+                f"semcode MCP error: {response.get('error')}"
+            )
+        result = response.get("result") or {}
+        content = result.get("content") or []
+        texts = [
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict) and item.get("type") == "text"
+        ]
+        if not texts:
+            raise SemcodePathAnalysisError(
+                "semcode MCP response contained no parseable text content"
+            )
+        return "\n".join(texts)
+
+    @staticmethod
+    def _indexing_response_is_transient(text: str) -> bool:
+        """Return true only for the server's explicit warming/indexing states."""
+        return (
+            "Database is currently being indexed" in text
+            or "Database is empty. Background indexing hasn't started yet" in text
+            or "Status: InProgress" in text
+            or "Status: Analyzing " in text
+        )
+
+    @staticmethod
+    def _indexing_response_failed(text: str) -> bool:
+        return (
+            "Database indexing failed:" in text
+            or "Status: Failed:" in text
+        )
+
+    @staticmethod
+    def _read_responses(
+        output_queue: queue.Queue[str | None],
+        request_ids: Iterable[int],
+        deadline: float,
+    ) -> dict[int, dict[str, Any]]:
+        expected = set(request_ids)
+        responses: dict[int, dict[str, Any]] = {}
+        while expected - responses.keys():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                line = output_queue.get(timeout=min(remaining, 0.25))
+            except queue.Empty:
+                continue
+            if line is None:
+                break
+            try:
+                response = json.loads(line)
+            except json.JSONDecodeError:
+                # Semcode notifications and diagnostic output are not query
+                # responses; malformed lines must not satisfy a request id.
+                continue
+            response_id = response.get("id")
+            if response_id in expected:
+                responses[response_id] = response
+        missing = sorted(expected - responses.keys())
+        if missing:
+            raise SemcodePathAnalysisError(
+                "semcode batch returned no parseable MCP response for request "
+                f"ids {missing}"
+            )
+        return responses
+
+    @staticmethod
+    def _write_messages(process: subprocess.Popen[str], messages: Iterable[dict[str, Any]]) -> None:
+        payload = "".join(json.dumps(message) + "\n" for message in messages)
+        try:
+            if process.stdin is None:
+                raise BrokenPipeError("semcode stdin is unavailable")
+            process.stdin.write(payload)
+            process.stdin.flush()
+        except (BrokenPipeError, OSError) as exc:
+            raise SemcodePathAnalysisError(
+                f"semcode MCP process stdin failed: {type(exc).__name__}: {exc}"
+            ) from exc
+
     def _call_many(self, requests: Iterable[tuple[str, dict[str, Any]]]) -> list[str]:
         """Send a batch of MCP tool calls through one exact-commit server.
 
-        The previous one-request-per-process implementation repeatedly loaded
-        the Semcode database. A batch is still fail-closed: any missing or
-        malformed response raises SemcodePathAnalysisError and callers retain
-        their existing blocked behavior.
+        The process remains alive while Semcode's background indexer warms the
+        database.  Explicit transient index responses are retried in the same
+        session; all other errors remain fail-closed.
         """
         request_items = list(requests)
         if not request_items:
             return []
-        messages = [
+        normalized_requests: list[tuple[str, dict[str, Any]]] = []
+        for tool_name, arguments in request_items:
+            if tool_name in _GIT_AWARE_TOOLS:
+                if not self.git_sha:
+                    raise SemcodePathAnalysisError(
+                        f"semcode {tool_name} requires an explicit expected kernel commit"
+                    )
+                arguments = {**arguments, "git_sha": self.git_sha}
+            normalized_requests.append((tool_name, arguments))
+        db_path = Path(self.kernel_source_path) / ".semcode.db"
+        command = [
+            *shlex.split(self.command), *_without_database_args(self.args),
+            "-d", str(db_path), "--git-repo", self.kernel_source_path,
+        ]
+        if not command:
+            raise SemcodePathAnalysisError("semcode command is empty")
+        initialize_messages = [
             {
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {
@@ -386,64 +494,113 @@ class SemcodeMcpClient:
             },
             {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         ]
-        request_ids: list[int] = []
-        for request_id, (tool_name, arguments) in enumerate(request_items, start=2):
-            if tool_name in _GIT_AWARE_TOOLS:
-                if not self.git_sha:
-                    raise SemcodePathAnalysisError(
-                        f"semcode {tool_name} requires an explicit expected kernel commit"
-                    )
-                arguments = {**arguments, "git_sha": self.git_sha}
-            request_ids.append(request_id)
-            messages.append({
+
+        def tool_message(request_id: int, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            return {
                 "jsonrpc": "2.0", "id": request_id, "method": "tools/call",
                 "params": {"name": tool_name, "arguments": arguments},
-            })
-        db_path = Path(self.kernel_source_path) / ".semcode.db"
-        command = [
-            *shlex.split(self.command), *_without_database_args(self.args),
-            "-d", str(db_path), "--git-repo", self.kernel_source_path,
-        ]
-        if not command:
-            raise SemcodePathAnalysisError("semcode command is empty")
-        payload = "".join(json.dumps(message) + "\n" for message in messages)
+            }
+
         try:
-            completed = subprocess.run(
-                command, input=payload, capture_output=True, text=True,
-                timeout=self.timeout_sec, check=False,
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except OSError as exc:
             raise SemcodePathAnalysisError(
                 f"semcode batch failed: {type(exc).__name__}: {exc}"
             ) from exc
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout).strip()[-500:]
-            raise SemcodePathAnalysisError(
-                f"semcode batch exited {completed.returncode}: {detail}"
-            )
-        responses: dict[int, str] = {}
-        for line in completed.stdout.splitlines():
+
+        output_queue: queue.Queue[str | None] = queue.Queue()
+        stderr_tail: list[str] = []
+
+        def drain_stdout() -> None:
+            if process.stdout is None:
+                output_queue.put(None)
+                return
             try:
-                response = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            response_id = response.get("id")
-            if response_id not in request_ids:
-                continue
-            if "error" in response:
-                raise SemcodePathAnalysisError(
-                    f"semcode request {response_id} MCP error: {response['error']}"
+                for line in process.stdout:
+                    output_queue.put(line)
+            finally:
+                output_queue.put(None)
+
+        def drain_stderr() -> None:
+            if process.stderr is None:
+                return
+            for line in process.stderr:
+                stderr_tail.append(line.rstrip())
+                del stderr_tail[:-20]
+
+        stdout_thread = threading.Thread(target=drain_stdout, name="semcode-stdout", daemon=True)
+        stderr_thread = threading.Thread(target=drain_stderr, name="semcode-stderr", daemon=True)
+        stdout_thread.start()
+        stderr_thread.start()
+        deadline = time.monotonic() + max(float(self.timeout_sec), 1.0)
+        next_request_id = 2
+        try:
+            self._write_messages(process, initialize_messages)
+            request_ids = list(range(next_request_id, next_request_id + len(normalized_requests)))
+            next_request_id += len(normalized_requests)
+            while True:
+                self._write_messages(
+                    process,
+                    [
+                        tool_message(request_id, tool_name, arguments)
+                        for request_id, (tool_name, arguments) in zip(request_ids, normalized_requests)
+                    ],
                 )
-            content = response.get("result", {}).get("content", [])
-            texts = [item.get("text", "") for item in content if item.get("type") == "text"]
-            if texts:
-                responses[response_id] = "\n".join(texts)
-        missing = [request_id for request_id in request_ids if request_id not in responses]
-        if missing:
+                responses = self._read_responses(output_queue, request_ids, deadline)
+                texts = [self._response_text(responses[request_id]) for request_id in request_ids]
+                if any(self._indexing_response_failed(text) for text in texts):
+                    failed = next(text for text in texts if self._indexing_response_failed(text))
+                    raise SemcodePathAnalysisError(f"semcode indexing failed: {failed[-500:]}")
+                if not any(self._indexing_response_is_transient(text) for text in texts):
+                    return texts
+
+                if time.monotonic() >= deadline:
+                    raise SemcodePathAnalysisError(
+                        "semcode indexing did not become ready before timeout"
+                    )
+                status_id = next_request_id
+                next_request_id += 1
+                self._write_messages(
+                    process, [tool_message(status_id, "indexing_status", {})]
+                )
+                status_response = self._read_responses(output_queue, [status_id], deadline)[status_id]
+                status_text = self._response_text(status_response)
+                if self._indexing_response_failed(status_text):
+                    raise SemcodePathAnalysisError(
+                        f"semcode indexing failed: {status_text[-500:]}"
+                    )
+                time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+                request_ids = list(range(next_request_id, next_request_id + len(normalized_requests)))
+                next_request_id += len(normalized_requests)
+        except SemcodePathAnalysisError:
+            raise
+        except (OSError, ValueError) as exc:
+            detail = "; ".join(stderr_tail[-3:])
             raise SemcodePathAnalysisError(
-                f"semcode batch returned no parseable MCP response for request ids {missing}"
-            )
-        return [responses[request_id] for request_id in request_ids]
+                f"semcode batch failed: {type(exc).__name__}: {exc}{': ' + detail if detail else ''}"
+            ) from exc
+        finally:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=2)
 
 
 def verify_semcode_target(
