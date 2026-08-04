@@ -427,6 +427,30 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
         result.kernel_feedback = result.summary
         result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
         return result
+
+    # Fault injection is part of the causal test plan.  A missing or
+    # read-only debugfs control plane must not be mistaken for a userspace
+    # trigger mismatch and retried against the same guest image.
+    for key, raw_path, text in evidence:
+        match = re.search(
+            r"LUMEN_GUEST_FAULT_INJECTION_UNAVAILABLE:"
+            r"([A-Za-z0-9_.+-]+):([A-Za-z0-9_.+-]+)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            continue
+        profile, target = match.groups()
+        result.status = "blocked"
+        result.code = "BLOCKED_GUEST_FAULT_INJECTION_UNAVAILABLE"
+        result.summary = (
+            f"Guest cannot configure the required {profile} fault-injection "
+            f"control plane (target {target}); enable the matching kernel "
+            "debugfs controls or select a compatible QEMU image before retrying."
+        )
+        result.kernel_feedback = result.summary
+        result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+        return result
     # A successfully compiled pthread probe that cannot create/join a worker
     # is deterministic guest ABI evidence. Keep this retryable so Kernel
     # Expert can switch to process workers or a single-process trigger; do not

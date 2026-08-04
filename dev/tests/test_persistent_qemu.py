@@ -274,6 +274,22 @@ def test_fault_injection_is_allowlisted_and_rendered(tmp_path):
     assert "probability" in script
 
 
+def test_fault_injection_setup_failure_is_marked_without_fallback(tmp_path):
+    plan = _plan(tmp_path)
+    plan.execution_steps = [
+        ExecutionStep(
+            type="fault_injection", profile="failslab", probability=100,
+            interval=1, times=1, target="target_fn",
+        ),
+        ExecutionStep(type="run_binary", path="bin/trigger"),
+    ]
+
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+
+    assert "LUMEN_GUEST_FAULT_INJECTION_UNAVAILABLE:failslab:target_fn" in script
+    assert "exit 125" in script
+
+
 def test_call_chain_requires_post_start_frames_and_context(tmp_path):
     plan = _plan(tmp_path)
     content = "\n".join([

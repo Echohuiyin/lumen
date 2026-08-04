@@ -144,6 +144,26 @@ def test_guest_pthread_runtime_incompatibility_is_retryable_environment_evidence
     assert "INVALID_USERSPACE_CRASH" not in feedback
 
 
+def test_fault_injection_control_plane_is_a_terminal_guest_block(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_GUEST_FAULT_INJECTION_UNAVAILABLE:failslab:target_fn\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="revise trigger",
+        artifacts={"ssh_output": str(ssh_output)},
+    )
+
+    promoted = _promote_guest_capability_block(result)
+
+    assert promoted.status == "blocked"
+    assert promoted.code == "BLOCKED_GUEST_FAULT_INJECTION_UNAVAILABLE"
+    assert "failslab" in promoted.summary
+    assert "target_fn" in promoted.summary
+
+
 def test_test_plan_compiles_userspace_source_inside_guest():
     with tempfile.TemporaryDirectory() as directory:
         plan = _build_plan(_contract(Path(directory)))

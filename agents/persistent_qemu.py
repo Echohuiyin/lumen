@@ -451,16 +451,37 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
             lines.append(f"printf '%s\\n' {shlex.quote(step.value)} > {shlex.quote(sysctl_path)}")
         elif step.type == "fault_injection":
             fault_dir = "/sys/kernel/debug/" + step.profile
+            # Fault injection is an explicit part of the causal contract.  If
+            # the guest kernel/debugfs cannot expose a writable control plane,
+            # emit a structured capability marker instead of allowing the
+            # shell's raw permission error to look like an ordinary mismatch.
+            marker_target = re.sub(r"[^A-Za-z0-9_.+-]", "_", step.target or "unfiltered")[:96]
+            fault_marker = f"LUMEN_GUEST_FAULT_INJECTION_UNAVAILABLE:{step.profile}:{marker_target}"
             lines.extend([
-                f"test -d {shlex.quote(fault_dir)}",
-                f"printf '%s\\n' {step.probability} > {shlex.quote(fault_dir + '/probability')}",
-                f"printf '%s\\n' {step.interval} > {shlex.quote(fault_dir + '/interval')}",
-                f"printf '%s\\n' {step.times} > {shlex.quote(fault_dir + '/times')}",
+                f"if ! test -d {shlex.quote(fault_dir)}; then",
+                f"    printf '%s\\n' {shlex.quote(fault_marker)} > /dev/console 2>/dev/null || true",
+                f"    printf '%s\\n' {shlex.quote(fault_marker)} >&2",
+                "    exit 125",
+                "fi",
             ])
+            fault_controls = [
+                ("probability", str(step.probability)),
+                ("interval", str(step.interval)),
+                ("times", str(step.times)),
+            ]
             if step.space:
-                lines.append(f"printf '%s\\n' {step.space} > {shlex.quote(fault_dir + '/space')}")
+                fault_controls.append(("space", str(step.space)))
             if step.target:
-                lines.append(f"printf '%s\\n' {shlex.quote(step.target)} > {shlex.quote(fault_dir + '/filter')}")
+                fault_controls.append(("filter", step.target))
+            for control, value in fault_controls:
+                control_path = shlex.quote(fault_dir + "/" + control)
+                lines.extend([
+                    f"if ! printf '%s\\n' {shlex.quote(value)} > {control_path}; then",
+                    f"    printf '%s\\n' {shlex.quote(fault_marker)} > /dev/console 2>/dev/null || true",
+                    f"    printf '%s\\n' {shlex.quote(fault_marker)} >&2",
+                    "    exit 125",
+                    "fi",
+                ])
         else:  # validated Literal leaves only wait
             lines.append(f"sleep {step.seconds}")
     return "\n".join(lines) + "\n"
