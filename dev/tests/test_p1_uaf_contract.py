@@ -100,6 +100,26 @@ def test_causal_reproduction_rejects_boot_signal_and_accepts_started_target_sign
     assert result["target_context_matched"] is True
 
 
+def test_causal_reproduction_matches_symbol_when_contract_has_source_annotation():
+    plan = TestPlan(
+        expected_signal="WARNING: target fault", reproduction_case_id="case-1",
+        target_path_id="p1", require_causal_reproduction=True,
+    )
+    plan.call_chain_oracle.required_top_frames = [
+        "fault_leaf+0x20/0x40 drivers/example.c:10 (P)",
+    ]
+    log = "\n".join([
+        "LUMEN_REPRO_START:case-1:p1",
+        "WARNING: target fault",
+        "Call trace:",
+        "  fault_leaf+0x24/0x50",
+        "  context_specific_caller+0x1/0x2",
+    ])
+    result = _check_causal_reproduction(log, plan, "WARNING: target fault")
+    assert result["target_context_matched"] is True
+    assert result["matched_stack_frames"] == ["  fault_leaf+0x24/0x50"]
+
+
 def test_retry_is_local_and_only_retries_transient(monkeypatch):
     import agents.error_handling as errors
     attempts = []

@@ -8,6 +8,7 @@ the model decided to call the right tools in the right order.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 from agents.contracts import (
@@ -323,6 +324,27 @@ def run_qemu_test_plan(
     )
 
 
+def _canonical_frame_symbol(frame: str) -> str:
+    """Reduce a contract frame to the symbol printed by a serial trace.
+
+    Kernel Expert evidence may include offsets, source locations, and inline
+    annotations while the guest serial log usually prints only
+    ``symbol+offset``.  Causal validation must compare the shared symbol, just
+    like the deterministic call-chain oracle does, without treating lower
+    context frames as mandatory.
+    """
+    value = str(frame).strip().lstrip("?* ")
+    value = re.split(r"\s+", value, maxsplit=1)[0]
+    return re.sub(r"\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?$", "", value, flags=re.IGNORECASE)
+
+
+def _frame_symbol_seen(line: str, symbol: str) -> bool:
+    if not symbol:
+        return False
+    pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(symbol)}(?![A-Za-z0-9_.$])"
+    return re.search(pattern, line, flags=re.IGNORECASE) is not None
+
+
 def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal: str) -> dict:
     """Verify the signal belongs to the selected reproducer, not boot noise."""
     result = {
@@ -369,9 +391,13 @@ def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal:
     # rejecting an otherwise exact userspace reproduction on a display-name
     # mismatch.
     if not result["matched_stack_frames"]:
-        required = list(plan.call_chain_oracle.required_frames)
+        required = list(
+            plan.call_chain_oracle.required_top_frames
+            or plan.call_chain_oracle.required_frames
+        )
         for frame in required:
-            matches = [line for line in window if frame.lower() in line.lower()]
+            symbol = _canonical_frame_symbol(frame)
+            matches = [line for line in window if _frame_symbol_seen(line, symbol)]
             if matches:
                 result["matched_stack_frames"].extend(matches[:1])
     result["target_context_matched"] = bool(result["matched_stack_frames"])
