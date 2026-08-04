@@ -91,3 +91,5 @@ def test_empty_knowledge_summary_keeps_kernel_evidence_report(monkeypatch, tmp_p
     assert "Verified warning at target_fn()" in content
     assert "not reproduced" in content
     assert "timer abort; target frame absent" in content
+    assert "Root-cause report:" in result["final_response"]
+    assert "callback observes an object after its final put" in result["final_response"]

@@ -209,10 +209,15 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
     status_text = "成功复现" if test_passed else "未成功复现"
 
     # 构建最终响应
+    root_cause_summary = str(kernel_contract.get("root_cause") or "").strip()
+    if not root_cause_summary:
+        root_cause_summary = "See the evidence archive in the report; no root-cause conclusion was supplied by the contract."
     final_response = (
         f"问题分析已完成（{status_text}）。\n\n"
         f"Issue: {issue_id} ({issue_url})\n"
         f"知识库文件: {knowledge_file}\n\n"
+        f"Root-cause report: {knowledge_file}\n"
+        f"Root-cause conclusion: {root_cause_summary}\n\n"
         f"Chroma 导入: {import_message}\n\n"
         f"{path_appendix}\n\n"
         f"共调用 {len(expert_results)} 个工具专家，"
