@@ -140,6 +140,33 @@ for line in sys.stdin:
     assert function.direct_calls == ("foo_access",)
 
 
+def test_semcode_client_keeps_parseable_functions_when_wrapper_is_missing(tmp_path):
+    """Missing generated wrappers do not discard valid exact-commit entries."""
+    source = tmp_path / "linux"
+    source.mkdir()
+    (source / ".semcode.db").mkdir()
+    client = SemcodeMcpClient(
+        command="/bin/true", args=(), kernel_source_path=str(source),
+        git_sha="a" * 40,
+    )
+    calls = []
+
+    def fake_call_many(requests):
+        calls.append(list(requests))
+        if len(calls) == 1:
+            return [
+                "Function: foo_ioctl\nFile: drivers/foo.c:42\nBody:\nfoo_access();\n",
+                "Function 'generated_wrapper' not found at git SHA ...",
+            ]
+        return ["Direct calls:\n1. foo_access\n", ""]
+
+    client._call_many = fake_call_many
+
+    functions = client.find_functions(["foo_ioctl", "generated_wrapper"])
+
+    assert [function.name for function in functions] == ["foo_ioctl"]
+
+
 def test_semcode_event_graph_calculates_deltas_and_declares_boundaries(tmp_path):
     source, executable = _source_tree(tmp_path)
     target = subprocess.check_output(

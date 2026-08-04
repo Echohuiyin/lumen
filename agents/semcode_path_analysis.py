@@ -366,10 +366,23 @@ class SemcodeMcpClient:
         calls_texts = self._call_many([
             ("find_calls", {"name": name}) for name in requested
         ])
-        return [
-            _parse_semcode_function(function_text, calls_text, requested_name=name)
-            for name, function_text, calls_text in zip(requested, function_texts, calls_texts)
-        ]
+        functions: list[SemcodeFunction] = []
+        for name, function_text, calls_text in zip(requested, function_texts, calls_texts):
+            try:
+                functions.append(
+                    _parse_semcode_function(function_text, calls_text, requested_name=name)
+                )
+            except SemcodePathAnalysisError:
+                # Syscall-table entries, generated wrappers and architecture
+                # aliases can legitimately have no standalone Semcode
+                # definition.  They are unresolved context, not evidence that
+                # every other exact-commit function lookup failed.
+                continue
+        if not functions:
+            raise SemcodePathAnalysisError(
+                "semcode returned no parseable functions for requested entries"
+            )
+        return functions
 
     def _call(self, tool_name: str, arguments: dict[str, Any]) -> str:
         return self._call_many([(tool_name, arguments)])[0]
