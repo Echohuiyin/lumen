@@ -180,6 +180,16 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     qemu_extra_cmdline, qemu_extra_label = _extract_labeled_value(
         text, ["qemu_extra_cmdline", "qemu recipe extra cmdline", "extra_cmdline"]
     )
+    expected_signal, expected_signal_label = _extract_labeled_value(
+        text, ["expected_signal", "expected kernel signal", "fault signal"]
+    )
+    guest_sysctls_text, guest_sysctls_label = _extract_labeled_value(
+        text, ["guest_sysctls", "guest_sysctl", "runtime_sysctls"]
+    )
+    guest_sysctls = [
+        item.strip() for item in re.split(r"[,;]", guest_sysctls_text)
+        if item.strip()
+    ]
     kernel_source_path, source_label = _extract_labeled_path(
         text,
         [
@@ -207,6 +217,22 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "test script",
         ],
     )
+    reproducer_module_path, reproducer_module_label = _extract_labeled_path(
+        text,
+        [
+            "reproducer_module_path",
+            "reproducer_module",
+            "kernel_module",
+        ],
+    )
+    reproducer_trigger_path, reproducer_trigger_label = _extract_labeled_path(
+        text,
+        [
+            "reproducer_trigger_path",
+            "reproducer_trigger",
+            "trigger_source",
+        ],
+    )
     target_arch, arch_pattern = _extract_target_arch(text)
     expected_kernel_commit, commit_label = _extract_labeled_value(
         text, ["expected_kernel_commit", "kernel_commit", "kernel commit"]
@@ -219,10 +245,14 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "boot_kernel_path": (boot_kernel_path, boot_label),
         "rootfs_path": (rootfs_path, rootfs_label),
         "qemu_extra_cmdline": (qemu_extra_cmdline, qemu_extra_label),
+        "expected_signal": (expected_signal, expected_signal_label),
+        "guest_sysctls": (guest_sysctls_text, guest_sysctls_label),
         "kernel_source_path": (kernel_source_path, source_label),
         "log_path": (log_path, log_label),
         "crash_report_path": (crash_report_path, crash_report_label),
         "reproducer_path": (reproducer_path, reproducer_label),
+        "reproducer_module_path": (reproducer_module_path, reproducer_module_label),
+        "reproducer_trigger_path": (reproducer_trigger_path, reproducer_trigger_label),
     }
     for field, (value, source) in fields.items():
         if value:
@@ -238,6 +268,11 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         evidence.append({
             "kind": "input_value", "field": "expected_kernel_commit",
             "value": expected_kernel_commit, "source": commit_label,
+        })
+    if guest_sysctls:
+        evidence.append({
+            "kind": "input_value", "field": "guest_sysctls",
+            "value": guest_sysctls, "source": guest_sysctls_label,
         })
     if log_excerpt:
         evidence.append({"kind": "input_log_excerpt", "field": "log_excerpt", "length": len(log_excerpt)})
@@ -255,6 +290,8 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "log_path": "file",
             "crash_report_path": "file",
             "reproducer_path": "file",
+            "reproducer_module_path": "file",
+            "reproducer_trigger_path": "file",
         }
         for field, (value, _) in fields.items():
             if value and field in expected_kinds:
@@ -280,12 +317,16 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         boot_kernel_path=boot_kernel_path,
         rootfs_path=rootfs_path,
         qemu_extra_cmdline=qemu_extra_cmdline,
+        expected_signal=expected_signal,
+        guest_sysctls=guest_sysctls,
         expected_kernel_commit=expected_kernel_commit,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
         log_path=log_path,
         crash_report_path=crash_report_path,
         reproducer_path=reproducer_path,
+        reproducer_module_path=reproducer_module_path,
+        reproducer_trigger_path=reproducer_trigger_path,
         log_excerpt=log_excerpt,
         evidence=evidence,
         warnings=warnings,

@@ -400,6 +400,36 @@ def test_call_chain_accepts_one_member_of_an_alternative_group(tmp_path):
     assert match["frame_order_matched"] is True
 
 
+def test_call_chain_accepts_ordered_parallel_trace_blocks(tmp_path):
+    """Parallel blocked tasks may satisfy separate ordered stack edges."""
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_top_frames = [
+        "thread1_fn", "thread2_fn", "mutex_lock",
+    ]
+    plan.call_chain_oracle.required_frames = list(
+        plan.call_chain_oracle.required_top_frames
+    )
+    plan.call_chain_oracle.required_frame_order = [
+        ["thread1_fn", "mutex_lock"],
+        ["thread2_fn", "mutex_lock"],
+    ]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  __mutex_lock.constprop.0+0x1/0x2",
+        "[   1.2]  thread1_fn+0x1/0x2",
+        "[   1.3]  </TASK>",
+        "[   2.0] Call Trace:",
+        "[   2.1]  __mutex_lock.constprop.0+0x1/0x2",
+        "[   2.2]  thread2_fn+0x1/0x2",
+        "[   2.3]  </TASK>",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+    assert match["trace_blocks_aggregated"] is True
+
+
 if __name__ == "__main__":
     import tempfile
     for test in (

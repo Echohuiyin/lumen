@@ -115,7 +115,7 @@ class ExecutionStep(BaseModel):
     module load or evaluates an agent-authored shell script.
     """
 
-    type: Literal["run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
+    type: Literal["load_module", "run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
     path: str = ""
     args: list[str] = Field(default_factory=list)
     key: str = ""
@@ -201,6 +201,9 @@ class TestPlan(BaseModel):
     reproducer_dir: str = ""
     reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
     reproducer_module_path: str = ""
+    # A module is executable input only when the operator explicitly declared
+    # a prebuilt .ko artifact.  The runner never infers this from filenames.
+    prebuilt_module_authorized: bool = False
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
@@ -261,12 +264,16 @@ class InputArtifactsContract(BaseModel):
     boot_kernel_path: str = ""
     rootfs_path: str = ""
     qemu_extra_cmdline: str = ""
+    expected_signal: str = ""
+    guest_sysctls: list[str] = Field(default_factory=list)
     target_arch: str = ""
     expected_kernel_commit: str = ""
     kernel_source_path: str = ""
     log_path: str = ""
     crash_report_path: str = ""
     reproducer_path: str = ""
+    reproducer_module_path: str = ""
+    reproducer_trigger_path: str = ""
     log_excerpt: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -369,6 +376,10 @@ class KernelExpertOutput(BaseModel):
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer_module_path: str = ""
+    # True only for a prebuilt module explicitly declared by the operator.
+    # It is intentionally separate from reproducer_module_path so a model
+    # cannot grant itself permission by emitting a .ko path.
+    prebuilt_module_authorized: bool = False
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""

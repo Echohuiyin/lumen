@@ -31,6 +31,7 @@ from agents.test_runner import _check_causal_reproduction, _match_serial_signals
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_ROOT = PROJECT_ROOT / "runtime" / "qemu-ssh"
 _SAFE_PAYLOAD_PATH = re.compile(r"^bin/[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_SAFE_MODULE_PATH = re.compile(r"^modules/[A-Za-z0-9][A-Za-z0-9._+-]*\.ko$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SAFE_GUEST_WORKDIR = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SAFE_SSH_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*\$?$")
@@ -290,8 +291,21 @@ def _validate_execution_steps(plan: TestPlan) -> None:
     """Reject unspecified or unsafe guest actions before QEMU is touched."""
     if not plan.execution_steps:
         raise ValueError("execution_steps must not be empty")
+    module_steps = []
+    run_binary_indices = []
     for index, step in enumerate(plan.execution_steps, start=1):
-        if step.type == "run_binary":
+        if step.type == "load_module":
+            module_steps.append(step)
+            if not plan.prebuilt_module_authorized:
+                raise ValueError(
+                    f"execution step {index} requests a kernel module without an explicitly authorized prebuilt module"
+                )
+            if not _SAFE_MODULE_PATH.fullmatch(step.path):
+                raise ValueError(f"execution step {index} has invalid kernel module path: {step.path!r}")
+            if step.args:
+                raise ValueError(f"execution step {index} must not pass arguments to a kernel module")
+        elif step.type == "run_binary":
+            run_binary_indices.append(index)
             if not _SAFE_PAYLOAD_PATH.fullmatch(step.path):
                 raise ValueError(f"execution step {index} has invalid userspace binary path: {step.path!r}")
             if any("\x00" in arg or "\n" in arg for arg in step.args):
@@ -316,6 +330,24 @@ def _validate_execution_steps(plan: TestPlan) -> None:
                 raise ValueError(f"execution step {index} fault probability must be in 0..100")
             if not 1 <= step.interval <= 100000 or not 1 <= step.times <= 100000:
                 raise ValueError(f"execution step {index} fault interval/times are out of range")
+
+    declared_module = str(plan.reproducer_module_path or "").strip()
+    if declared_module and not plan.prebuilt_module_authorized:
+        raise ValueError("reproducer_module_path requires explicit prebuilt_module_authorized=true")
+    if plan.prebuilt_module_authorized:
+        if not declared_module:
+            raise ValueError("prebuilt_module_authorized requires reproducer_module_path")
+        module_path = Path(os.path.expandvars(os.path.expanduser(declared_module))).resolve()
+        if not module_path.is_file() or module_path.suffix != ".ko":
+            raise ValueError(f"authorized prebuilt module is missing or not a .ko file: {declared_module}")
+        if len(module_steps) != 1:
+            raise ValueError("an authorized prebuilt module requires exactly one load_module step")
+        if Path(module_steps[0].path).name != module_path.name:
+            raise ValueError("load_module path must name the explicitly declared prebuilt module")
+        if run_binary_indices and plan.execution_steps.index(module_steps[0]) > min(run_binary_indices) - 1:
+            raise ValueError("load_module must occur before the userspace run_binary step")
+    elif module_steps:
+        raise ValueError("load_module steps require an explicitly authorized prebuilt module")
 
 
 def _render_execution_script(plan: TestPlan, marker: str) -> str:
@@ -432,7 +464,10 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         f"echo {shlex.quote(marker)} > /dev/console",
     ])
     for step in plan.execution_steps:
-        if step.type == "run_binary":
+        if step.type == "load_module":
+            lines.append(f"test -f {shlex.quote('./' + step.path)}")
+            lines.append(f"insmod {shlex.quote('./' + step.path)}")
+        elif step.type == "run_binary":
             command = " ".join([shlex.quote("./" + step.path), *(shlex.quote(arg) for arg in step.args)])
             lines.append(f"test -x {shlex.quote('./' + step.path)}")
             lines.append(f"timeout --signal=KILL {runtime_timeout} {command}")
@@ -753,8 +788,10 @@ class PersistentQemuManager:
                     raise ValueError(f"declared reproducer source is missing: {source}")
                 shutil.copy2(source, destination / relative_name)
         if self.plan.reproducer_module_path:
-            module = Path(os.path.expanduser(self.plan.reproducer_module_path)).resolve()
-            if module.is_file():
+            module = Path(
+                os.path.expandvars(os.path.expanduser(self.plan.reproducer_module_path))
+            ).resolve()
+            if module.is_file() and module.suffix == ".ko":
                 modules = stage / "modules"
                 modules.mkdir(exist_ok=True)
                 shutil.copy2(module, modules / module.name)
@@ -782,11 +819,16 @@ class PersistentQemuManager:
         mkdir_result = subprocess.run([*self._ssh_base(port), command], capture_output=True, text=True, timeout=15)
         if mkdir_result.returncode != 0:
             return ToolStepResult(name="run_poc_over_ssh", status="failed", message="Failed to prepare remote POC directory.", error=mkdir_result.stderr[-1000:])
+        # OpenSSH 9.x rejects the historical ``stage/.`` source spelling with
+        # ``unexpected filename: .``.  Pass the staged children explicitly so
+        # files (including run.sh) land directly under the already-created
+        # remote directory while preserving nested reproducer paths.
+        upload_sources = [str(entry) for entry in sorted(stage.iterdir(), key=lambda item: item.name)]
         upload = subprocess.run(
             ["scp", "-i", str(self.paths.ssh_key), "-P", str(port), "-r",
              "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "UserKnownHostsFile=/dev/null",
-             f"{stage}/.", f"{_ssh_user()}@127.0.0.1:{remote}"],
+             "-o", "UserKnownHostsFile=/dev/null", *upload_sources,
+             f"{_ssh_user()}@127.0.0.1:{remote}"],
             capture_output=True, text=True, timeout=60,
         )
         if upload.returncode != 0:
@@ -885,12 +927,35 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         ]
         return result
     window = lines[start + 1:]
+    def _normalise_runtime_symbol(symbol: str) -> str:
+        value = str(symbol or "").strip().lstrip("?* ")
+        value = re.sub(
+            r"\.constprop(?:\.\d+)*$", "",
+            value, flags=re.IGNORECASE,
+        )
+        # GCC may emit an out-of-line ``__foo.constprop.N`` implementation
+        # for a contract frame named ``foo``.  Treat only that compiler
+        # decoration and the paired leading implementation underscores as an
+        # alias; all other symbols remain exact token matches.
+        if value.startswith("__"):
+            value = value[2:]
+        return value
+
+    def _runtime_symbol_tokens(line: str) -> list[str]:
+        return re.findall(r"[A-Za-z_][A-Za-z0-9_.$]*", str(line or ""))
+
     def frame_seen(line: str, frame: str) -> bool:
         # Avoid treating ``evict`` as present in the distinct symbol
         # ``jfs_evict_inode``.  Stack symbols are token-like identifiers;
         # boundaries make both presence and ordering deterministic.
         pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
-        return re.search(pattern, line, flags=re.IGNORECASE) is not None
+        if re.search(pattern, line, flags=re.IGNORECASE) is not None:
+            return True
+        target = _normalise_runtime_symbol(frame)
+        return any(
+            _normalise_runtime_symbol(token).lower() == target.lower()
+            for token in _runtime_symbol_tokens(line)
+        )
 
     # ``required_frames`` is retained for backward compatibility, while
     # ``required_frame_alternatives`` describes mutually exclusive branches
@@ -1090,14 +1155,86 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
             "frame_order_direction": "forward" if forward else ("reverse" if reverse else "mismatch"),
         }
 
-    evaluations = [_evaluate_trace(block) for block in _trace_windows()]
+    trace_windows = _trace_windows()
+    evaluations = [_evaluate_trace(block) for block in trace_windows]
     # Prefer a complete single stack.  If no stack is complete, retain the
-    # most informative one for diagnostics; never merge frames across blocks.
+    # most informative one unless the independently verified multi-block
+    # ordering rule below applies.
     complete = [item for item in evaluations if item["frame_order_matched"]]
-    chosen = complete[0] if complete else max(
-        evaluations,
-        key=lambda item: (len(item["required_frames_found"]), -len(item["missing_frames"])),
-    )
+    if complete:
+        chosen = complete[0]
+    else:
+        # A report may contain several independent stacks for the same
+        # asynchronous event (for example one blocked task per side of an
+        # ABBA deadlock).  Do not merge arbitrary frame presence across
+        # blocks.  Permit the aggregate only when every required group is
+        # observed and every declared ordering edge is satisfied inside one
+        # block, with one consistent stack orientation.  This preserves the
+        # strict single-stack path above and rejects split, unordered chains.
+        def _frame_position(trace_lines: list[str], frame: str) -> int:
+            non_question = [
+                line for line in trace_lines
+                if not re.search(r"\]\s+\?", line)
+            ]
+            candidates = non_question
+            if not any(frame_seen(line, frame) for line in candidates):
+                candidates = trace_lines
+            return next(
+                (index for index, line in enumerate(candidates)
+                 if frame_seen(line, frame)),
+                -1,
+            )
+
+        union_found = {
+            frame
+            for item in evaluations
+            for frame in item["required_frames_found"]
+        }
+        aggregate_missing = [
+            group[0] if len(group) == 1 else " or ".join(group)
+            for group in required_groups
+            if not any(frame in union_found for frame in group)
+        ]
+        edge_directions: list[str] = []
+        unmatched_pairs: list[list[str]] = []
+        if not aggregate_missing:
+            for pair in pairs:
+                directions = []
+                for trace in trace_windows:
+                    left = _frame_position(trace, pair[0])
+                    right = _frame_position(trace, pair[1])
+                    if left < 0 or right < 0 or left == right:
+                        continue
+                    directions.append("forward" if left < right else "reverse")
+                if not directions:
+                    unmatched_pairs.append(pair)
+                else:
+                    edge_directions.append(directions[0])
+        if (
+            len(trace_windows) > 1
+            and not aggregate_missing
+            and not unmatched_pairs
+            and len(set(edge_directions)) <= 1
+        ):
+            chosen = {
+                "required_frames_found": [
+                    frame for frame in required_chain if frame in union_found
+                ] + [
+                    frame for group in alternative_groups
+                    for frame in group if frame in union_found
+                    and frame not in required_chain
+                ],
+                "missing_frames": [],
+                "frame_order_matched": True,
+                "frame_order_direction": edge_directions[0]
+                if edge_directions else "forward",
+                "trace_blocks_aggregated": True,
+            }
+        else:
+            chosen = max(
+                evaluations,
+                key=lambda item: (len(item["required_frames_found"]), -len(item["missing_frames"])),
+            )
     result.update(chosen)
     return result
 

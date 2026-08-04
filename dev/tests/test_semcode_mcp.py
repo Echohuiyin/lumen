@@ -211,7 +211,9 @@ if __name__ == "__main__":
     def _run_direct(test):
         if test.__name__ in {
             "test_semcode_db_comes_from_input_kernel_source",
-            "test_write_semcode_mcp_config_format",
+            "test_codex_semcode_mcp_command_overrides",
+            "test_codex_semcode_mcp_missing_command_is_blocking",
+            "test_codex_semcode_mcp_missing_binary_is_blocking",
             "test_input_artifacts_validates_kernel_source",
         }:
             with tempfile.TemporaryDirectory() as tmp:
@@ -226,9 +228,9 @@ if __name__ == "__main__":
         test_semcode_db_comes_from_input_kernel_source,
         test_input_artifacts_parses_kernel_source,
         test_input_artifacts_kernel_source_absent_by_default,
-        test_write_semcode_mcp_config_format,
-        test_write_semcode_mcp_config_empty_when_no_command,
-        test_write_semcode_mcp_config_empty_when_binary_missing,
+        test_codex_semcode_mcp_command_overrides,
+        test_codex_semcode_mcp_missing_command_is_blocking,
+        test_codex_semcode_mcp_missing_binary_is_blocking,
         test_kernel_source_override_changes_db_path,
         test_input_artifacts_validates_kernel_source,
     ]:

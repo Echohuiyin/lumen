@@ -321,7 +321,33 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
             + ", ".join(sorted(set(unresolved_args)))
         )
     oracle = _strict_call_chain_oracle(contract)
-    steps = [*contract.pressure_requirements, *contract.fault_injection_requirements]
+    module_steps = [
+        step for step in contract.execution_steps
+        if step.type == "load_module"
+    ]
+    sysctl_steps = [
+        step for step in contract.execution_steps
+        if step.type == "write_sysctl"
+    ]
+    if module_steps and not contract.prebuilt_module_authorized:
+        raise ValueError(
+            "load_module steps require an explicitly authorized prebuilt module"
+        )
+    if contract.prebuilt_module_authorized and len(module_steps) != 1:
+        raise ValueError(
+            "an authorized prebuilt module requires exactly one load_module step"
+        )
+    # Preserve the explicit module load before any userspace action.  The
+    # runner still validates the path, authorization, and basename against the
+    # input-declared .ko; arbitrary model-authored run_binary steps are not
+    # copied into the plan because the canonical userspace binary is appended
+    # below.
+    steps = [
+        *sysctl_steps,
+        *module_steps,
+        *contract.pressure_requirements,
+        *contract.fault_injection_requirements,
+    ]
     steps.append(ExecutionStep(
         type="run_binary",
         path=f"bin/{reproducer.output_binary}",
@@ -333,10 +359,18 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         rootfs_mode="ext4",
         rootfs_path=contract.rootfs_path,
         reproducer_dir=reproducer.source_dir,
+        reproducer_module_path=contract.reproducer_module_path,
+        prebuilt_module_authorized=contract.prebuilt_module_authorized,
         reproducer=reproducer,
         execution_steps=steps,
         expected_signal=contract.expected_signal,
-        detection_signals=DetectionSignals(serial_signals=list(oracle.fault_signatures)),
+        detection_signals=DetectionSignals(
+            serial_signals=(
+                [contract.expected_signal]
+                if contract.reproducer_module_path and contract.expected_signal
+                else list(oracle.fault_signatures)
+            ),
+        ),
         qemu_recipe=contract.qemu_recipe,
         reproduction_case_id=contract.uaf_analysis.case_id if contract.uaf_analysis else "maintenance-case",
         target_path_id=contract.uaf_analysis.reproduction_target_path_id if contract.uaf_analysis else f"tryout-{contract.tryout}",
@@ -893,10 +927,20 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                 summary="Kernel Expert contract is not ready for Test Expert.",
                 tryout=tryout,
             )
-        elif contract.reproducer.artifact_type != "userspace" or contract.reproducer.language != "c" or contract.reproducer_module_path:
+        elif (
+            contract.reproducer.artifact_type != "userspace"
+            or contract.reproducer.language != "c"
+            or (
+                contract.reproducer_module_path
+                and not contract.prebuilt_module_authorized
+            )
+        ):
             result = _blocked_attempt(
                 code="BLOCKED_NON_USERSPACE_REPRODUCER",
-                summary="Test Expert accepts only an ok userspace C contract without kernel-module artifacts.",
+                summary=(
+                    "Test Expert accepts userspace C plus only an explicitly authorized "
+                    "prebuilt .ko; generated or undeclared kernel modules are blocked."
+                ),
                 tryout=tryout,
             )
         else:

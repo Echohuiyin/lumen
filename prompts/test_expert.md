@@ -13,7 +13,7 @@ You receive a structured Kernel Expert contract containing root cause, original 
 You must:
 
 1. Understand the supplied root-cause mechanism and oracle.
-2. Validate that the reproducer is userspace C-only.
+2. Validate that the reproducer is userspace C plus, only when the Kernel Expert contract carries `prebuilt_module_authorized=true`, one operator-supplied prebuilt `.ko` loaded by an explicit `load_module` step.
 3. Use a fresh isolated image copy for this try-out.
 4. Start QEMU, wait for SSH, copy C sources into a guest-unique directory, and compile there.
 5. Run only structured, allow-listed pressure and fault-injection steps.
@@ -35,11 +35,16 @@ The deterministic runner performs commands and captures artifacts. You provide t
 
 ## Safety and integrity rules
 
-- Do not run a kernel module, Kbuild, free test script, arbitrary shell, or an undeclared binary.
+- Do not run a kernel module, Kbuild, free test script, arbitrary shell, or an undeclared binary. The sole exception is the exact prebuilt `.ko` explicitly declared by the input artifact contract and named by the structured `load_module` step; never compile or alter it.
 - Do not change the reproducer source, root-cause analysis, or call-chain oracle.
 - Do not reuse an image that a previous try-out has modified.
 - Do not accept boot-time failures, historical serial output, or echoing an expected text string as reproduction evidence.
 - Do not call a result successful without the required start marker, post-start target signal, required frames, required order, and target context.
+- For an authorized module whose fault is reported asynchronously (such as
+  `khungtaskd`), verify that the userspace observer remains alive beyond the
+  declared detector timeout plus a bounded scheduling margin. A procfs
+  precondition line followed by an early process exit is a failed trigger, not
+  evidence that the kernel path was absent.
 - Keep all image identity, compile output, execution output, injection settings, serial window, and comparison artifacts.
 
 ## Injection policy

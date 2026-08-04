@@ -29,7 +29,9 @@ def _resolve_env_vars(text: str) -> str:
             val = os.environ.get(var.strip())
             return val if val else default.strip()
         else:
-            return os.environ[inner.strip()]
+            # Keep an unresolved deployment variable visible to the later
+            # artifact validator instead of failing input parsing outright.
+            return os.environ.get(inner.strip(), m.group(0))
 
     result = text
     prev = None
@@ -85,6 +87,12 @@ INPUT_FILE_FIELDS = {
     "report",
     "reproducer",
     "reproducer_path",
+    "reproducer_module",
+    "reproducer_module_path",
+    "kernel_module",
+    "reproducer_trigger",
+    "reproducer_trigger_path",
+    "trigger_source",
     "syz_repro",
     "kernel_config",
     "target_arch",
@@ -93,6 +101,8 @@ INPUT_FILE_FIELDS = {
     # input contract and must reach the structured workflow state.
     "qemu_extra_cmdline",
     "qemu_recipe",
+    "expected_signal",
+    "guest_sysctls",
     # Preserve bounded, human-authored maintenance constraints (for example
     # a required userspace ABI sequence) in the Kernel Expert prompt.
     "maintenance_notes",
