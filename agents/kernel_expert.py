@@ -1074,6 +1074,67 @@ def _extract_first_hand_log_hints(
     return "\n".join(selected)[:max_chars]
 
 
+def _preserve_valid_contract_after_cli_failure(
+    *, state: MaintenanceWorkflowState, error: RuntimeError,
+    error_message: str, semcode_path_analysis: SemcodePathAnalysisResult | None,
+) -> dict:
+    """Retain a completed diagnosis when a later retry times out.
+
+    A retry is allowed to improve the userspace trigger, but a provider
+    timeout must not erase the last source-backed root-cause contract.  The
+    retained contract is marked blocked and is never routed back to QEMU;
+    only the evidence archive can consume it.
+    """
+    try:
+        previous = _model_validate(
+            KernelExpertOutput, state.get("kernel_contract") or {},
+        )
+    except (TypeError, ValueError):
+        return {}
+    if (
+        previous.status != "ok"
+        or not previous.root_cause.strip()
+        or not _kernel_contract_has_handoff(previous)
+    ):
+        return {}
+
+    data = model_to_dict(previous)
+    data["status"] = "blocked"
+    data["build_status"] = "skipped"
+    data["blocked_reason"] = str(error)
+    warnings = list(data.get("warnings") or [])
+    warnings.extend([
+        error_message,
+        "Retained the last complete Kernel Expert contract for root-cause evidence; "
+        "the timed-out retry was not handed to Test Expert.",
+    ])
+    data["warnings"] = warnings
+    data["evidence"] = [
+        *(data.get("evidence") or []),
+        error_to_evidence(
+            classify_error(error, operation="kernel_expert CLI"),
+            operation="kernel_expert CLI",
+        ),
+    ]
+    preserved = _model_validate(KernelExpertOutput, data)
+    previous_analysis = str(state.get("kernel_analysis", "") or "").strip()
+    analysis = (
+        f"{previous_analysis}\n\n## Kernel Expert retry blocked\n{error_message}"
+        if previous_analysis else error_message
+    )
+    return {
+        "kernel_analysis": analysis,
+        "reproduce_case": state.get("reproduce_case", ""),
+        "kernel_diagnosis": state.get("kernel_diagnosis", ""),
+        "kernel_ready_for_test": False,
+        "kernel_contract": model_to_dict(preserved),
+        "final_response": error_message,
+        "semcode_path_analysis": (
+            semcode_path_analysis.as_dict() if semcode_path_analysis else {}
+        ),
+    }
+
+
 def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     """内核专家 agent：根据工具专家的输出，结合代码分析，构造必现用例并给出内核维测方案。
 
@@ -1477,6 +1538,15 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             error_msg = f"kernel_expert CLI 达到 max_turns 上限: {err_str}"
         else:
             error_msg = f"kernel_expert CLI 启动失败: {err_str}"
+
+        preserved_result = _preserve_valid_contract_after_cli_failure(
+            state=state,
+            error=e,
+            error_message=error_msg,
+            semcode_path_analysis=semcode_path_analysis,
+        )
+        if preserved_result:
+            return preserved_result
 
         blocked_contract = KernelExpertOutput(
             status="blocked",

@@ -28,6 +28,7 @@ from agents.kernel_expert import (
     _sync_codex_artifacts,
     _validate_kernel_contract_artifacts,
     _kernel_expert_contract_is_terminal,
+    _preserve_valid_contract_after_cli_failure,
 )
 
 
@@ -199,6 +200,29 @@ def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     assert _kernel_expert_contract_is_terminal(blocked) is True
     assert _kernel_expert_contract_is_terminal(empty_block) is False
     assert _kernel_expert_contract_is_terminal(degraded) is False
+
+
+def test_cli_timeout_preserves_last_valid_root_cause_contract():
+    with tempfile.TemporaryDirectory() as directory:
+        contract = _contract(Path(directory))
+        result = _preserve_valid_contract_after_cli_failure(
+            state={
+                "kernel_contract": model_to_dict(contract),
+                "kernel_analysis": "source-backed diagnosis",
+                "reproduce_case": "userspace C trigger",
+                "kernel_diagnosis": "collect serial log",
+            },
+            error=RuntimeError("Codex timed out after 600s"),
+            error_message="kernel_expert CLI 超时: Codex timed out after 600s",
+            semcode_path_analysis=None,
+        )
+    retained = result["kernel_contract"]
+    assert retained["status"] == "blocked"
+    assert retained["root_cause"] == contract.root_cause
+    assert result["kernel_ready_for_test"] is False
+    assert "source-backed diagnosis" in result["kernel_analysis"]
+    assert "timed out" in result["kernel_analysis"]
+    assert retained["evidence"]
 
 
 def test_required_top_frames_round_trip_and_compatibility_alias(tmp_path):
