@@ -357,6 +357,12 @@ setup_codex_runtime() {
         for skill_dir in "$source_dir"/*; do
             [ -f "$skill_dir/SKILL.md" ] || continue
             skill_name="$(basename "$skill_dir")"
+            # Kernel Expert is restricted to defensive userspace diagnostics;
+            # do not expose the legacy fault-injection skill, whose examples
+            # use kernel modules and UAF injection and can misclassify inputs.
+            if [ "$skill_name" = "kernel-fault-injection" ]; then
+                continue
+            fi
             target="${CODEX_SKILLS_DIR}/${skill_name}"
             if [ -e "$target" ] && [ ! -L "$target" ]; then
                 fail "Refusing to replace existing Codex skill path: $target"

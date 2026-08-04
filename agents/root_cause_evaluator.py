@@ -32,7 +32,11 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
     report = _read_declared_text(artifacts.get("crash_report_path"))
     log = _read_declared_text(artifacts.get("log_path"))
     first_hand = "\n".join(part for part in (report, log) if part)
-    source_root = _path(artifacts.get("kernel_source_path"))
+    declared_source_root = _path(artifacts.get("kernel_source_path"))
+    expected_commit = str(artifacts.get("expected_kernel_commit") or "")
+    source_root = _select_verified_source_root(
+        state, declared_source_root, expected_commit,
+    )
     root_cause = str(contract.get("root_cause") or "").strip()
     evidence = _dicts(contract.get("root_cause_evidence"))
     oracle = dict(contract.get("call_chain_oracle") or {})
@@ -71,7 +75,8 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
             "report_path": str(artifacts.get("crash_report_path") or ""),
             "log_path": str(artifacts.get("log_path") or ""),
             "source_path": str(source_root or artifacts.get("kernel_source_path") or ""),
-            "expected_kernel_commit": str(artifacts.get("expected_kernel_commit") or ""),
+            "declared_source_path": str(declared_source_root or artifacts.get("kernel_source_path") or ""),
+            "expected_kernel_commit": expected_commit,
             "source_head": source_audit.get("source_head", ""),
             "source_commit_matches": source_audit.get("source_commit_matches"),
             "observed": observed,
@@ -102,6 +107,63 @@ def _path(value: Any) -> Path | None:
         return Path(str(value)).expanduser().resolve()
     except (OSError, RuntimeError, TypeError, ValueError):
         return None
+
+
+def _select_verified_source_root(
+    state: dict[str, Any], declared_source_root: Path | None,
+    expected_commit: str,
+) -> Path | None:
+    """Use the exact detached source scope proven by Semcode when available.
+
+    The input path may be a shared checkout whose HEAD is intentionally newer
+    than the benchmark commit. Kernel Expert records the pinned worktree in
+    ``semcode_path_analysis.scope.source_domains``; using that root for
+    evidence verification avoids reporting a false source mismatch while
+    retaining the declared path for audit.
+    """
+    expected = str(expected_commit or "").strip().lower()
+    if not expected:
+        return declared_source_root
+    candidate_roots: list[Path] = []
+    analysis = state.get("semcode_path_analysis") or {}
+    scope = analysis.get("scope") if isinstance(analysis, dict) else None
+    domains = scope.get("source_domains") if isinstance(scope, dict) else None
+    if isinstance(domains, list):
+        for domain in domains:
+            if isinstance(domain, dict):
+                candidate = _path(domain.get("root"))
+                if candidate is not None:
+                    candidate_roots.append(candidate)
+
+    # P0 cases do not require the optional path-analysis contract, but the
+    # deterministic Semcode adapter still archives its exact pinned checkout.
+    # Read only that durable identity; source content is verified below by the
+    # normal file/commit audit and never inferred from the JSON.
+    session_dir = _path(state.get("session_dir"))
+    if session_dir is not None:
+        for evidence_path in (
+            session_dir / "semcode-evidence.json",
+            session_dir / "evidence" / "semcode-evidence.json",
+        ):
+            try:
+                payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if payload.get("status") != "ok" or payload.get("failures"):
+                continue
+            candidate = _path(payload.get("kernel_source"))
+            if candidate is not None:
+                candidate_roots.append(candidate)
+
+    seen: set[Path] = set()
+    for candidate in candidate_roots:
+        if candidate in seen or not candidate.is_dir():
+            continue
+        seen.add(candidate)
+        head = _git_head(candidate).lower()
+        if head and (head == expected or head.startswith(expected)):
+            return candidate
+    return declared_source_root
 
 
 def _read_declared_text(value: Any) -> str:
