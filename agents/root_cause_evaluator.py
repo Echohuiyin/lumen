@@ -528,12 +528,4 @@ def _conflict_count(text: str, observed: dict[str, Any]) -> int:
         marker in lowered for marker in ("analysis", "根因", "root cause", "可能")
     ):
         count += 1
-    # This is generic negative evidence for an obvious source-domain
-    # contradiction, not a hardcoded verdict for a case.
-    if (
-        "gadget_dev_open" in lowered
-        and "drivers/usb/gadget/configfs.c" in lowered
-        and "drivers/usb/gadget/legacy/inode.c" not in lowered
-    ):
-        count += 1
     return count
