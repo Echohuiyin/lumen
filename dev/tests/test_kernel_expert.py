@@ -62,6 +62,11 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "These steps must remain structured JSON" in prompt
     assert "Userspace correctness gate" in prompt
     assert "Mandatory reproducer code review" in prompt
+    assert "every shared scalar/state field must use" in prompt
+    assert "barrier participant count" in prompt
+    assert "every `pthread_create` result" in prompt
+    assert "joined before barrier/context destruction" in prompt
+    assert "double-close" in prompt
     assert "static_check.txt" in prompt
     assert "link/ABI usage" in prompt
     assert "compiler static-semantic analysis" in prompt
