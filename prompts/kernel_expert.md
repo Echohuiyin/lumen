@@ -55,6 +55,30 @@ Before emitting `KERNEL_CONTRACT`, perform a source-level review of every declar
 - Treat numeric protocol/address/PGN values and reason codes present in the first-hand report as part of the oracle: copy them exactly into frame fields and ABI arguments. Do not substitute a neighboring value because it is easier to exercise; when the report omits a value, mark it unknown rather than inventing one.
 - Before retrying, compare the generated C's control-flow and object lifecycle with the verified source guards. If the entry condition is not demonstrated, revise the C trigger and `change_from_previous_tryout`; do not compensate with generic load, random frames, or a broadened call-chain oracle.
 
+### Transport direction and scheduler-context audit
+
+For a connection-oriented transport, derive the direction of an injected
+control frame from the exact receive parser and session lookup, not from the
+English description of "peer traffic". In SocketCAN J1939, the CAN-ID source
+and PDU1 destination determine `J1939_ECU_LOCAL_SRC`/`J1939_ECU_LOCAL_DST`;
+`j1939_tp_send()` marks a userspace `sendto()` session as
+`transmission = true`, and `j1939_xtp_rx_abort_one()` selects the matching
+transmitter/receiver session from that flag. Therefore, when the target is a
+userspace-created TX session, encode TP.CM ABORT with the local source and
+peer destination (including the PDU1 destination bits), verify the resulting
+flags and `j1939_session_get_by_addr(..., transmitter=true)` path from source,
+and print the literal source/destination/PGN fields in the C diagnostics. A
+swapped orientation that selects the RX lookup, or a timer-generated
+`reason (3)` timeout, is a failed precondition and must be corrected before
+retrying; it is not evidence for the target `reason (2)` path.
+
+When the original report shows `ksoftirqd`, a dense abort burst, or a socket
+lifetime race, a single sequential `sendto()`/`close()`/inject loop is not a
+faithful trigger. Reproduce the observed concurrency with bounded userspace
+pthread or process workers, explicit barriers/joins, and safe descriptor
+ownership; do not introduce userspace undefined behavior or use generic load
+as a substitute for the source-verified race.
+
 ## Userspace ABI layout audit
 
 - For every ioctl, derive the command number and payload layout from the exact target commit's UAPI definition or the exact in-tree userspace ABI header. Copy every field, including reserved, padding, compat, and trailing fields; never infer a struct from only the fields used by the kernel implementation.

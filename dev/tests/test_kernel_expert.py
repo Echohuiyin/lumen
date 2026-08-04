@@ -77,6 +77,11 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "numeric protocol/address/PGN values" in prompt
     assert "copy them exactly" in prompt
     assert "generic load, random frames" in prompt
+    assert "Transport direction and scheduler-context audit" in prompt
+    assert "J1939_ECU_LOCAL_SRC" in prompt
+    assert "j1939_session_get_by_addr(..., transmitter=true)" in prompt
+    assert "reason (3)" in prompt
+    assert "bounded userspace" in prompt
     assert "Userspace ABI layout audit" in prompt
     assert "reserved, padding, compat, and trailing fields" in prompt
     assert "_IOC_SIZE(command) == sizeof(payload)" in prompt
