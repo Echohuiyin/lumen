@@ -661,6 +661,46 @@ def _historical_userspace_crash_feedback(previous_rounds: list[dict] | None) -> 
     )
 
 
+def _mount_detach_path_feedback(result: TestResultContract) -> str:
+    """Explain a lost detached-mount dentry when the C trigger uses AT_FDCWD.
+
+    GadgetFS lifetime failures require an open lookup to retain the detached
+    mount's dentry while the final ``dev_data`` reference is released.  An
+    absolute ``openat(AT_FDCWD, ...)`` after ``MNT_DETACH`` resolves through
+    the namespace again and can silently hit the underlying directory instead.
+    This is feedback only: the deterministic oracle still decides pass/fail.
+    """
+    artifacts = result.artifacts or {}
+    stage = str(artifacts.get("poc_stage", "") or "").strip()
+    if not stage:
+        return ""
+    source_root = Path(stage) / "reproducer"
+    try:
+        sources = sorted(source_root.glob("*.c"))
+    except OSError:
+        return ""
+    for source in sources:
+        try:
+            text = source.read_text(encoding="utf-8", errors="replace")[:128 * 1024]
+        except OSError:
+            continue
+        if "MNT_DETACH" not in text or "gadgetfs" not in text.lower():
+            continue
+        if not re.search(r"\bopenat\s*\(\s*AT_FDCWD\b", text):
+            continue
+        return (
+            "MOUNT_DENTRY_LIFETIME_FEEDBACK: the gadgetfs trigger uses "
+            "openat(AT_FDCWD, ...) while relying on MNT_DETACH. After the "
+            "detach, an absolute path can resolve to the underlying directory "
+            "instead of retaining the mounted dentry, so it cannot exercise "
+            "gadget_dev_open after dev_release frees dev_data. Preserve an "
+            "O_PATH|O_DIRECTORY fd for the mounted root before detach and use "
+            "openat(dirfd, endpoint) while workers remain active across the "
+            "final holder close; keep the missing-frame result unchanged."
+        )
+    return ""
+
+
 def _augment_kernel_feedback(
     result: TestResultContract, previous_rounds: list[dict] | None = None,
 ) -> str:
@@ -695,6 +735,9 @@ def _augment_kernel_feedback(
         return f"{historical}\n{feedback}".strip()
     if not runtime_text:
         return f"{historical}\n{feedback}".strip() if historical else feedback
+    mount_dentry_feedback = _mount_detach_path_feedback(result)
+    if mount_dentry_feedback and mount_dentry_feedback not in feedback:
+        feedback = f"{mount_dentry_feedback}\n{feedback}".strip()
     evidence_re = re.compile(
         r"(?:segfault|kasan|j1939|lumen_guest_component_missing|"
         r"lumen_guest_runtime_incompatible|"

@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.persistent_qemu import PersistentQemuPaths
-from agents.test_expert import _append_attempt_output, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _promote_guest_capability_block, _semantic_review, test_expert_node
+from agents.test_expert import _append_attempt_output, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _semantic_review, test_expert_node
 from agents.test_expert import _strict_call_chain_oracle
 
 
@@ -78,6 +78,28 @@ def test_test_expert_attempt_output_preserves_prior_rounds(tmp_path):
     assert text.count("TRY-OUT:") == 2
     assert "TRY-OUT: 1/10" in text
     assert "TRY-OUT: 2/10" in text
+
+
+def test_mount_detach_feedback_preserves_dentry_for_gadgetfs(tmp_path):
+    stage = tmp_path / "poc"
+    source_dir = stage / "reproducer"
+    source_dir.mkdir(parents=True)
+    (source_dir / "gadgetfs_uaf.c").write_text(
+        "mount(\"gadgetfs\", dir, \"gadgetfs\", 0, NULL);\n"
+        "umount2(dir, MNT_DETACH);\n"
+        "openat(AT_FDCWD, endpoint, O_RDWR);\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        artifacts={"poc_stage": str(stage)},
+    )
+
+    feedback = _mount_detach_path_feedback(result)
+
+    assert "MOUNT_DENTRY_LIFETIME_FEEDBACK" in feedback
+    assert "O_PATH|O_DIRECTORY" in feedback
+    assert "openat(dirfd, endpoint)" in feedback
 
 
 def test_kernel_feedback_keeps_historical_userspace_crash_constraint():
