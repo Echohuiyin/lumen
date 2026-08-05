@@ -1094,6 +1094,128 @@ def _extract_first_hand_log_hints(
     return "\n".join(selected)[:max_chars]
 
 
+def _recover_materialized_contract_after_cli_failure(
+    *,
+    state: MaintenanceWorkflowState,
+    error: RuntimeError,
+    error_message: str,
+    semcode_path_analysis: SemcodePathAnalysisResult | None,
+    input_artifacts: dict,
+) -> dict:
+    """Recover only this invocation's manifest-proven complete contract.
+
+    Codex can finish writing and statically checking the handoff before a
+    cosmetic final-response retry times out. Recovery is allowed to continue
+    to Test Expert only when the durable session manifest proves that the
+    contract and its C source were copied by this invocation, and all normal
+    artifact gates still pass.
+    """
+    output_dir = paths_get_output_dir().resolve()
+    manifest_path = output_dir / '.codex_artifact_manifest.json'
+    contract_path = output_dir / 'KERNEL_CONTRACT.json'
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+        if Path(str(manifest.get('session_output_dir') or '')).resolve() != output_dir:
+            return {}
+        copied_files = {
+            str(item) for item in manifest.get('copied_files', [])
+            if isinstance(item, str)
+        }
+        if 'KERNEL_CONTRACT.json' not in copied_files or not contract_path.is_file():
+            return {}
+        contract = _model_validate(
+            KernelExpertOutput,
+            json.loads(contract_path.read_text(encoding='utf-8')),
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+    if (
+        contract.status != 'ok'
+        or not contract.root_cause.strip()
+        or not _kernel_contract_has_handoff(contract)
+    ):
+        return {}
+
+    try:
+        contract = _enrich_kernel_contract_from_runtime(
+            contract,
+            input_artifacts=input_artifacts,
+            output_dir=output_dir,
+        )
+        path_analysis_required = _requires_path_analysis(state.get('user_input', ''))
+        if semcode_path_analysis is not None:
+            contract = _apply_semcode_path_analysis(contract, semcode_path_analysis)
+        static_preflight = _static_check_userspace_reproducer(contract, output_dir)
+        if static_preflight.get('status') == 'failed':
+            return {}
+        contract = _validate_kernel_contract_artifacts(
+            contract,
+            path_analysis_required=path_analysis_required,
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {}
+
+    if not _kernel_contract_ready_for_test(contract):
+        return {}
+
+    data = model_to_dict(contract)
+    warnings = list(data.get('warnings') or [])
+    warnings.append(
+        'Recovered the manifest-proven contract after a later Kernel Expert CLI retry timed out; '
+        'the contract still requires real Test Expert SSH-QEMU verification.'
+    )
+    data['warnings'] = warnings
+    evidence = list(data.get('evidence') or [])
+    evidence.append({
+        'kind': 'kernel_expert_cli_timeout_recovery',
+        'contract_artifact': str(contract_path),
+        'manifest_artifact': str(manifest_path),
+        'error': str(error),
+    })
+    data['evidence'] = evidence
+    contract = _model_validate(KernelExpertOutput, data)
+    try:
+        (output_dir / 'kernel_contract.json').write_text(
+            json.dumps(model_to_dict(contract), ensure_ascii=False, indent=2),
+            encoding='utf-8',
+        )
+    except OSError:
+        pass
+
+    previous_analysis = str(state.get('kernel_analysis', '') or '').strip()
+    recovery_note = (
+        f'{error_message}\n\n'
+        'The current invocation had already produced a manifest-proven, '
+        'static-checked Kernel Expert contract; continuing to Test Expert for '
+        'real guest verification.'
+    )
+    return {
+        'kernel_analysis': (
+            f'{previous_analysis}\n\n{recovery_note}'
+            if previous_analysis else recovery_note
+        ),
+        'reproduce_case': str(data.get('root_cause') or ''),
+        'kernel_diagnosis': str(data.get('root_cause') or ''),
+        'all_possible_paths': list(data.get('all_possible_paths') or []),
+        'max_likely_path': str(data.get('max_likely_path') or ''),
+        'uaf_analysis_contract': data.get('uaf_analysis') or {},
+        'kernel_ready_for_test': True,
+        'kernel_contract': data,
+        'target_arch': contract.target_arch,
+        'boot_kernel_path': contract.boot_kernel_path,
+        'reproducer_dir': contract.reproducer_dir,
+        'reproducer_module_path': contract.reproducer_module_path,
+        'expected_signal': contract.expected_signal,
+        'binaries_dir': contract.binaries_dir,
+        'semcode_path_analysis': (
+            semcode_path_analysis.as_dict()
+            if semcode_path_analysis is not None else {}
+        ),
+    }
+
+
+
 def _preserve_valid_contract_after_cli_failure(
     *, state: MaintenanceWorkflowState, error: RuntimeError,
     error_message: str, semcode_path_analysis: SemcodePathAnalysisResult | None,
@@ -1569,6 +1691,16 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             error_msg = f"kernel_expert CLI 达到 max_turns 上限: {err_str}"
         else:
             error_msg = f"kernel_expert CLI 启动失败: {err_str}"
+
+        recovered_result = _recover_materialized_contract_after_cli_failure(
+            state=state,
+            error=e,
+            error_message=error_msg,
+            semcode_path_analysis=semcode_path_analysis,
+            input_artifacts=input_artifacts,
+        )
+        if recovered_result:
+            return recovered_result
 
         preserved_result = _preserve_valid_contract_after_cli_failure(
             state=state,

@@ -29,6 +29,7 @@ from agents.kernel_expert import (
     _validate_kernel_contract_artifacts,
     _kernel_expert_contract_is_terminal,
     _preserve_valid_contract_after_cli_failure,
+    _recover_materialized_contract_after_cli_failure,
 )
 
 
@@ -49,6 +50,49 @@ def _contract(root: Path) -> KernelExpertOutput:
             source_dir=str(source), source_files=["repro.c"], entry_source="repro.c",
             output_binary="lumen-repro",
         ),
+    )
+
+
+
+def test_cli_timeout_recovers_manifest_proven_contract(tmp_path):
+    from paths import set_session_dir
+
+    session = tmp_path / 'session'
+    session.mkdir()
+    contract = _contract(tmp_path)
+    (session / 'repro.c').write_text(
+        'int main(void) { return 0; }\n', encoding='utf-8',
+    )
+    (session / 'KERNEL_CONTRACT.json').write_text(
+        json.dumps(model_to_dict(contract)), encoding='utf-8',
+    )
+    (session / '.codex_artifact_manifest.json').write_text(
+        json.dumps({
+            'session_output_dir': str(session.resolve()),
+            'source_workdir': str(tmp_path / 'codex-workdir'),
+            'copied_files': ['KERNEL_CONTRACT.json', 'repro.c'],
+        }),
+        encoding='utf-8',
+    )
+
+    set_session_dir(session)
+    try:
+        result = _recover_materialized_contract_after_cli_failure(
+            state={'user_input': 'WARNING in target_frame'},
+            error=RuntimeError('codex timed out'),
+            error_message='kernel_expert CLI 超时',
+            semcode_path_analysis=None,
+            input_artifacts={'boot_kernel_path': str(tmp_path / 'bzImage')},
+        )
+    finally:
+        set_session_dir(None)
+
+    assert result['kernel_ready_for_test'] is True
+    assert result['kernel_contract']['status'] == 'ok'
+    assert result['kernel_contract']['reproducer']['source_dir'] == str(session.resolve())
+    assert any(
+        item.get('kind') == 'kernel_expert_cli_timeout_recovery'
+        for item in result['kernel_contract']['evidence']
     )
 
 
