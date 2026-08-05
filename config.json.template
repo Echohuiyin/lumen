@@ -18,7 +18,7 @@
       "prompt_file": "prompts/pm.md"
     },
     "kernel_expert": {
-      "prompt_file": "prompts/kernel_expert.md",
+      "prompt_file": "prompts/kernel_expert_codex.md",
       "backend": "codex",
       "cli_command": "${LUMEN_CODEX_CLI:-codex}",
       "cli_timeout": "${LUMEN_CODEX_TIMEOUT_SECONDS:-600}",
