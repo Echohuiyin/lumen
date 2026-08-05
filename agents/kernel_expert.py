@@ -1399,7 +1399,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             user_content += (
                 "\n\n## 强制 fixture 修复约束\n"
                 "上一轮 guest 已明确拒绝了声明的文件系统镜像大小，并给出了 required/minimum size。"
-                "本轮必须先读取该数值，在新的 C 源码中把 fixture 镜像设为严格大于该要求，"
+                "本轮必须先读取该精确数值，在新的 C 源码中把 fixture 镜像设为高于该要求并留出明确安全余量（本类 128 MiB 阈值至少使用 256 MiB），"
                 "并在 KERNEL_CONTRACT 的 change_from_previous_tryout 中说明实际变更；"
                 "不得复用相同的 image_bytes/IMAGE_BYTES，也不得把 unchanged fixture 交给 Test Expert。"
                 "如果无法完成这一源代码变更，应返回 blocked 并说明原因，而不是生成看似新的相同用例。"
