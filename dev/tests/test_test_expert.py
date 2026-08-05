@@ -117,6 +117,27 @@ def test_kernel_feedback_preserves_successful_fixture_size(tmp_path):
     assert "do not shrink" in feedback
 
 
+def test_kernel_feedback_preserves_fixture_size_without_format_marker(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_FIXTURE image=/tmp/test.img image_bytes=268435456\n"
+        "LUMEN_LOOP_READY device=/dev/loop0\n"
+        "LUMEN_REPRO_START target=end_buffer_async_write\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="Review missing/reordered frames.",
+        artifacts={"ssh_output": str(ssh_output)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "FIXTURE_SIZE_ESTABLISHED" in feedback
+    assert "268435456 bytes" in feedback
+    assert "do not shrink" in feedback
+
+
 def test_kernel_feedback_ignores_successful_mkfs_device_size(tmp_path):
     serial = tmp_path / "serial.log"
     serial.write_text(

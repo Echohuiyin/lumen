@@ -869,7 +869,19 @@ def _augment_kernel_feedback(
     # a formatter failure before the kernel path is exercised.
     established_fixture_sizes: list[int] = []
     runtime_snapshot = "\n".join(runtime_text)
-    if re.search(r"\bLUMEN_FORMAT_OK\b", runtime_snapshot, re.IGNORECASE):
+    # Not every valid userspace fixture emits the optional FORMAT_OK marker.
+    # LOOP_READY or REPRO_START is emitted only after the fixture has passed
+    # its formatter/loop setup in the current C contract.  Keep the explicit
+    # marker as the strongest signal, but accept these structured milestones
+    # so a later trigger revision cannot regress a proven image size merely
+    # because the diagnostic used a different setup marker.
+    fixture_setup_succeeded = bool(
+        re.search(r"\bLUMEN_FORMAT_OK\b", runtime_snapshot, re.IGNORECASE)
+        or re.search(r"\bLUMEN_LOOP_READY\b", runtime_snapshot, re.IGNORECASE)
+        or re.search(r"\bLUMEN_MOUNT_OK\b", runtime_snapshot, re.IGNORECASE)
+        or re.search(r"\bLUMEN_REPRO_START\b", runtime_snapshot, re.IGNORECASE)
+    )
+    if fixture_setup_succeeded:
         for match in re.finditer(
             r"\bLUMEN_FIXTURE\b[^\n]*\bimage_bytes=(\d+)",
             runtime_snapshot,
