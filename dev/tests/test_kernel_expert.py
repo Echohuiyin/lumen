@@ -24,6 +24,7 @@ from agents.kernel_expert import (
     _read_primary_log_text,
     _codex_case_text,
     _extract_first_hand_log_hints,
+    _materialized_contract_response,
     _stage_codex_evidence,
     _static_check_userspace_reproducer,
     _sync_codex_artifacts,
@@ -95,6 +96,30 @@ def test_cli_timeout_recovers_manifest_proven_contract(tmp_path):
         item.get('kind') == 'kernel_expert_cli_timeout_recovery'
         for item in result['kernel_contract']['evidence']
     )
+
+
+def test_materialized_contract_response_requires_current_manifest(tmp_path):
+    session = tmp_path / 'session'
+    session.mkdir()
+    contract = _contract(tmp_path)
+    (session / 'KERNEL_CONTRACT.json').write_text(
+        json.dumps(model_to_dict(contract)), encoding='utf-8',
+    )
+    (session / '.codex_artifact_manifest.json').write_text(
+        json.dumps({
+            'session_output_dir': str(session.resolve()),
+            'source_workdir': str(tmp_path / 'codex-workdir'),
+            'copied_files': ['KERNEL_CONTRACT.json'],
+        }),
+        encoding='utf-8',
+    )
+
+    response = _materialized_contract_response(session)
+    assert response is not None
+    parsed = _extract_kernel_contract(response.content)
+    assert parsed is not None
+    assert parsed.root_cause == contract.root_cause
+    assert _materialized_contract_response(tmp_path / 'other') is None
 
 
 def test_prompt_states_maintenance_and_c_only_boundaries():

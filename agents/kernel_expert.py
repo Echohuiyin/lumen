@@ -52,6 +52,39 @@ def _sync_codex_artifacts(workdir: Path, session_output_dir: Path) -> None:
         pass
 
 
+def _materialized_contract_response(session_output_dir: Path) -> "AIMessage | None":
+    """Turn this invocation's manifest-proven contract into a final response.
+
+    Codex can finish writing the handoff and then return only prose (or an
+    empty stream) while the workflow is waiting for the cosmetic JSON marker.
+    Reusing a contract is safe only when the manifest names this exact durable
+    session and includes the contract file; all normal validation and the
+    guest call-chain oracle still run after this boundary.
+    """
+    manifest_path = session_output_dir / ".codex_artifact_manifest.json"
+    contract_path = session_output_dir / "KERNEL_CONTRACT.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if Path(str(manifest.get("session_output_dir") or "")).resolve() != session_output_dir.resolve():
+            return None
+        copied_files = {
+            str(item) for item in manifest.get("copied_files", [])
+            if isinstance(item, str)
+        }
+        if "KERNEL_CONTRACT.json" not in copied_files or not contract_path.is_file():
+            return None
+        contract = _model_validate(
+            KernelExpertOutput,
+            json.loads(contract_path.read_text(encoding="utf-8")),
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if contract.status != "ok" or not _kernel_contract_has_handoff(contract):
+        return None
+    payload = json.dumps(model_to_dict(contract), ensure_ascii=False, indent=2)
+    return AIMessage(content=f"KERNEL_CONTRACT:\n```json\n{payload}\n```")
+
+
 
 def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> dict[str, str]:
     """Audit a userspace C reproducer before handing it to Test Expert.
@@ -630,6 +663,17 @@ def _run_kernel_expert_with_agent_loop(
         _sync_codex_artifacts(codex_workdir, session_output_dir)
 
         output_content = response.content or ""
+        # Prefer a same-invocation, manifest-proven handoff over a second
+        # expensive Codex turn when the model completed the artifacts but did
+        # not echo the cosmetic final JSON marker.  The node still performs
+        # source/path/static validation before routing to Test Expert.
+        if not output_content.strip() or not _kernel_expert_contract_is_terminal(
+            _extract_kernel_contract(output_content)
+        ):
+            materialized = _materialized_contract_response(session_output_dir)
+            if materialized is not None:
+                response = materialized
+                output_content = materialized.content
         static_preflight = None
         parsed_preflight = _extract_kernel_contract(output_content) if output_content.strip() else None
         if parsed_preflight is not None and parsed_preflight.status == "ok":
