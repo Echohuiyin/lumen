@@ -125,7 +125,7 @@ build_one() {
     guest_packages=(
         openssh-server kmod iproute2 ca-certificates coreutils
         curl tar time strace psmisc iputils-ping dnsutils net-tools
-        gcc libc6-dev make stress-ng
+        gcc libc6-dev make stress-ng xfsprogs
     )
     if [[ "$lumen_arch" == "arm64" ]]; then
         guest_packages+=(haveged)
