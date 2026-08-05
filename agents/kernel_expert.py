@@ -809,6 +809,42 @@ def _semcode_evidence_is_complete(payload: dict) -> bool:
         direct_callees.update(body_calls)
     return direct_callees.issubset(entry_names)
 
+
+def _semcode_evidence_covers_report_frames(payload: dict, report_text: str) -> bool:
+    """Return whether exact Semcode evidence covers every reported frame.
+
+    A fault-entry body can be complete while its implementation helpers are
+    not included in the deterministic batch.  Those helpers are not part of
+    the runtime oracle; forcing an interactive query for them can leave Codex
+    waiting indefinitely.  We only disable interactive MCP when the exact
+    payload is valid, the fault entry has a non-empty body, and every frame
+    printed by the first-hand report is present in the same exact-commit
+    entry set.  Missing report frames still keep the existing strict path.
+    """
+    if not isinstance(payload, dict) or payload.get("status") != "ok":
+        return False
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not entries or not report_text:
+        return False
+    entry_names = {
+        str(item.get("function", "")).strip()
+        for item in entries
+        if isinstance(item, dict) and str(item.get("function", "")).strip()
+    }
+    first = entries[0]
+    if not isinstance(first, dict):
+        return False
+    first_result = str(first.get("result", "") or "")
+    if not first_result.strip() or "Body:" not in first_result:
+        return False
+    report_frames = {
+        name.strip()
+        for name in _SEM_CODE_FRAME_RE.findall(str(report_text))
+        if name.strip()
+    }
+    return bool(report_frames) and report_frames.issubset(entry_names)
+
+
 # Kernel reports also spell out inlined frames as ``pc : symbol path:line``
 # and as source-backed Call trace lines without an offset.  Keep these
 # patterns narrow enough to avoid treating prose identifiers as Semcode
@@ -1415,7 +1451,12 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             semcode_payload = json.loads(
                 Path(semcode_evidence_path).read_text(encoding="utf-8")
             )
-            semcode_evidence_complete = _semcode_evidence_is_complete(semcode_payload)
+            semcode_evidence_complete = (
+                _semcode_evidence_is_complete(semcode_payload)
+                or _semcode_evidence_covers_report_frames(
+                    semcode_payload, original_log_text,
+                )
+            )
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             semcode_evidence_complete = False
     llm_agent_config = dict(agent_config)

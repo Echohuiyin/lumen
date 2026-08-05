@@ -18,6 +18,7 @@ from agents.kernel_expert import (
     _materialize_primary_log,
     _materialize_semcode_evidence,
     _restore_cached_semcode_path_analysis,
+    _semcode_evidence_covers_report_frames,
     _semcode_evidence_is_complete,
     _resolve_primary_log_path,
     _read_primary_log_text,
@@ -240,6 +241,23 @@ def test_first_hand_log_hints_filter_crash_labels_and_generator_names():
     assert "syz_executor" not in hints
     assert "mount /dev/loop0" in hints
     assert "ioctl LOOP_SET_FD" in hints
+
+
+def test_semcode_evidence_covers_report_frames_without_all_body_helpers():
+    payload = {
+        "status": "ok",
+        "entries": [
+            {
+                "function": "fault_entry",
+                "result": "Function: fault_entry\nCalls: 1 functions\n→ helper_call\nBody:\nhelper_call();\n",
+            },
+            {"function": "caller_frame", "result": "Function: caller_frame\nBody:\n"},
+        ],
+    }
+    report = "fault_entry+0x10/0x20\ncaller_frame+0x2/0x8\n"
+
+    assert not _semcode_evidence_is_complete(payload)
+    assert _semcode_evidence_covers_report_frames(payload, report)
 
 
 def test_structured_kernel_contract_round_trips_without_module_build():
