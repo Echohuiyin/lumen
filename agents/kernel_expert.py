@@ -1266,6 +1266,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         # absolute durable-session paths are intentionally not readable from
         # the isolated workdir.
         evidence_files.append(("semcode-evidence.json", semcode_evidence_path))
+    semcode_payload: dict[str, object] | None = None
     semcode_evidence_complete = False
     if semcode_evidence_path:
         try:
@@ -1313,6 +1314,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                 expected_kernel_commit=expected_kernel_commit,
                 semcode_command=str(semcode_config.get("command", "")),
                 semcode_args=semcode_config.get("args", []) or [],
+                cached_evidence=semcode_payload,
             )
         if semcode_path_analysis.status != "ok":
             return _blocked_semcode_path_analysis(semcode_path_analysis)

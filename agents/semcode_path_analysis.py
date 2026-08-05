@@ -727,6 +727,7 @@ def analyze_uaf_paths(
     semcode_source_path: str = "",
     semcode_args: Iterable[str] = (),
     expected_kernel_commit: str = "",
+    cached_evidence: dict[str, Any] | None = None,
     object_type: str = "unknown-with-rationale: object type is not derivable from a bounded call graph",
     concurrency_model: str = "unknown-with-rationale: bounded analysis does not prove interleavings",
     client: Any | None = None,
@@ -791,13 +792,20 @@ def analyze_uaf_paths(
             kernel_source_path=normalized_semcode_source,
             git_sha=kernel_commit,
         )
-        batch_finder = getattr(semcode, "find_functions", None)
-        if callable(batch_finder):
-            functions = batch_finder(normalized_entries)
-        else:
-            # Keep compatibility with injected test doubles that implement
-            # only the original single-function interface.
-            functions = [semcode.find_function(entry) for entry in normalized_entries]
+        functions = _functions_from_cached_evidence(
+            cached_evidence,
+            source_path=normalized_source,
+            expected_commit=kernel_commit,
+            requested=normalized_entries,
+        )
+        if functions is None:
+            batch_finder = getattr(semcode, 'find_functions', None)
+            if callable(batch_finder):
+                functions = batch_finder(normalized_entries)
+            else:
+                # Keep compatibility with injected test doubles that implement
+                # only the original single-function interface.
+                functions = [semcode.find_function(entry) for entry in normalized_entries]
     except SemcodePathAnalysisError as exc:
         return _blocked(str(exc))
     except (OSError, ValueError) as exc:
@@ -907,6 +915,61 @@ def _parse_semcode_function(function_text: str, calls_text: str, *, requested_na
         raise SemcodePathAnalysisError(f"semcode find_function returned no body for {requested_name}")
     direct_calls = tuple(_unique_identifiers(_DIRECT_CALL_RE.findall(calls_text)))
     return SemcodeFunction(name=name_match.group(1), location=location, body=body, direct_calls=direct_calls)
+
+
+def _functions_from_cached_evidence(
+    payload: dict[str, Any] | None,
+    *,
+    source_path: str,
+    expected_commit: str,
+    requested: Iterable[str],
+) -> list[SemcodeFunction] | None:
+    """Reuse a complete exact-commit find_function batch.
+
+    Kernel Expert materializes this batch immediately before P2 path analysis.
+    Re-querying the same checkout is both redundant and expensive on large
+    kernel indexes. Cache reuse is deliberately fail-closed: any status,
+    failure, source, commit, or entry mismatch leaves the original MCP query
+    path untouched.
+    """
+    if not isinstance(payload, dict) or payload.get('status') != 'ok':
+        return None
+    if payload.get('failures'):
+        return None
+    cached_source = str(payload.get('kernel_source') or '').strip()
+    if not cached_source or Path(cached_source).resolve() != Path(source_path).resolve():
+        return None
+    cached_commit = str(payload.get('expected_kernel_commit') or '').strip().lower()
+    if cached_commit != str(expected_commit or '').strip().lower():
+        return None
+    entries = payload.get('entries')
+    if not isinstance(entries, list) or not entries:
+        return None
+    by_name: dict[str, dict[str, Any]] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('function') or '').strip()
+        if name and name not in by_name:
+            by_name[name] = item
+    functions: list[SemcodeFunction] = []
+    for requested_name in requested:
+        item = by_name.get(str(requested_name).strip())
+        if item is None:
+            continue
+        result = str(item.get('result') or '')
+        if not result.strip():
+            continue
+        try:
+            # find_function already includes its numbered direct-call
+            # section, so the cached response is sufficient for the bounded
+            # event graph; no second find_calls MCP batch is needed.
+            functions.append(
+                _parse_semcode_function(result, result, requested_name=str(requested_name))
+            )
+        except SemcodePathAnalysisError:
+            continue
+    return functions or None
 
 
 def _paths_for_function(function: SemcodeFunction) -> tuple[list[RefcountPath], list[str], list[dict[str, Any]], list[str]]:

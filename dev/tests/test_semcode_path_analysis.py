@@ -175,6 +175,56 @@ def test_semcode_client_keeps_parseable_functions_when_wrapper_is_missing(tmp_pa
     assert [function.name for function in functions] == ["foo_ioctl"]
 
 
+def test_semcode_path_analysis_reuses_exact_cached_evidence(tmp_path):
+    """A complete exact-commit batch must avoid a second MCP function query."""
+    source, executable = _source_tree(tmp_path)
+    target = subprocess.check_output(
+        ['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True,
+    ).strip()
+    cached = {
+        'status': 'ok',
+        'kernel_source': str(source.resolve()),
+        'expected_kernel_commit': target,
+        'failures': [],
+        'entries': [{
+            'function': 'foo_ioctl',
+            'result': (
+                'Function: foo_ioctl (git SHA: %s)\n'
+                'File: drivers/foo.c:42\n'
+                'Calls: 5 functions\n'
+                '  1. kref_get\n'
+                '  2. queue_work\n'
+                '  3. kref_put\n'
+                '  4. kfree\n'
+                '  5. foo_access\n'
+                'Body:\n'
+                'kref_get(&foo->ref);\n'
+                'queue_work(foo_wq, &foo->work);\n'
+                'kref_put(&foo->ref, foo_release);\n'
+                'kfree(foo);\n'
+                'foo_access(foo);\n'
+            ) % target,
+        }],
+    }
+
+    class _NoFunctionQuery(_FixedSemcodeClient):
+        def find_function(self, name: str) -> SemcodeFunction:
+            raise AssertionError('cache miss unexpectedly queried MCP function')
+
+    result = analyze_uaf_paths(
+        kernel_source_path=str(source),
+        entry_points=['foo_ioctl'],
+        expected_kernel_commit=target,
+        semcode_command=str(executable),
+        client=_NoFunctionQuery(target),
+        cached_evidence=cached,
+    )
+
+    assert result.status == 'ok'
+    assert result.analysis is not None
+    assert result.scope.entry_points == ['foo_ioctl']
+
+
 def test_semcode_event_graph_calculates_deltas_and_declares_boundaries(tmp_path):
     source, executable = _source_tree(tmp_path)
     target = subprocess.check_output(
