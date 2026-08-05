@@ -649,6 +649,11 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             re.search(r"\bsve\s*=\s*0\b", lowered)
             and re.search(r"\b(?:asimd|arm64)\b", lowered)
         )
+        sve_unavailable = sve_unavailable or re.search(
+            r"\bsve(?:[_\s-]+(?:abi|prctl))?\s*(?:=|:)\s*unavailable\b"
+            r"|\bsve[_\s-]+unavailable\b",
+            lowered,
+        )
         if sve_unavailable:
             result.status = "blocked"
             result.code = "BLOCKED_GUEST_SVE_UNAVAILABLE"
