@@ -882,7 +882,7 @@ def _augment_kernel_feedback(
         or re.search(r"\bLUMEN_REPRO_START\b", runtime_snapshot, re.IGNORECASE)
     )
     fixture_size_markers = re.compile(
-        r"(?:\bLUMEN_FIXTURE\b|\bfixture_size_check\b|"
+        r"(?:\bLUMEN_FIXTURE\b|\bLUMEN_SETUP\b|\bfixture_size_check\b|"
         r"\bformatter=[^\n]*\bmkfs\.nilfs2\b|"
         r"\bLUMEN_REPRO_START\b[^\n]*\bfixture\b)"
         r"[^\n]*\bimage_bytes=(\d+)",

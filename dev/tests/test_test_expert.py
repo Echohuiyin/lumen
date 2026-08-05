@@ -161,6 +161,28 @@ def test_kernel_feedback_preserves_fixture_size_from_structured_setup_lines(tmp_
     assert "do not shrink" in feedback
 
 
+def test_kernel_feedback_preserves_fixture_size_from_lumen_setup_line(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_REPRO_START subsystem=loop+nilfs2 workers=4 cycles=4\n"
+        "LUMEN_SETUP worker=0 loop=/dev/loop0 image_bytes=268435456\n"
+        "LUMEN_SETUP mkfs.nilfs2=/usr/sbin/mkfs.nilfs2 -f /dev/loop0\n"
+        "File system initialization succeeded !!\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="Review missing/reordered frames.",
+        artifacts={"ssh_output": str(ssh_output)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "FIXTURE_SIZE_ESTABLISHED" in feedback
+    assert "268435456 bytes" in feedback
+    assert "do not shrink" in feedback
+
+
 def test_kernel_feedback_ignores_successful_mkfs_device_size(tmp_path):
     serial = tmp_path / "serial.log"
     serial.write_text(
