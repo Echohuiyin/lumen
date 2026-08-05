@@ -69,6 +69,26 @@ def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
     assert "boot noise" not in feedback
 
 
+def test_kernel_feedback_rejects_repeated_too_small_fixture(tmp_path):
+    serial = tmp_path / "serial.log"
+    serial.write_text(
+        "LUMEN_REPRO_START:nilfs\n"
+        "mkfs.nilfs2: Error: too small device; required size=134221824\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="Review the latest call-chain evidence.",
+        artifacts={"serial_log": str(serial)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "FIXTURE_SIZE_TOO_SMALL" in feedback
+    assert "recreate the image above that size" in feedback
+    assert "do not repeat an unchanged image" in feedback
+
+
 def test_kernel_feedback_ignores_pre_marker_boot_crash(tmp_path):
     serial = tmp_path / "serial.log"
     serial.write_text(

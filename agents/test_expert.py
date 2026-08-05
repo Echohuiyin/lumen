@@ -810,6 +810,23 @@ def _augment_kernel_feedback(
             evidence.append(text[:320])
         if len(evidence) >= 8:
             break
+    fixture_size_error = any(
+        re.search(
+            r"(?:too\s+small\s+device|required\s+size|device\s+size)",
+            line,
+            re.IGNORECASE,
+        )
+        for line in "\n".join(runtime_text).splitlines()
+    )
+    if fixture_size_error:
+        size_feedback = (
+            "FIXTURE_SIZE_TOO_SMALL: the guest formatter rejected the userspace "
+            "fixture size. Read the reported requirement, recreate the image above "
+            "that size inside the bounded C fixture, and do not repeat an unchanged "
+            "image or interpret the formatter error as a kernel path."
+        )
+        if size_feedback not in feedback:
+            feedback = f"{size_feedback}\n{feedback}".strip()
     if guest_runtime_incompatibility:
         capability_text = ", ".join(guest_runtime_incompatibility)
         environment_feedback = (
