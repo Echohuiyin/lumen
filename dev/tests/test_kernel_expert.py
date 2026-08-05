@@ -141,6 +141,9 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     assert "every `pthread_create` result" in prompt
     assert "joined before barrier/context destruction" in prompt
     assert "double-close" in prompt
+    codex_prompt = (PROJECT_ROOT / "prompts" / "kernel_expert_codex.md").read_text(encoding="utf-8")
+    assert "typed Lumen" in codex_prompt
+    assert "Never invent fields such as `kind`" in codex_prompt
     assert "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone" in prompt
     assert "fork/process" in prompt
     assert "static_check.txt" in prompt

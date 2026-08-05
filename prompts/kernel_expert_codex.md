@@ -44,6 +44,16 @@ The contract must contain:
 - structured `pressure_requirements` and `fault_injection_requirements` only when justified by the report/source;
 - `change_from_previous_tryout`, `warnings`, and `blocked_reason`.
 
+`pressure_requirements` and `fault_injection_requirements` are typed Lumen
+`ExecutionStep` lists, not free-form annotations. Each item must use one of
+the allow-listed `type` values (`run_binary`, `run_pressure`, `write_sysctl`,
+`wait`, or `fault_injection`) and the corresponding fields such as `profile`,
+`workers`, `times`, `path`, `args`, `key`, `value`, `probability`, and
+`rationale`. Never invent fields such as `kind`, `required`, `filesystem`,
+`operations`, or `duration_seconds`; put environment facts and non-executable
+setup requirements in `warnings`, or leave the list empty when the userspace
+C harness performs the bounded workload itself.
+
 `required_top_frames` is the strict runtime gate. Keep the original lower context for audit, but do not broaden the gate to accept a generic warning, panic banner, exception wrapper, or subsystem name. The target signal must occur after `LUMEN_REPRO_START` and in the declared target context.
 
 When Test Expert returns a mismatch, read its raw guest/serial artifacts and fix only the evidence-backed C precondition, ABI, fixture, pressure, or scheduling issue. Never repeat an identical source-and-plan pair, reinterpret a formatter/ABI error as a kernel path, or weaken the oracle. If a guest component or exact source prerequisite is missing, return `blocked` with the precise evidence.
