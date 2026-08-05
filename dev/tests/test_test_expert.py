@@ -87,6 +87,8 @@ def test_kernel_feedback_rejects_repeated_too_small_fixture(tmp_path):
     assert "FIXTURE_SIZE_TOO_SMALL" in feedback
     assert "recreate the image above that size" in feedback
     assert "do not repeat an unchanged image" in feedback
+    assert "required size=134221824 bytes" in feedback
+    assert "Treat this value as authoritative" in feedback
 
 
 def test_kernel_feedback_ignores_successful_mkfs_device_size(tmp_path):

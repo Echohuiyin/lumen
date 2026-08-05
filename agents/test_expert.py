@@ -827,6 +827,25 @@ def _augment_kernel_feedback(
         )
         for line in "\n".join(runtime_text).splitlines()
     )
+    # Preserve the formatter's exact lower bound when it is available.  A
+    # reproducer may print an earlier sector-derived estimate, but mkfs is the
+    # authoritative component deciding whether the image can be created.  If
+    # we drop its ``required size`` line, Kernel Expert can choose a size that
+    # is only a few sectors too small and repeat the same pre-kernel failure.
+    formatter_required_sizes: list[int] = []
+    formatter_required_re = re.compile(
+        r"\b(?:required|minimum)\s+(?:device\s+)?size\s*[:=]\s*"
+        r"([0-9][0-9_,]*)\b",
+        re.IGNORECASE,
+    )
+    for line in "\n".join(runtime_text).splitlines():
+        for match in formatter_required_re.finditer(line):
+            try:
+                required = int(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if 0 < required <= (1 << 50) and required not in formatter_required_sizes:
+                formatter_required_sizes.append(required)
     if fixture_size_error:
         size_feedback = (
             "FIXTURE_SIZE_TOO_SMALL: the guest formatter rejected the userspace "
@@ -834,6 +853,13 @@ def _augment_kernel_feedback(
             "that size inside the bounded C fixture, and do not repeat an unchanged "
             "image or interpret the formatter error as a kernel path."
         )
+        if formatter_required_sizes:
+            required = max(formatter_required_sizes)
+            size_feedback += (
+                f" Explicit formatter requirement: required size={required} bytes. "
+                "Treat this value as authoritative, then add the mandated safety "
+                "margin before selecting IMAGE_BYTES."
+            )
         if size_feedback not in feedback:
             feedback = f"{size_feedback}\n{feedback}".strip()
     if guest_runtime_incompatibility:
