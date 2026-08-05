@@ -66,6 +66,19 @@ def test_missing_call_chain_oracle_is_rejected():
         assert "required_frames" in validated.blocked_reason
 
 
+def test_explicit_kernel_block_is_not_routed_to_test_expert():
+    with tempfile.TemporaryDirectory() as directory:
+        contract = _contract(Path(directory))
+        contract.status = "blocked"
+        contract.blocked_reason = "missing first-hand ABI evidence"
+        validated = _validate_kernel_contract_artifacts(contract)
+        assert validated.status == "blocked"
+        assert validated.blocked_reason == "missing first-hand ABI evidence"
+        assert not _kernel_contract_ready_for_test(validated)
+        payload = validated.model_dump() if hasattr(validated, "model_dump") else validated.dict()
+        assert route_after_kernel({"kernel_contract": payload, "kernel_ready_for_test": False}) == "knowledge_base"
+
+
 def test_router_retries_until_tenth_mismatch_then_ends():
     failed = {"status": "failed", "call_chain_consistent": False}
     assert route_after_test({"tryout_count": 1, "max_tryouts": 10, "test_attempt_contract": failed}) == "kernel_expert"
@@ -81,6 +94,7 @@ if __name__ == "__main__":
         test_userspace_contract_is_a_test_expert_handoff,
         test_kernel_module_is_rejected,
         test_missing_call_chain_oracle_is_rejected,
+        test_explicit_kernel_block_is_not_routed_to_test_expert,
         test_router_retries_until_tenth_mismatch_then_ends,
     ):
         test()

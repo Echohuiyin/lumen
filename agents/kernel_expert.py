@@ -3078,10 +3078,17 @@ def _validate_kernel_contract_artifacts(
 
     data["warnings"] = warnings
     data["evidence"] = evidence
+    explicit_blocked_reason = str(contract.blocked_reason or "").strip()
     if errors:
         data["status"] = "blocked"
         data["blocked_reason"] = "; ".join(errors)
         print(f"  [contract诊断] 校验发现 {len(errors)} 个错误: {'; '.join(errors[:3])}", flush=True)
+    elif contract.status == "blocked" and explicit_blocked_reason:
+        # Preserve an explicit Kernel Expert block. Artifact validation may
+        # enrich paths and repair legacy derived fields, but must not turn a
+        # deliberate fail-closed decision into a Test Expert handoff.
+        data["status"] = "blocked"
+        data["blocked_reason"] = explicit_blocked_reason
     else:
         # Re-validation can repair a legacy contract that was persisted as
         # blocked only because its derived path selectors were empty.  Do not
