@@ -945,6 +945,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
             return [[
                 line for line in window
                 if "vcan0:" not in line.lower()
+                and not re.search(r"^\s*(?:\[[^\]]+\]\s*)?LUMEN_[A-Z0-9_]+(?:[:=\s]|$)", line, flags=re.IGNORECASE)
                 and not re.search(r"\]\s+\?", line)
             ]]
 

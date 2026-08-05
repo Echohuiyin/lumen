@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.persistent_qemu import PersistentQemuPaths
 from agents.test_expert import _append_attempt_output, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _semantic_review, test_expert_node
-from agents.test_expert import _strict_call_chain_oracle
+from agents.test_expert import _frame_symbol, _strict_call_chain_oracle
 
 
 def _contract(root: Path) -> KernelExpertOutput:
@@ -34,6 +34,10 @@ def _contract(root: Path) -> KernelExpertOutput:
             output_binary="lumen-repro", run_args=["--once"],
         ),
     )
+
+
+def test_frame_symbol_ignores_kernel_question_prefix():
+    assert _frame_symbol("? end_buffer_async_write+0x10/0x20") == "end_buffer_async_write"
 
 
 def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
@@ -89,6 +93,28 @@ def test_kernel_feedback_rejects_repeated_too_small_fixture(tmp_path):
     assert "do not repeat an unchanged image" in feedback
     assert "required size=134221824 bytes" in feedback
     assert "Treat this value as authoritative" in feedback
+
+
+def test_kernel_feedback_preserves_successful_fixture_size(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_REPRO_START:nilfs\n"
+        "LUMEN_FIXTURE image=/tmp/test.img image_bytes=268435456 required_minimum=134221824\n"
+        "LUMEN_FORMAT_OK formatter=mkfs.nilfs2 image=/tmp/test.img\n"
+        "LUMEN_REPRO_DONE status=workload_complete\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="Review missing/reordered frames.",
+        artifacts={"ssh_output": str(ssh_output)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "FIXTURE_SIZE_ESTABLISHED" in feedback
+    assert "268435456 bytes" in feedback
+    assert "do not shrink" in feedback
 
 
 def test_kernel_feedback_ignores_successful_mkfs_device_size(tmp_path):

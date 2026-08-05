@@ -177,7 +177,7 @@ def _is_inline_source_annotation(frame: str) -> bool:
 
 def _frame_symbol(frame: str) -> str:
     """Return the symbol identity without offsets or source annotations."""
-    value = str(frame).strip()
+    value = str(frame).strip().lstrip("?* ")
     value = re.sub(r"^\s*(?:pc|lr|rip)\s*:\s*", "", value, flags=re.IGNORECASE)
     match = re.match(r"([A-Za-z_][A-Za-z0-9_.]*)", value)
     return match.group(1) if match else value
@@ -862,6 +862,35 @@ def _augment_kernel_feedback(
             )
         if size_feedback not in feedback:
             feedback = f"{size_feedback}\n{feedback}".strip()
+
+    # Once a guest has formatted a fixture successfully, later diagnostic
+    # revisions must keep that proven lower bound.  Without this monotonic
+    # handoff, a no-signal retry can silently shrink the image and reintroduce
+    # a formatter failure before the kernel path is exercised.
+    established_fixture_sizes: list[int] = []
+    runtime_snapshot = "\n".join(runtime_text)
+    if re.search(r"\bLUMEN_FORMAT_OK\b", runtime_snapshot, re.IGNORECASE):
+        for match in re.finditer(
+            r"\bLUMEN_FIXTURE\b[^\n]*\bimage_bytes=(\d+)",
+            runtime_snapshot,
+            flags=re.IGNORECASE,
+        ):
+            try:
+                image_bytes = int(match.group(1))
+            except ValueError:
+                continue
+            if 0 < image_bytes <= (1 << 50) and image_bytes not in established_fixture_sizes:
+                established_fixture_sizes.append(image_bytes)
+    if established_fixture_sizes:
+        established = max(established_fixture_sizes)
+        fixture_feedback = (
+            f"FIXTURE_SIZE_ESTABLISHED: a prior guest run successfully formatted "
+            f"a fixture of {established} bytes. Preserve IMAGE_BYTES at least this "
+            "large in every later revision; do not shrink or replace the proven "
+            "fixture while changing only the trigger/pressure plan."
+        )
+        if fixture_feedback not in feedback:
+            feedback = f"{fixture_feedback}\n{feedback}".strip()
     if guest_runtime_incompatibility:
         capability_text = ", ".join(guest_runtime_incompatibility)
         environment_feedback = (

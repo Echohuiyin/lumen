@@ -376,6 +376,28 @@ def test_call_chain_order_uses_trace_not_printk_or_question_mark_frames(tmp_path
     assert match["frame_order_matched"] is True
 
 
+def test_call_chain_does_not_count_userspace_lumen_diagnostics(tmp_path):
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_top_frames = [
+        "end_buffer_async_write", "end_bio_bh_io_sync",
+    ]
+    plan.call_chain_oracle.required_frames = list(
+        plan.call_chain_oracle.required_top_frames
+    )
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "LUMEN_REPRO_START subsystem=nilfs2 target=end_buffer_async_write",
+        "target fault",
+    ])
+
+    match = _check_call_chain_match(content, plan)
+
+    assert match["missing_frames"] == [
+        "end_buffer_async_write", "end_bio_bh_io_sync",
+    ]
+    assert match["frame_order_matched"] is False
+
+
 def test_call_chain_accepts_one_member_of_an_alternative_group(tmp_path):
     plan = _plan(tmp_path)
     plan.call_chain_oracle.required_frames = [
