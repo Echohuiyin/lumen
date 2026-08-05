@@ -755,6 +755,7 @@ def _run_kernel_expert_with_agent_loop(
     except Exception as e:
         error_msg = f"{backend_label} 调用失败: {str(e)}"
         _write_tool_call_output(output_file, error_msg, expert_name)
+        _sync_codex_artifacts(codex_workdir, session_output_dir)
         # Re-raise CLI startup failures, max_turns exhaustion, and timeouts
         # so kernel_expert_node can route to a blocked contract instead of
         # fabricating a fallback that picks up stale reproducer dirs from
