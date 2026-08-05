@@ -2621,6 +2621,9 @@ def _enrich_kernel_contract_from_runtime(
         declared = str(input_artifacts.get(field, "") or "").strip()
         if declared:
             data[field] = declared
+    declared_assets = str(input_artifacts.get("test_assets_dir", "") or "").strip()
+    if declared_assets:
+        data["test_assets_dir"] = declared_assets
     qemu_extra_cmdline = str(input_artifacts.get("qemu_extra_cmdline", "") or "").strip()
     if qemu_extra_cmdline:
         recipe = dict(data.get("qemu_recipe") or {})

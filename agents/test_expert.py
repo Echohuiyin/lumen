@@ -337,6 +337,7 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         reproducer=reproducer,
         execution_steps=steps,
         expected_signal=contract.expected_signal,
+        test_assets_dir=contract.test_assets_dir,
         detection_signals=DetectionSignals(serial_signals=list(oracle.fault_signatures)),
         qemu_recipe=contract.qemu_recipe,
         reproduction_case_id=contract.uaf_analysis.case_id if contract.uaf_analysis else "maintenance-case",

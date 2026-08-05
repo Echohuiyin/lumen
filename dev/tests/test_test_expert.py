@@ -344,6 +344,17 @@ def test_test_plan_carries_declared_reproduction_assets():
         assert plan.binaries_dir == str(assets)
 
 
+def test_test_plan_carries_authoritative_test_assets_dir(tmp_path):
+    contract = _contract(tmp_path)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    contract.test_assets_dir = str(assets)
+
+    plan = _build_plan(contract)
+
+    assert plan.test_assets_dir == str(assets)
+
+
 def test_unresolved_reproducer_arguments_are_blocked_before_qemu(tmp_path):
     contract = _contract(tmp_path)
     contract.reproducer.run_args = ["--bind-path", "<validated-driver-bind-path>"]

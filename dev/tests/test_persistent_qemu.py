@@ -263,6 +263,29 @@ def test_stage_poc_copies_declared_sources_only(tmp_path):
     assert not (stage / "reproducer" / "tryouts").exists()
 
 
+def test_stage_declared_test_asset_rewrites_host_path(tmp_path):
+    plan = _plan(tmp_path)
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    fixture = assets / "mount_0.raw"
+    fixture.write_bytes(b"exact-fixture")
+    host_arg = str(fixture)
+    plan.test_assets_dir = str(assets)
+    plan.reproducer.run_args = [host_arg]
+    plan.execution_steps = [
+        ExecutionStep(type="run_binary", path="bin/trigger", args=[host_arg]),
+    ]
+
+    manager = PersistentQemuManager(plan, runtime_root=tmp_path / "guests")
+    stage, _ = manager._stage_poc()
+
+    staged = stage / "bin" / "assets" / "mount_0.raw"
+    assert staged.read_bytes() == b"exact-fixture"
+    script = (stage / "run.sh").read_text(encoding="utf-8")
+    assert "bin/assets/mount_0.raw" in script
+    assert host_arg not in script
+
+
 def test_fault_injection_is_allowlisted_and_rendered(tmp_path):
     plan = _plan(tmp_path)
     plan.execution_steps = [

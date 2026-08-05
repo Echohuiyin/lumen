@@ -548,6 +548,71 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
     return command, ("kvm" if kvm_available else "tcg")
 
 
+def _stage_declared_test_assets(plan: TestPlan, destination: Path) -> None:
+    """Stage only input-declared fixture files referenced by guest arguments.
+
+    ``input.txt`` paths are host paths; the guest cannot see them.  Resolve
+    only files under the authoritative ``test_assets_dir`` and expose them as
+    ``bin/assets/<relative>``.  Unrelated files (kernel images, vmlinux,
+    disk.raw, etc.) are never copied into a try-out.
+    """
+    assets_value = str(getattr(plan, "test_assets_dir", "") or "").strip()
+    if not assets_value:
+        return
+    asset_root = Path(os.path.expanduser(assets_value)).resolve()
+    if not asset_root.is_dir():
+        raise ValueError(f"declared test_assets_dir is missing: {asset_root}")
+
+    copied: dict[str, str] = {}
+
+    def normalize(args: list[str]) -> list[str]:
+        normalized: list[str] = []
+        for raw in args:
+            value = str(raw)
+            candidate: Path | None = None
+            relative: Path | None = None
+            path = Path(value)
+            if path.is_absolute():
+                resolved = path.resolve()
+                try:
+                    relative = resolved.relative_to(asset_root)
+                except ValueError:
+                    # Absolute paths outside the declared fixture root may be
+                    # legitimate guest paths (/proc, /tmp, ...).  They are
+                    # intentionally left untouched; a host fixture path is
+                    # only rewritten when it is proven to be under the root.
+                    normalized.append(value)
+                    continue
+                candidate = resolved
+            else:
+                resolved = (asset_root / path).resolve()
+                try:
+                    relative = resolved.relative_to(asset_root)
+                except ValueError:
+                    normalized.append(value)
+                    continue
+                if not resolved.is_file():
+                    normalized.append(value)
+                    continue
+                candidate = resolved
+            if candidate is None or relative is None or not candidate.is_file():
+                normalized.append(value)
+                continue
+            rel_text = relative.as_posix()
+            if rel_text not in copied:
+                target = destination / "assets" / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(candidate, target)
+                copied[rel_text] = str(target)
+            normalized.append("bin/assets/" + rel_text)
+        return normalized
+
+    plan.reproducer.run_args = normalize(plan.reproducer.run_args)
+    for step in plan.execution_steps:
+        if step.type == "run_binary":
+            step.args = normalize(step.args)
+
+
 class PersistentQemuManager:
     """Own one architecture/kernel-specific QEMU guest and run a POC via SSH."""
 
@@ -762,6 +827,7 @@ class PersistentQemuManager:
             binaries = Path(os.path.expanduser(self.plan.binaries_dir)).resolve()
             if binaries.is_dir():
                 shutil.copytree(binaries, stage / "bin", dirs_exist_ok=True)
+        _stage_declared_test_assets(self.plan, stage / "bin")
         case_id = self.plan.reproduction_case_id or "untracked"
         path_id = self.plan.target_path_id or "untracked"
         marker = f"LUMEN_REPRO_START:{case_id}:{path_id}"

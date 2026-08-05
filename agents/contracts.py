@@ -204,6 +204,9 @@ class TestPlan(BaseModel):
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
+    # Host-side directory containing declared case fixtures.  The persistent
+    # runner stages only files referenced by userspace run arguments.
+    test_assets_dir: str = ""
     detection_signals: DetectionSignals = Field(default_factory=DetectionSignals)
     qemu_recipe: QemuRecipe = Field(default_factory=QemuRecipe)
     reproduction_case_id: str = ""
@@ -373,6 +376,8 @@ class KernelExpertOutput(BaseModel):
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
+    # Authoritative host-side fixture root supplied by input.txt.
+    test_assets_dir: str = ""
     build_status: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     # UAF/refcount investigations must preserve the complete path set even
