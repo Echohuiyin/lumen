@@ -24,7 +24,7 @@
       "cli_timeout": "${LUMEN_CODEX_TIMEOUT_SECONDS:-600}",
       "model": "${LUMEN_CODEX_MODEL:-gpt-5.6-luna}",
       "reasoning_effort": "${LUMEN_CODEX_REASONING_EFFORT:-max}",
-      "service_tier": "${LUMEN_CODEX_SERVICE_TIER:-priority}",
+      "service_tier": "${LUMEN_CODEX_SERVICE_TIER:-}",
       "sandbox_mode": "workspace-write",
       "approval_policy": "never",
       "runtime_home": "${LUMEN_CODEX_RUNTIME_HOME:-${LUMEN_PROJECT_ROOT:-.}/runtime/codex-home}",
