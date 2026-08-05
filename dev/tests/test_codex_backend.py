@@ -13,6 +13,22 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agents.backends import CodexBackend
 
 
+def _fake_process(*, returncode=0, stdout="", stderr=""):
+    class FakeProcess:
+        pid = 4242
+
+        def __init__(self):
+            self.returncode = returncode
+
+        def communicate(self, **kwargs):
+            return stdout, stderr
+
+        def kill(self):
+            self.returncode = -9
+
+    return FakeProcess()
+
+
 def _fixture(tmp_path: Path) -> tuple[CodexBackend, Path, Path, Path]:
     project = tmp_path / "lumen"
     workdir = project / "sessions" / "case" / "outputs"
@@ -49,15 +65,24 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     source.mkdir()
     captured = {}
 
-    def fake_run(cmd, **kwargs):
-        captured.update(cmd=cmd, kwargs=kwargs)
-        event = {
-            "type": "item.completed",
-            "item": {"type": "agent_message", "text": "KERNEL_CONTRACT\n{}"},
-        }
-        return SimpleNamespace(returncode=0, stdout=json.dumps(event) + "\n", stderr="")
+    event = {
+        "type": "item.completed",
+        "item": {"type": "agent_message", "text": "KERNEL_CONTRACT\n{}"},
+    }
 
-    monkeypatch.setattr("agents.backends.subprocess.run", fake_run)
+    def fake_popen(cmd, **kwargs):
+        captured.update(cmd=cmd, kwargs=kwargs)
+        process = _fake_process(stdout=json.dumps(event) + "\n")
+        original_communicate = process.communicate
+
+        def communicate(**communicate_kwargs):
+            captured["communicate_kwargs"] = communicate_kwargs
+            return original_communicate(**communicate_kwargs)
+
+        process.communicate = communicate
+        return process
+
+    monkeypatch.setattr("agents.backends.subprocess.Popen", fake_popen)
     response = backend.invoke(
         [SystemMessage(content="system contract"), HumanMessage(content="case input")],
         workdir=str(workdir),
@@ -78,7 +103,7 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     assert "mcp_servers.semcode.required=true" in cmd
     assert captured["kwargs"]["env"]["HOME"] == str(runtime_home)
     assert captured["kwargs"]["env"]["CODEX_HOME"] == str(runtime_home / ".codex")
-    assert "Use only repository skills" in captured["kwargs"]["input"]
+    assert "Use only repository skills" in captured["communicate_kwargs"]["input"]
     assert str(project) in next(item for item in cmd if item.startswith("mcp_servers.semcode.cwd="))
     skills_link = workdir / ".agents"
     assert skills_link.is_dir()
@@ -133,11 +158,9 @@ def test_codex_backend_accepts_invocation_scoped_api_key(tmp_path, monkeypatch):
     (runtime_home / ".codex" / "auth.json").unlink()
     monkeypatch.setenv("CODEX_API_KEY", "test-only")
     monkeypatch.setattr(
-        "agents.backends.subprocess.run",
-        lambda cmd, **kwargs: SimpleNamespace(
-            returncode=0,
+        "agents.backends.subprocess.Popen",
+        lambda cmd, **kwargs: _fake_process(
             stdout=json.dumps({"type": "item.completed", "item": {"type": "agent_message", "text": "ok"}}),
-            stderr="",
         ),
     )
     assert backend.invoke([], workdir=str(workdir)).content == "ok"
@@ -168,19 +191,32 @@ def test_codex_backend_requires_semcode_binary(tmp_path):
 def test_codex_backend_timeout_is_blocking(tmp_path, monkeypatch):
     backend, _project, workdir, _runtime_home = _fixture(tmp_path)
 
-    def timeout(*args, **kwargs):
-        raise subprocess.TimeoutExpired(args[0], 1)
+    killed = []
 
-    monkeypatch.setattr("agents.backends.subprocess.run", timeout)
+    class TimeoutProcess:
+        pid = 9898
+        returncode = -9
+
+        def communicate(self, **kwargs):
+            if kwargs.get("timeout") is not None:
+                raise subprocess.TimeoutExpired(["codex"], 1)
+            return "", ""
+
+        def kill(self):
+            killed.append(("process", self.pid))
+
+    monkeypatch.setattr("agents.backends.subprocess.Popen", lambda *args, **kwargs: TimeoutProcess())
+    monkeypatch.setattr("agents.backends.os.killpg", lambda pid, sig: killed.append((pid, sig)))
     with pytest.raises(RuntimeError, match="Codex timed out"):
         backend.invoke([], workdir=str(workdir))
+    assert killed and killed[0][0] == 9898
 
 
 def test_codex_backend_nonzero_mcp_failure_is_tagged(tmp_path, monkeypatch):
     backend, _project, workdir, _runtime_home = _fixture(tmp_path)
     monkeypatch.setattr(
-        "agents.backends.subprocess.run",
-        lambda cmd, **kwargs: SimpleNamespace(
+        "agents.backends.subprocess.Popen",
+        lambda cmd, **kwargs: _fake_process(
             returncode=1,
             stdout="",
             stderr="required MCP server semcode failed to initialize",

@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import shlex
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -1665,26 +1666,44 @@ class CodexBackend:
         env["CODEX_HOME"] = str(codex_home)
         env["XDG_CONFIG_HOME"] = str(runtime_home / ".config")
 
+        # Codex is a Node wrapper which launches a vendor binary.  A plain
+        # subprocess.run(timeout=...) only kills the wrapper; the vendor child
+        # can retain stdout/stderr and keep the workflow blocked indefinitely.
+        # Own a process group so timeout cleanup is bounded and deterministic.
         try:
-            result = subprocess.run(
+            process = subprocess.Popen(
                 cmd,
                 cwd=str(workdir_path),
                 env=env,
-                input=prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self._cli_timeout,
+                start_new_session=(os.name == "posix"),
             )
-        except subprocess.TimeoutExpired as exc:
-            raise RuntimeError(f"Codex timed out after {self._cli_timeout}s") from exc
+            try:
+                stdout, stderr = process.communicate(
+                    input=prompt,
+                    timeout=self._cli_timeout,
+                )
+            except subprocess.TimeoutExpired as exc:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                else:
+                    process.kill()
+                stdout, stderr = process.communicate()
+                raise RuntimeError(f"Codex timed out after {self._cli_timeout}s") from exc
         except FileNotFoundError as exc:
             raise RuntimeError(f"Codex CLI not found: {self._cli_command}") from exc
 
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout or "").strip()[:1000]
+        if process.returncode != 0:
+            detail = (stderr or stdout or "").strip()[:1000]
             prefix = "[cli_startup_failure] " if "mcp" in detail.lower() else ""
-            raise RuntimeError(f"{prefix}Codex failed (exit {result.returncode}): {detail}")
-        content = self._parse_jsonl(result.stdout)
+            raise RuntimeError(f"{prefix}Codex failed (exit {process.returncode}): {detail}")
+        content = self._parse_jsonl(stdout)
         if not content.strip():
             raise RuntimeError("Codex returned no final agent message")
         return AIMessage(content=content)
