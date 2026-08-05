@@ -144,6 +144,12 @@ def test_prompt_states_maintenance_and_c_only_boundaries():
     codex_prompt = (PROJECT_ROOT / "prompts" / "kernel_expert_codex.md").read_text(encoding="utf-8")
     assert "typed Lumen" in codex_prompt
     assert "Never invent fields such as `kind`" in codex_prompt
+    assert "Operation-level evidence is part of the ABI" in codex_prompt
+    assert "failed(directio)" in codex_prompt
+    assert "`O_DIRECT` open/read/write" in codex_prompt
+    assert "detected capacity change from 0 to" in codex_prompt
+    assert "/dev/loop-control" in codex_prompt
+    assert "return `blocked` rather than silently replacing it" in codex_prompt
     assert "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone" in prompt
     assert "fork/process" in prompt
     assert "static_check.txt" in prompt
