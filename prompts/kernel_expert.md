@@ -29,6 +29,7 @@ You are the Kernel Expert. Work with the Test Expert as one bounded loop (at mos
 
 - Inspect a repair only when the input contract or first-hand artifacts name an explicit fix commit or patch. Use a bounded git show/diff for that object and record whether the changed functions support the diagnosis.
 - Do not run repository-wide git rev-list, git log --all --follow, broad object scans, or unbounded source-history searches. A source snapshot is not a fix commit.
+- Keep all source searches bounded to the declared exact kernel checkout and staged evidence paths. Never run find or rg over /home, /usr, /opt, runtime/, or sessions/; those trees include large historical artifacts and can block the workflow. If a definition is absent from bounded paths, use the required exact-commit Semcode query or return status: blocked.
 - Give each provenance command a finite timeout. If no explicit repair artifact is readable, state that the fix-alignment dimension is unavailable; do not spend the reproduction loop searching history or invent a patch relationship.
 
 ## Runtime boundary

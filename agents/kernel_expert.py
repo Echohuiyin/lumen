@@ -649,7 +649,8 @@ def _run_kernel_expert_with_agent_loop(
 - Home directory: {home_dir} (use this in paths, NOT /root)
 - Output directory (your current workdir): {codex_workdir} — ALL C test-harness files and KERNEL_CONTRACT artifacts MUST be created under this directory
 - Durable workflow session directory: {session_output_dir} — the workflow archives generated C/JSON artifacts here after this invocation
-- Target source checkout: bound to the required Semcode MCP server; do not guess or substitute a source path
+- Exact target source checkout: {target_kernel_dir} — scope all source searches to this path; it is the required Semcode MCP checkout
+- Do not scan broad filesystem trees (/home, /usr, /opt, runtime/, or sessions/); use bounded searches in this checkout or staged evidence only
 - Write only diagnostic userspace C sources and KERNEL_CONTRACT here.
 - Test Expert owns QEMU, guest compilation, approved load setup, and call-chain verification.
 - Maximum Kernel/Test Expert try-outs: {max_reproduction_rounds}
