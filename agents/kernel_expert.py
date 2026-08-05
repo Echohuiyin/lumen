@@ -1033,6 +1033,24 @@ _FIRST_HAND_LOG_ACTION_MARKERS = (
     "warning:",
 )
 
+# Keep high-level setup evidence in the Codex prompt, but do not echo crash
+# sanitizer/error labels or syzkaller identifiers into the model message. The
+# complete first-hand log remains available under evidence/original.log.
+_FIRST_HAND_LOG_PROMPT_FILTER = (
+    "kasan",
+    "use-after-free",
+    "use after free",
+    "kernel bug",
+    "kernel panic",
+    "unable to handle",
+    "general protection",
+    "invalid opcode",
+    "call trace",
+    "allocated by task",
+    "freed by task",
+    "syz_",
+)
+
 
 def _extract_first_hand_log_hints(
     log_text: str,
@@ -1056,6 +1074,8 @@ def _extract_first_hand_log_hints(
         if not line or line in seen:
             continue
         lowered = line.lower()
+        if any(marker in lowered for marker in _FIRST_HAND_LOG_PROMPT_FILTER):
+            continue
         has_action_marker = any(
             marker in lowered for marker in _FIRST_HAND_LOG_ACTION_MARKERS
         )

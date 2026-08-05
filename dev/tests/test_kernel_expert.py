@@ -180,6 +180,24 @@ def test_first_hand_log_hints_preserve_trigger_prerequisites_without_repro_sourc
     assert "unrelated boot line" not in hints
 
 
+def test_first_hand_log_hints_filter_crash_labels_and_generator_names():
+    log = """
+    KASAN: use-after-free in maintenance path
+    kernel BUG at fs/example.c:10
+    Call Trace:
+      syz_executor+0x10/0x20
+    mount /dev/loop0 at /tmp/lumen
+    ioctl LOOP_SET_FD image
+    """
+    hints = _extract_first_hand_log_hints(log)
+    assert "KASAN" not in hints
+    assert "kernel BUG" not in hints
+    assert "Call Trace" not in hints
+    assert "syz_executor" not in hints
+    assert "mount /dev/loop0" in hints
+    assert "ioctl LOOP_SET_FD" in hints
+
+
 def test_structured_kernel_contract_round_trips_without_module_build():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))
