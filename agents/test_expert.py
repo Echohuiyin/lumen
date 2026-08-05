@@ -881,12 +881,15 @@ def _augment_kernel_feedback(
         or re.search(r"\bLUMEN_MOUNT_OK\b", runtime_snapshot, re.IGNORECASE)
         or re.search(r"\bLUMEN_REPRO_START\b", runtime_snapshot, re.IGNORECASE)
     )
+    fixture_size_markers = re.compile(
+        r"(?:\bLUMEN_FIXTURE\b|\bfixture_size_check\b|"
+        r"\bformatter=[^\n]*\bmkfs\.nilfs2\b|"
+        r"\bLUMEN_REPRO_START\b[^\n]*\bfixture\b)"
+        r"[^\n]*\bimage_bytes=(\d+)",
+        flags=re.IGNORECASE,
+    )
     if fixture_setup_succeeded:
-        for match in re.finditer(
-            r"\bLUMEN_FIXTURE\b[^\n]*\bimage_bytes=(\d+)",
-            runtime_snapshot,
-            flags=re.IGNORECASE,
-        ):
+        for match in fixture_size_markers.finditer(runtime_snapshot):
             try:
                 image_bytes = int(match.group(1))
             except ValueError:
