@@ -812,7 +812,16 @@ def _augment_kernel_feedback(
             break
     fixture_size_error = any(
         re.search(
-            r"(?:too\s+small\s+device|required\s+size|device\s+size)",
+            # ``mkfs.nilfs2`` prints ``Device Size:<bytes>`` on every
+            # successful format. Treating that informational line as a
+            # failure kept stale FIXTURE_SIZE_TOO_SMALL feedback alive after
+            # a later try-out had already crossed the minimum size. Match
+            # only an explicit rejection or a required/minimum-size
+            # diagnostic instead of the generic phrase ``device size``.
+            r"(?:too\s+small\s+(?:device|filesystem)|"
+            r"(?:device|filesystem)\s+(?:is\s+)?too\s+small|"
+            r"(?:minimum|required)\s+(?:device\s+)?size\s*(?:[:=]|\b)|"
+            r"size\s+(?:must\s+be|needs?\s+to\s+be))",
             line,
             re.IGNORECASE,
         )

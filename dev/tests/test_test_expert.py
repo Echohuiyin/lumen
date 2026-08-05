@@ -89,6 +89,27 @@ def test_kernel_feedback_rejects_repeated_too_small_fixture(tmp_path):
     assert "do not repeat an unchanged image" in feedback
 
 
+def test_kernel_feedback_ignores_successful_mkfs_device_size(tmp_path):
+    serial = tmp_path / "serial.log"
+    serial.write_text(
+        "LUMEN_REPRO_START:nilfs\n"
+        "Start writing file system initial data to the device\n"
+        "       Blocksize:4096  Device Size:150994944\n"
+        "File system initialization succeeded !!\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND", summary="no target signal",
+        kernel_feedback="Review the latest call-chain evidence.",
+        artifacts={"serial_log": str(serial)},
+    )
+
+    feedback = _augment_kernel_feedback(result)
+
+    assert "FIXTURE_SIZE_TOO_SMALL" not in feedback
+    assert feedback == "Review the latest call-chain evidence."
+
+
 def test_kernel_feedback_ignores_pre_marker_boot_crash(tmp_path):
     serial = tmp_path / "serial.log"
     serial.write_text(
