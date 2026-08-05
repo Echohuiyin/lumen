@@ -572,7 +572,21 @@ def _stage_declared_test_assets(plan: TestPlan, destination: Path) -> None:
             candidate: Path | None = None
             relative: Path | None = None
             path = Path(value)
-            if path.is_absolute():
+            guest_asset_prefix = "/guest-assets/"
+            if value.startswith(guest_asset_prefix):
+                # Kernel Expert may describe a fixture using the stable guest
+                # alias from the input contract.  Resolve the suffix against
+                # the authoritative host asset root before staging it; never
+                # treat an arbitrary guest path as a host path.
+                alias_path = Path(value[len(guest_asset_prefix):])
+                resolved = (asset_root / alias_path).resolve()
+                try:
+                    relative = resolved.relative_to(asset_root)
+                except ValueError:
+                    normalized.append(value)
+                    continue
+                candidate = resolved
+            elif path.is_absolute():
                 resolved = path.resolve()
                 try:
                     relative = resolved.relative_to(asset_root)
