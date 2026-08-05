@@ -82,6 +82,7 @@ INPUT_FILE_FIELDS = {
     "kernel_source_path",
     "rootfs",
     "rootfs_path",
+    "test_assets_dir",
     "report",
     "reproducer",
     "reproducer_path",

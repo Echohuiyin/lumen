@@ -330,6 +330,20 @@ def test_test_plan_compiles_userspace_source_inside_guest():
         assert plan.call_chain_oracle.required_frames == ["target_frame"]
 
 
+def test_test_plan_carries_declared_reproduction_assets():
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        contract = _contract(root)
+        assets = root / "assets"
+        assets.mkdir()
+        (assets / "mount_0.raw").write_bytes(b"fixture")
+        contract.binaries_dir = str(assets)
+
+        plan = _build_plan(contract)
+
+        assert plan.binaries_dir == str(assets)
+
+
 def test_unresolved_reproducer_arguments_are_blocked_before_qemu(tmp_path):
     contract = _contract(tmp_path)
     contract.reproducer.run_args = ["--bind-path", "<validated-driver-bind-path>"]

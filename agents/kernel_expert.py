@@ -462,6 +462,7 @@ def _scan_test_assets_for_reproducers(test_assets_dir: str) -> list[dict[str, st
       - *.ko (prebuilt kernel module)
       - REPRODUCTION.md (syzbot's notes on the trigger config)
       - any executable binary (userspace trigger)
+      - mounted filesystem fixtures such as mount_0.raw or mount_0.gz
 
     Returns a list of {"name", "path", "kind"} dicts. Empty list if the
     directory doesn't exist or has nothing useful.
@@ -482,6 +483,15 @@ def _scan_test_assets_for_reproducers(test_assets_dir: str) -> list[dict[str, st
                     findings.append({"name": name, "path": str(entry), "kind": "syzbot_repro_source"})
                 elif name == "REPRODUCTION.md":
                     findings.append({"name": name, "path": str(entry), "kind": "reproduction_notes"})
+                elif (
+                    entry.suffix.lower() in {".raw", ".img", ".qcow2", ".gz"}
+                    and (name.startswith("mount_") or name.startswith("disk"))
+                ):
+                    findings.append({
+                        "name": name,
+                        "path": str(entry),
+                        "kind": "filesystem_fixture",
+                    })
                 elif entry.stat().st_size > 0 and os.access(entry, os.X_OK):
                     findings.append({"name": name, "path": str(entry), "kind": "userspace_trigger"})
             elif entry.is_dir():
@@ -557,6 +567,7 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
                 "syzbot_repro_source": "用户态 C 源码（需由 Test Expert 编译）",
                 "userspace_trigger": "用户态测试程序（由 Test Expert 在 guest 中运行）",
                 "reproduction_notes": "测试说明文档（含运行配置，必读）",
+                "filesystem_fixture": "原始挂载文件系统镜像（只读输入资产，禁止格式化或改写）",
             }.get(f["kind"], f["kind"])
             parts.append(f"- {f['name']} ({kind_label}): {f['path']}")
         parts.append("")
@@ -564,6 +575,11 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
         parts.append("1. 有预编译用户态程序 → 核对接口后在契约中声明其 guest 内运行步骤")
         parts.append("2. 有用户态 C 源码 → 由 Test Expert 在 guest 内编译并记录编译证据")
         parts.append("3. 有测试说明文档 → 必读，里面有 smp/numa/timeout 等关键配置")
+        if any(f["kind"] == "filesystem_fixture" for f in assets):
+            parts.append(
+                "4. 有原始挂载文件系统镜像 → 必须在 KERNEL_CONTRACT 中通过 "
+                "binaries_dir/execution_steps 传入该确切文件；禁止创建全零替代品、ftruncate、mkfs 或改写原始镜像。"
+            )
 
     if not parts:
         return ""
@@ -1575,6 +1591,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         f"- Semcode 查询约束：每次查询必须显式传入 git_sha={expected_kernel_commit or '<missing>'}；缺少目标提交的索引时必须 blocked，禁止查询默认 HEAD 或改用 grep/源码 fallback。\n\n"
         f"- Codex-visible exact Semcode evidence (read this before interactive MCP): {'evidence/semcode-evidence.json' if semcode_evidence_path else 'N/A'}\n\n"
         f"- rootfs_path: {input_artifacts.get('rootfs_path', 'N/A')}\n\n"
+        f"- test_assets_dir: {input_artifacts.get('test_assets_dir', 'N/A')}\n\n"
         "- guest runtime settings: Test Expert owns QEMU settings; use only "
         "the structured case contract when settings are declared\n\n"
         f"- 原始日志路径（第一手证据，按需直接读取，禁止以专家摘要替代）: {original_log_path or 'N/A（vmcore 日志提取失败或未提供）'}\n\n"
@@ -1738,10 +1755,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             if not target_kernel_dir and os.path.isdir(os.path.join(_p, "include")):
                 target_kernel_dir = _p
 
-    # Derive test_assets_dir from boot_kernel_path: if bzImage is at
-    # test_assets/<case>/bzImage, the parent dir is the case assets dir.
-    test_assets_dir = ""
-    if boot_kernel_path:
+    # Prefer an explicit test_assets_dir from input.txt. Mounted filesystem
+    # images may live beside, rather than with, bzImage/vmlinux. Only use the
+    # existing boot-image parent convention when no directory was declared;
+    # contract and call-chain validation remain unchanged.
+    test_assets_dir = str(input_artifacts.get("test_assets_dir", "") or "").strip()
+    if test_assets_dir:
+        test_assets_dir = os.path.expanduser(os.path.expandvars(test_assets_dir))
+    if not test_assets_dir and boot_kernel_path:
         _bk = Path(os.path.expanduser(boot_kernel_path))
         if _bk.parent.is_dir() and (_bk.parent / "input.txt").exists():
             test_assets_dir = str(_bk.parent)

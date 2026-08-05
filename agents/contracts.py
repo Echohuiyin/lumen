@@ -260,6 +260,7 @@ class InputArtifactsContract(BaseModel):
     vmlinux_path: str = ""
     boot_kernel_path: str = ""
     rootfs_path: str = ""
+    test_assets_dir: str = ""
     qemu_extra_cmdline: str = ""
     target_arch: str = ""
     expected_kernel_commit: str = ""

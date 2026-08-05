@@ -18,6 +18,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
             [
                 "Bug Promote: Linux maintenance case",
                 "rootfs: /tmp/debian.img",
+                "test_assets_dir: /tmp/lumen-test-assets",
                 "crash_report: /tmp/report.txt",
                 "reproducer: /tmp/repro.syz",
                 "qemu_extra_cmdline: no-kvmapf no-steal-acc init=/root/lumen-init",
@@ -32,6 +33,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
 
     fields = parse_input_file(str(input_file))
     assert fields["rootfs"] == "/tmp/debian.img"
+    assert fields["test_assets_dir"] == "/tmp/lumen-test-assets"
     assert fields["reproducer"] == "/tmp/repro.syz"
     assert fields["qemu_extra_cmdline"] == "no-kvmapf no-steal-acc init=/root/lumen-init"
     assert fields["maintenance_notes"] == "use fork workers and a blocking userspace sendmsg sequence"
@@ -43,6 +45,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
     assert contract.rootfs_path == "/tmp/debian.img"
     assert contract.crash_report_path == "/tmp/report.txt"
     assert contract.reproducer_path == "/tmp/repro.syz"
+    assert contract.test_assets_dir == "/tmp/lumen-test-assets"
     assert contract.qemu_extra_cmdline == "no-kvmapf no-steal-acc init=/root/lumen-init"
     assert contract.expected_kernel_commit == "bdf56c7580d267a123cc71ca0f2459c797b76fde"
 

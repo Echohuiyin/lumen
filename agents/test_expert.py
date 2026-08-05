@@ -333,6 +333,7 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         rootfs_mode="ext4",
         rootfs_path=contract.rootfs_path,
         reproducer_dir=reproducer.source_dir,
+        binaries_dir=contract.binaries_dir,
         reproducer=reproducer,
         execution_steps=steps,
         expected_signal=contract.expected_signal,
