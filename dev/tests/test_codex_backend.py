@@ -73,7 +73,8 @@ def test_codex_backend_isolates_home_skills_and_mcp(tmp_path, monkeypatch):
     assert "--ignore-rules" in cmd
     assert cmd[cmd.index("--sandbox") + 1] == "workspace-write"
     assert 'service_tier="priority"' in cmd
-    assert "--add-dir" not in cmd, "kernel source must remain read-only"
+    add_dir_index = cmd.index("--add-dir")
+    assert cmd[add_dir_index + 1] == str(source.resolve())
     assert "mcp_servers.semcode.required=true" in cmd
     assert captured["kwargs"]["env"]["HOME"] == str(runtime_home)
     assert captured["kwargs"]["env"]["CODEX_HOME"] == str(runtime_home / ".codex")
@@ -97,7 +98,7 @@ def test_codex_backend_can_use_complete_deterministic_evidence_without_mcp(tmp_p
     backend, project, workdir, _runtime_home = _fixture(tmp_path)
     backend._semcode_mcp = {"disabled": True}
 
-    command = backend._build_command(workdir=workdir, project_root=project)
+    command = backend._build_command(workdir=workdir, project_root=project, add_dirs=[])
 
     assert command[-1] == "-"
     assert not any(item.startswith("mcp_servers.semcode.") for item in command)

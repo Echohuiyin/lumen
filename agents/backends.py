@@ -1504,8 +1504,8 @@ class CodexBackend:
         directory to the repository as an out-of-workspace boundary.  That
         prevented both skill discovery and writes to a userspace diagnostic
         source.  Copy only the repository ``.agents/skills`` tree into the
-        session instead; the target kernel checkout is still read-only and is
-        accessed exclusively through the required Semcode MCP server.
+        session instead; the target kernel checkout is supplied separately as
+        a bounded additional directory for source inspection.
         """
         source = (project_root / ".agents").resolve()
         if not source.is_dir():
@@ -1572,7 +1572,7 @@ class CodexBackend:
             raise RuntimeError(f"Codex reported an error: {errors[-1][:500]}")
         return final_text
 
-    def _build_command(self, *, workdir: Path, project_root: Path) -> list[str]:
+    def _build_command(self, *, workdir: Path, project_root: Path, add_dirs: list[str] | None = None) -> list[str]:
         command = shlex.split(self._cli_command)
         if not command:
             raise RuntimeError("Codex CLI command is empty")
@@ -1601,6 +1601,11 @@ class CodexBackend:
         if self._service_tier:
             cmd.extend(["-c", f"service_tier={json.dumps(self._service_tier)}"])
         cmd.extend(["--disable", "plugins", "--disable", "apps", "--disable", "multi_agent"])
+        for directory in add_dirs or []:
+            bounded = self._expanded_path(directory)
+            if not bounded.is_dir():
+                raise RuntimeError(f"Codex additional directory does not exist: {bounded}")
+            cmd.extend(["--add-dir", str(bounded)])
         if not mcp_disabled:
             cmd.extend([
                 "-c", f"mcp_servers.semcode.command={json.dumps(mcp_command)}",
@@ -1654,7 +1659,7 @@ class CodexBackend:
             + "# Case input\n\n"
             + ("\n\n".join(user_parts) or " ")
         )
-        cmd = self._build_command(workdir=workdir_path, project_root=project_root)
+        cmd = self._build_command(workdir=workdir_path, project_root=project_root, add_dirs=add_dirs)
         env = os.environ.copy()
         env["HOME"] = str(runtime_home)
         env["CODEX_HOME"] = str(codex_home)
