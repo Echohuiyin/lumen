@@ -501,12 +501,20 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
             return result
 
-    # OCFS2 move-extents diagnostics require a writable OCFS2 mount.  A plain
-    # ext4 QEMU rootfs cannot provide that filesystem ABI; retrying the same
-    # image cannot change the visible mount set, so stop before spending the
-    # remaining try-outs on an identical capability failure.
+    # OCFS2 move-extents diagnostics require both the mkfs.ocfs2 userspace
+    # helper and a writable OCFS2 mount.  A plain ext4 QEMU rootfs cannot
+    # provide that filesystem ABI; retrying the same image cannot change the
+    # visible mount set, so stop before spending the remaining try-outs on an
+    # identical capability failure.
     for key, raw_path, text in evidence:
         lowered = text.lower()
+        ocfs2_tool_missing = (
+            "mkfs.ocfs2" in lowered
+            and (
+                "no such file or directory" in lowered
+                or "not found" in lowered
+            )
+        )
         ocfs2_mount_missing = (
             "no writable ocfs2 mount" in lowered
             or "mkfs.ocfs2 is not installed" in lowered
@@ -515,6 +523,17 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
                 and "ocfs2" in lowered
             )
         )
+        if ocfs2_tool_missing:
+            result.status = "blocked"
+            result.code = "BLOCKED_GUEST_OCFS2_TOOL_MISSING"
+            result.summary = (
+                "Guest is missing the mkfs.ocfs2 helper from ocfs2-tools; "
+                "rebuild the QEMU image with that package before retrying "
+                "this OCFS2 move-extents case."
+            )
+            result.kernel_feedback = result.summary
+            result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
+            return result
         if ocfs2_mount_missing:
             result.status = "blocked"
             result.code = "BLOCKED_GUEST_OCFS2_MOUNT_MISSING"
