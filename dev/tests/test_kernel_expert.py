@@ -122,7 +122,24 @@ def test_materialized_contract_response_requires_current_manifest(tmp_path):
     assert _materialized_contract_response(tmp_path / 'other') is None
 
 
-def test_prompt_states_maintenance_and_c_only_boundaries():
+def test_materialized_contract_can_replace_non_structured_retry_output(tmp_path):
+    session = tmp_path / 'session'
+    session.mkdir()
+    contract = _contract(tmp_path)
+    (session / 'KERNEL_CONTRACT.json').write_text(
+        json.dumps(model_to_dict(contract)), encoding='utf-8',
+    )
+    (session / '.codex_artifact_manifest.json').write_text(
+        json.dumps({
+            'session_output_dir': str(session.resolve()),
+            'source_workdir': str(tmp_path / 'codex-workdir'),
+            'copied_files': ['KERNEL_CONTRACT.json'],
+        }),
+        encoding='utf-8',
+    )
+
+    materialized = _materialized_contract_response(session)
+    parsed = _extract_kernel_contract(materialized.content if materialized else '')
     prompt = (PROJECT_ROOT / "prompts" / "kernel_expert.md").read_text(encoding="utf-8")
     assert "Linux kernel maintenance" in prompt
     assert "userspace C" in prompt

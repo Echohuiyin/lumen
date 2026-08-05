@@ -736,6 +736,16 @@ def _run_kernel_expert_with_agent_loop(
             if retry_response.content and retry_response.content.strip():
                 response = retry_response
                 output_content = retry_response.content
+        # A retry may have written the complete contract to the durable
+        # workdir while returning only prose.  Re-materialize this invocation's
+        # manifest-proven contract before parsing the final response; never
+        # consult an older kernel_contract.json.
+        materialized = _materialized_contract_response(session_output_dir)
+        if materialized is not None and not _kernel_expert_contract_is_terminal(
+            _extract_kernel_contract(output_content) if output_content.strip() else None
+        ):
+            response = materialized
+            output_content = materialized.content
         if not output_content.strip():
             output_content = f"（{backend_label} 未生成最终文本，请检查 {backend_label} CLI 输出）"
         _write_tool_call_output(output_file, output_content, expert_name)
