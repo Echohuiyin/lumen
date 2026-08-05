@@ -55,14 +55,20 @@ resolve_mirror() {
         return
     fi
 
-    local source_file candidate
+    local source_file candidate release_url
     while IFS= read -r -d '' source_file; do
         candidate="$(grep -Eho 'https?://[^[:space:]]+' "$source_file" 2>/dev/null | head -n 1 || true)"
-        if [[ -n "$candidate" ]]; then
+        [[ -n "$candidate" ]] || continue
+        candidate="${candidate%/}"
+        release_url="${candidate}/dists/${DISTRIBUTION}/Release"
+        if command -v curl >/dev/null 2>&1 &&
+            curl --fail --silent --show-error --location --max-time 15 \
+                "$release_url" >/dev/null 2>&1; then
             MIRROR="${candidate%/}"
             echo "[INFO] using Debian mirror discovered from ${source_file}: ${MIRROR}"
             return
         fi
+        echo "[INFO] skipping mirror without ${DISTRIBUTION}: ${candidate}" >&2
     done < <(find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) -print0 2>/dev/null)
 
     echo "ERROR: Debian mirror is not configured; set LUMEN_DEBIAN_MIRROR or pass --mirror URL" >&2
