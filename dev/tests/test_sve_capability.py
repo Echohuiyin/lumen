@@ -6,6 +6,7 @@ def test_guest_sve_unavailable_marker_is_a_terminal_capability_block(tmp_path):
     ssh_output = tmp_path / "ssh-command.log"
     ssh_output.write_text(
         "LUMEN_REPRO_BLOCKED reason=sve_unavailable prctl=51 errno=22\n"
+        "LUMEN_REPRO_BLOCKED:sve_prctl errno=22\n"
         "sve_prctl=unavailable errno=22 (Invalid argument)\n",
         encoding="utf-8",
     )

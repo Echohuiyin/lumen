@@ -671,6 +671,9 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             and re.search(r"\b(?:asimd|arm64)\b", lowered)
         )
         sve_unavailable = sve_unavailable or re.search(
+            r"\blumen_repro_blocked\s*:\s*sve_prctl\b",
+            lowered,
+        ) or re.search(
             r"\bsve(?:[_\s-]+(?:abi|prctl))?\s*(?:=|:)\s*unavailable\b"
             r"|\bsve[_\s-]+unavailable\b",
             lowered,
