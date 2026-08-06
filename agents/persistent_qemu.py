@@ -1035,7 +1035,14 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         # its leading identifier.  This is deliberately lexical/config-driven
         # and does not encode any case-specific function names.
         value = re.split(r"\s+", value, maxsplit=1)[0]
-        return re.sub(r"\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?$", "", value, flags=re.IGNORECASE)
+        value = re.sub(r"\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?$", "", value, flags=re.IGNORECASE)
+        # A call-chain contract contains kernel symbol identifiers only.
+        # Fault signatures and printk diagnostics belong to
+        # fault_signatures, not required frame positions.
+        if not re.fullmatch(r"[A-Za-z_.$][A-Za-z0-9_.$]*", value):
+            return ""
+        return value
+
 
     allowed_wrappers = {
         _canonical_frame(wrapper)

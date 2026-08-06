@@ -749,6 +749,39 @@ def test_call_chain_selects_complete_later_trace_block(tmp_path):
     assert match["required_frames_found"] == ["leaf", "caller"]
     assert match["frame_order_matched"] is True
 
+def test_call_chain_ignores_fault_text_in_frame_contract(tmp_path):
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.fault_signatures = [
+        "BUG: KASAN: slab-out-of-bounds in technisat_usb2_rc_query",
+    ]
+    plan.call_chain_oracle.required_top_frames = [
+        "BUG: KASAN: slab-out-of-bounds in technisat_usb2_rc_query",
+        "technisat_usb2_rc_query",
+        "dvb_usb_read_remote_control",
+    ]
+    plan.call_chain_oracle.required_frames = list(
+        plan.call_chain_oracle.required_top_frames
+    )
+    plan.call_chain_oracle.required_frame_order = [[
+        "technisat_usb2_rc_query",
+        "dvb_usb_read_remote_control",
+    ]]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "BUG: KASAN: slab-out-of-bounds in technisat_usb2_rc_query",
+        "[   1.0] Call Trace:",
+        "[   1.1]  technisat_usb2_rc_query+0x1/0x2",
+        "[   1.2]  dvb_usb_read_remote_control+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["required_frames_found"] == [
+        "technisat_usb2_rc_query",
+        "dvb_usb_read_remote_control",
+    ]
+    assert match["frame_order_matched"] is True
+
+
 def test_call_chain_matches_symbol_offsets_from_different_build(tmp_path):
     plan = _plan(tmp_path)
     plan.original_call_chain = ["diFree+0x13d/0x2dc0", "jfs_evict_inode+0x2c9/0x370"]
