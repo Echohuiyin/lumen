@@ -85,6 +85,22 @@ When Test Expert returns a mismatch, read its raw guest/serial artifacts and fix
 
 ## Required output
 
+
+
+## Incremental contract gate
+
+The Kernel Expert/Test Expert loop is incremental. On the first try, establish the
+userspace setup and state the initial change. On every retry, carry forward every
+setup prerequisite that a prior guest round verified; do not regenerate a fresh
+program or silently remove a device, mount, socket bind, fixture, worker, or
+pressure step. verified_setup is the explicit stable setup-name set inherited
+from the previous contract. change_from_previous_tryout must name one concrete,
+evidence-backed source or structured-plan delta; an empty value is invalid after
+the first try. best_call_chain_prefix records the longest ordered prefix already
+supported by guest evidence and must not regress. If a prerequisite is impossible
+in the guest, return blocked with the exact capability evidence rather than
+spending more loop rounds.
+
 Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
 
 ```json
@@ -121,6 +137,8 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
   "pressure_requirements": [],
   "fault_injection_requirements": [],
   "change_from_previous_tryout": "initial maintenance regression harness",
+  "verified_setup": [],
+  "best_call_chain_prefix": [],
   "warnings": [],
   "blocked_reason": ""
 }

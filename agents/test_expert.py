@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -33,6 +34,28 @@ def _model_validate(model, value: dict):
     if hasattr(model, "model_validate"):
         return model.model_validate(value)
     return model.parse_obj(value)
+
+
+def _host_qemu_capability_error(arch: str) -> str:
+    """Return a terminal host capability error before any loop round starts."""
+    normalized = {"amd64": "x86_64", "aarch64": "arm64"}.get(
+        str(arch or "").strip().lower(), str(arch or "").strip().lower()
+    )
+    qemu_binary = {
+        "x86_64": "qemu-system-x86_64",
+        "arm64": "qemu-system-aarch64",
+        "arm32": "qemu-system-arm",
+    }.get(normalized, "")
+    required = ["qemu-img"] + ([qemu_binary] if qemu_binary else [])
+    missing = [name for name in required if shutil.which(name) is None]
+    if not missing:
+        return ""
+    return (
+        "Host QEMU capability is unavailable before the try-out: missing "
+        + ", ".join(missing)
+        + ". Install the declared QEMU tooling and rerun; this is an environment "
+        "block and must not consume Kernel/Test loop rounds."
+    )
 
 
 def _attempt_runtime_root(session_dir: str, tryout: int) -> Path:
@@ -108,23 +131,35 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
             raise FileNotFoundError(f"base SSH key is missing: {key_source}")
         key_resolution = "deployment-base"
     attempt.image.parent.mkdir(parents=True, exist_ok=True)
-    # Preserve sparse holes in the base image.  ``shutil.copy2`` expands the
-    # 2-GiB sparse guest image to its logical size, which exhausts the host
-    # after only a few ten-try-out loops.  Every try-out still gets its own
-    # writable copy; ``cp --sparse=always`` changes only the representation.
+    # Keep the declared rootfs read-only and give each try-out a private
+    # qcow2 overlay. The overlay remains with the round's evidence.
     try:
-        subprocess.run(
-            ["cp", "--sparse=always", "--preserve=mode,timestamps",
-             str(image_source), str(attempt.image)],
+        info = subprocess.run(
+            ["qemu-img", "info", "--output=json", str(image_source)],
             check=True, capture_output=True, text=True,
         )
-    except (OSError, subprocess.CalledProcessError) as exc:
-        raise OSError(f"failed to create sparse writable image copy: {exc}") from exc
+        image_format = str(json.loads(info.stdout).get("format") or "").strip()
+        if image_format not in {"raw", "qcow2"}:
+            raise ValueError(f"unsupported declared rootfs format: {image_format or 'unknown'}")
+        overlay = attempt.image.with_suffix(".qcow2")
+        subprocess.run(
+            ["qemu-img", "create", "-f", "qcow2", "-F", image_format,
+             "-b", str(image_source), str(overlay)],
+            check=True, capture_output=True, text=True,
+        )
+        backing_hint = overlay.with_suffix(".backing")
+        try:
+            backing_hint.symlink_to(image_source)
+        except FileExistsError:
+            pass
+    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        raise OSError(f"failed to create qemu overlay for declared rootfs: {exc}") from exc
     shutil.copy2(key_source, attempt.ssh_key)
     attempt.ssh_key.chmod(0o600)
     return {
         "base_image": str(image_source),
-        "attempt_image": str(attempt.image),
+        "attempt_image": str(overlay),
+        "attempt_image_format": "qcow2",
         "runtime_root": str(runtime_root),
         "ssh_key_source": str(key_source),
         "attempt_ssh_key": str(attempt.ssh_key),
@@ -346,6 +381,8 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         target_contexts=[*oracle.target_subsystems, *oracle.target_objects],
         require_causal_reproduction=True,
         call_chain_oracle=oracle,
+        verified_setup=list(contract.verified_setup),
+        best_call_chain_prefix=list(contract.best_call_chain_prefix),
         root_cause=contract.root_cause,
     )
 
@@ -1044,6 +1081,117 @@ def _apply_reproducer_regression_guard(
     return result
 
 
+def _canonical_progress_frame(value: str) -> str:
+    value = str(value or "").strip().lstrip("?* ")
+    return re.split(r"\s+", value, maxsplit=1)[0]
+
+
+def _validate_incremental_kernel_contract(
+    contract: KernelExpertOutput, contract_history: list[dict],
+) -> str:
+    """Require an explicit delta and setup inheritance on Kernel retries."""
+    if len(contract_history) < 2:
+        return ""
+    try:
+        previous = _model_validate(KernelExpertOutput, contract_history[-2])
+    except Exception as exc:
+        return f"invalid prior Kernel contract history: {exc}"
+    if not str(contract.change_from_previous_tryout or "").strip():
+        return (
+            "Kernel Expert retry contract omitted change_from_previous_tryout; "
+            "the new POC must state one evidence-backed incremental change."
+        )
+    prior_setup = {str(item).strip() for item in previous.verified_setup if str(item).strip()}
+    current_setup = {str(item).strip() for item in contract.verified_setup if str(item).strip()}
+    missing = sorted(prior_setup - current_setup)
+    if missing:
+        return (
+            "Kernel Expert retry contract dropped verified_setup entries already "
+            "declared by the previous contract: " + ", ".join(missing)
+        )
+    return ""
+
+
+def _best_call_chain_prefix(
+    contract: KernelExpertOutput, result: TestResultContract,
+) -> list[str]:
+    """Return the longest ordered required-frame prefix seen in this round."""
+    oracle = contract.call_chain_oracle
+    required = list(oracle.required_top_frames or oracle.required_frames)
+    found = {_canonical_progress_frame(item) for item in result.required_frames_found}
+    prefix: list[str] = []
+    for frame in required:
+        canonical = _canonical_progress_frame(frame)
+        if canonical and canonical in found:
+            prefix.append(frame)
+        else:
+            break
+    return prefix
+
+
+def _apply_progress_metadata(
+    result: TestResultContract,
+    contract: KernelExpertOutput,
+    previous_rounds: list[dict],
+) -> TestResultContract:
+    """Attach setup/prefix progress and stop repeated or regressing branches."""
+    result.verified_setup = sorted(_read_reproducer_setup_markers(model_to_dict(result)))
+    result.best_call_chain_prefix = _best_call_chain_prefix(contract, result)
+    result.plan.verified_setup = list(result.verified_setup)
+    result.plan.best_call_chain_prefix = list(result.best_call_chain_prefix)
+    if result.status in {"blocked", "skipped"}:
+        result.progress_kind = "terminal"
+        result.no_progress_streak = 0
+        return result
+    if not previous_rounds:
+        result.progress_kind = "initial"
+        result.no_progress_streak = 0
+        return result
+
+    prior_setup = {
+        str(item).strip()
+        for item in (previous_rounds[-1].get("verified_setup") or [])
+        if str(item).strip()
+    }
+    prior_prefix_len = max(
+        (len(item.get("best_call_chain_prefix") or []) for item in previous_rounds),
+        default=0,
+    )
+    current_setup = set(result.verified_setup)
+    current_prefix_len = len(result.best_call_chain_prefix)
+    if (prior_setup and not prior_setup.issubset(current_setup)) or current_prefix_len < prior_prefix_len:
+        result.progress_kind = "retracted"
+        result.no_progress_streak = 0
+        if result.code != "FAILED_REPRODUCER_REGRESSION":
+            result.code = "FAILED_REPRODUCER_REGRESSION"
+            result.summary = (
+                "The current round regressed previously verified setup or the "
+                "best call-chain prefix; preserve both before changing the trigger."
+            )
+        return result
+    if current_prefix_len > prior_prefix_len:
+        result.progress_kind = "call_chain_prefix_growth"
+        result.no_progress_streak = 0
+    elif current_setup - prior_setup:
+        result.progress_kind = "setup_progress"
+        result.no_progress_streak = 0
+    elif result.signal_after_start or result.target_context_matched:
+        result.progress_kind = "runtime_evidence"
+        result.no_progress_streak = 0
+    else:
+        result.progress_kind = "no_progress"
+        prior_streak = int(previous_rounds[-1].get("no_progress_streak", 0) or 0)
+        result.no_progress_streak = prior_streak + 1
+        if result.no_progress_streak >= 2:
+            result.status = "blocked"
+            result.code = "BLOCKED_PROGRESS_GATE"
+            result.summary = (
+                "Two consecutive try-outs produced no setup, call-chain-prefix, "
+                "or target-context progress; stop this branch."
+            )
+    return result
+
+
 def _format_attempt(result: TestResultContract) -> str:
     lines = [
         f"TEST STATUS: {result.status}",
@@ -1055,6 +1203,9 @@ def _format_attempt(result: TestResultContract) -> str:
     ]
     if result.missing_frames:
         lines.append("MISSING FRAMES: " + ", ".join(result.missing_frames))
+    lines.append("VERIFIED SETUP: " + ", ".join(result.verified_setup))
+    lines.append("BEST CALL CHAIN PREFIX: " + " -> ".join(result.best_call_chain_prefix))
+    lines.append("PROGRESS: " + result.progress_kind + f" (no_progress_streak={result.no_progress_streak})")
     if result.kernel_feedback:
         lines.append("KERNEL FEEDBACK: " + result.kernel_feedback)
     for key, value in result.artifacts.items():
@@ -1081,6 +1232,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     tryout = int(state.get("tryout_count", 0) or 0) + 1
     maximum = int(state.get("max_tryouts", 10) or 10)
     previous_rounds = list(state.get("test_rounds", []) or [])
+    contract_history = list(state.get("kernel_contract_history", []) or [])
     if maximum != 10:
         raise ValueError("max_tryouts is fixed at 10 by the maintenance workflow contract")
 
@@ -1093,6 +1245,18 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
             result = _blocked_attempt(
                 code="BLOCKED_INVALID_KERNEL_CONTRACT",
                 summary="Kernel Expert contract is not ready for Test Expert.",
+                tryout=tryout,
+            )
+        elif (incremental_error := _validate_incremental_kernel_contract(contract, contract_history)):
+            result = _blocked_attempt(
+                code="BLOCKED_INVALID_INCREMENTAL_CONTRACT",
+                summary=incremental_error,
+                tryout=tryout,
+            )
+        elif (host_error := _host_qemu_capability_error(contract.target_arch)):
+            result = _blocked_attempt(
+                code="BLOCKED_ENVIRONMENT_CAPABILITY",
+                summary=host_error,
                 tryout=tryout,
             )
         elif contract.reproducer.artifact_type != "userspace" or contract.reproducer.language != "c" or contract.reproducer_module_path:
@@ -1138,6 +1302,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                         result.status = "failed"
                         result.code = "FAILED_SEMANTIC_CALL_CHAIN_REVIEW"
                         result.summary = result.semantic_review_reason
+                    result = _apply_progress_metadata(result, contract, previous_rounds)
                     if not result.test_passed and result.status not in {"blocked", "skipped"}:
                         if tryout >= maximum:
                             result.code = "FAILED_CALL_CHAIN_MISMATCH_AFTER_10_TRYOUTS"

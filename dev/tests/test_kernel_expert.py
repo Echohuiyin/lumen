@@ -32,6 +32,7 @@ from agents.kernel_expert import (
     _kernel_expert_contract_is_terminal,
     _preserve_valid_contract_after_cli_failure,
     _recover_materialized_contract_after_cli_failure,
+    _render_incremental_test_round_context,
 )
 
 
@@ -877,3 +878,20 @@ def test_ephemeral_reproducer_dir_remaps_only_from_current_sync(tmp_path):
         KernelExpertOutput(**data), input_artifacts={}, output_dir=session,
     )
     assert unchanged.reproducer.source_dir == str((workdir / "removed-after-codex").resolve())
+
+
+def test_incremental_round_context_carries_setup_and_prefix():
+    rendered = _render_incremental_test_round_context([
+        {
+            "attempts": 2,
+            "status": "failed",
+            "code": "FAILED_SIGNAL_NOT_FOUND",
+            "verified_setup": ["LUMEN_REPRO_VCAN_CREATE"],
+            "best_call_chain_prefix": ["j1939_sock_pending_del"],
+            "missing_frames": ["j1939_session_put"],
+            "kernel_feedback": "preserve setup",
+        }
+    ])
+    assert "LUMEN_REPRO_VCAN_CREATE" in rendered
+    assert "j1939_sock_pending_del" in rendered
+    assert "Preserve every setup prerequisite" in rendered

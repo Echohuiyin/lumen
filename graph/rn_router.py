@@ -57,6 +57,12 @@ def route_after_test(state: MaintenanceWorkflowState):
         return "knowledge_base"
     if contract.get("status") in {"blocked", "skipped"}:
         return "knowledge_base"
+    if (
+        contract.get("progress_kind") == "retracted"
+        or contract.get("code") == "FAILED_REPRODUCER_REGRESSION"
+        or int(contract.get("no_progress_streak", 0) or 0) >= 2
+    ):
+        return "knowledge_base"
     maximum = int(state.get("max_tryouts", 10) or 10)
     if int(state.get("tryout_count", state.get("test_attempts", 0)) or 0) >= maximum:
         return "knowledge_base"

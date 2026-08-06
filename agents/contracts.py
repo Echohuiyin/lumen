@@ -215,6 +215,9 @@ class TestPlan(BaseModel):
     target_contexts: list[str] = Field(default_factory=list)
     require_causal_reproduction: bool = False
     call_chain_oracle: CallChainOracle = Field(default_factory=CallChainOracle)
+    # Setup and prefix facts are carried across Kernel/Test iterations.
+    verified_setup: list[str] = Field(default_factory=list)
+    best_call_chain_prefix: list[str] = Field(default_factory=list)
     root_cause: str = ""
 
 
@@ -242,6 +245,13 @@ class TestResultContract(BaseModel):
     principle_consistent: bool = False
     semantic_review_reason: str = ""
     kernel_feedback: str = ""
+    verified_setup: list[str] = Field(default_factory=list)
+    best_call_chain_prefix: list[str] = Field(default_factory=list)
+    progress_kind: Literal[
+        "initial", "setup_progress", "call_chain_prefix_growth",
+        "runtime_evidence", "no_progress", "retracted", "terminal",
+    ] = "initial"
+    no_progress_streak: int = 0
 
 
 class ValidationResultContract(BaseModel):
@@ -367,7 +377,10 @@ class KernelExpertOutput(BaseModel):
     reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
     pressure_requirements: list[ExecutionStep] = Field(default_factory=list)
     fault_injection_requirements: list[ExecutionStep] = Field(default_factory=list)
+    # Retry contracts carry the concrete delta and the setup set already verified.
     change_from_previous_tryout: str = ""
+    verified_setup: list[str] = Field(default_factory=list)
+    best_call_chain_prefix: list[str] = Field(default_factory=list)
     vmlinux_path: str = ""
     boot_kernel_path: str = ""
     rootfs_mode: Literal["ext4"] = "ext4"

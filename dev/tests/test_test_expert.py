@@ -9,9 +9,9 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
+from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer, model_to_dict
 from agents.persistent_qemu import PersistentQemuPaths
-from agents.test_expert import (_append_attempt_output, _apply_reproducer_regression_guard, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _read_reproducer_setup_markers, _semantic_review, test_expert_node)
+from agents.test_expert import (_append_attempt_output, _apply_progress_metadata, _apply_reproducer_regression_guard, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _read_reproducer_setup_markers, _semantic_review, _validate_incremental_kernel_contract, test_expert_node)
 from agents.test_expert import _frame_symbol, _strict_call_chain_oracle
 
 
@@ -837,3 +837,42 @@ def test_deep_suspend_platform_capability_is_terminal():
     assert blocked.status == "blocked"
     assert blocked.code == "BLOCKED_GUEST_PLATFORM_UNSUPPORTED"
     assert "s2idle" in blocked.summary
+
+
+def test_incremental_contract_requires_delta_and_setup_inheritance(tmp_path):
+    contract = _contract(tmp_path)
+    contract.verified_setup = ["LUMEN_REPRO_VCAN_CREATE"]
+    prior = model_to_dict(contract)
+    (tmp_path / "current").mkdir()
+    current = _contract(tmp_path / "current")
+    current.verified_setup = []
+    assert "change_from_previous_tryout" in _validate_incremental_kernel_contract(
+        current, [prior, model_to_dict(current)]
+    )
+    current.change_from_previous_tryout = "adjusted the trigger"
+    error = _validate_incremental_kernel_contract(
+        current, [prior, model_to_dict(current)]
+    )
+    assert "dropped verified_setup" in error
+
+
+def test_progress_gate_stops_two_no_progress_rounds(tmp_path):
+    contract = _contract(tmp_path)
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+        attempts=2, plan=_build_plan(contract),
+    )
+    previous = [
+        {
+            "verified_setup": [],
+            "best_call_chain_prefix": [],
+            "no_progress_streak": 1,
+            "signal_after_start": False,
+            "target_context_matched": False,
+        }
+    ]
+    updated = _apply_progress_metadata(result, contract, previous)
+    assert updated.status == "blocked"
+    assert updated.code == "BLOCKED_PROGRESS_GATE"
+    assert updated.progress_kind == "no_progress"
+    assert updated.no_progress_streak == 2

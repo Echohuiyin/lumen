@@ -1150,6 +1150,59 @@ def _codex_case_text(user_input: str) -> str:
     return text
 
 
+def _render_incremental_test_round_context(test_rounds: list[dict] | None) -> str:
+    """Render bounded prior QEMU evidence for an incremental Kernel retry.
+
+    test_rounds is the durable source of truth for the loop, but passing
+    raw logs or absolute artifact paths back to Codex makes the prompt noisy
+    and can encourage a full rewrite. Keep only the facts needed to preserve
+    verified setup and advance the call-chain prefix.
+    """
+    rounds = [item for item in (test_rounds or []) if isinstance(item, dict)]
+    if not rounds:
+        return ""
+    records: list[dict] = []
+    for item in rounds[-3:]:
+        artifacts = item.get("artifacts") or {}
+        record = {
+            "attempt": item.get("attempts", item.get("round", "")),
+            "status": item.get("status", ""),
+            "code": item.get("code", ""),
+            "test_passed": bool(item.get("test_passed", False)),
+            "call_chain_consistent": bool(item.get("call_chain_consistent", False)),
+            "target_context_matched": bool(item.get("target_context_matched", False)),
+            "verified_setup": list(item.get("verified_setup") or [])[:64],
+            "best_call_chain_prefix": list(item.get("best_call_chain_prefix") or [])[:32],
+            "matched_stack_frames": list(item.get("matched_stack_frames") or [])[-12:],
+            "missing_frames": list(item.get("missing_frames") or [])[:12],
+        }
+        feedback = str(item.get("kernel_feedback") or "").strip()
+        summary = str(item.get("summary") or "").strip()
+        if summary:
+            record["summary"] = summary[:1200]
+        if feedback:
+            record["kernel_feedback"] = feedback[:1200]
+        for key in (
+            "regression_required_setup_markers",
+            "regression_missing_setup_markers",
+            "capability_evidence",
+            "guest_capability",
+        ):
+            value = str(artifacts.get(key) or "").strip()
+            if value:
+                record[key] = value[:1200]
+        records.append(record)
+    return (
+        "## Incremental QEMU round history (authoritative handoff)\n"
+        "These are prior deterministic guest results, not optional suggestions. "
+        "Preserve every setup prerequisite already observed and make only an "
+        "incremental trigger change. Do not rewrite the reproducer from scratch. "
+        "The new KERNEL_CONTRACT must explain the concrete change in "
+        "change_from_previous_tryout and retain the prior verified setup.\n"
+        + json.dumps(records, ensure_ascii=False, indent=2)
+    )
+
+
 _FIRST_HAND_LOG_ACTION_MARKERS = (
     "fault_injection",
     "failslab",
@@ -1703,6 +1756,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         )
 
     # 如果是重试（测试未通过），附加测试反馈
+    prior_round_context = _render_incremental_test_round_context(
+        state.get("test_rounds", [])
+    )
+    if prior_round_context:
+        user_content += "\n\n" + prior_round_context
     test_result = state.get("test_result", "")
     if test_result:
         user_content += f"\n\n## 上次测试结果（未成功复现）\n{test_result}\n请重新分析并调整复现用例。"
@@ -2286,9 +2344,12 @@ def _parse_kernel_expert_response(
             merged_paths.append(path)
     merged_max_path = kernel_contract.max_likely_path or state.get("max_likely_path", "")
 
+    contract_history = list(state.get("kernel_contract_history", []) or [])
+    contract_history.append(model_to_dict(kernel_contract))
     return {
         "kernel_analysis": text,
         "reproduce_case": reproduce_case or text,
+        "kernel_contract_history": contract_history,
         "kernel_diagnosis": kernel_diagnosis or "",
         "all_possible_paths": merged_paths,
         "max_likely_path": merged_max_path,

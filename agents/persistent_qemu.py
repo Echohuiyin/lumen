@@ -169,9 +169,12 @@ def persistent_qemu_paths(arch: str, *, runtime_root: Path | None = None) -> Per
     normalized = _normalize_arch(arch)
     root = runtime_root if runtime_root is not None else _configured_image_root()
     arch_root = root / normalized
+    raw_image = arch_root / "debian.img"
+    overlay_image = arch_root / "debian.qcow2"
+    image = overlay_image if overlay_image.is_file() else raw_image
     return PersistentQemuPaths(
         arch=normalized,
-        image=arch_root / "debian.img",
+        image=image,
         ssh_key=arch_root / "lumen_qemu_ed25519",
         runtime_dir=arch_root / "runtime",
     )
@@ -198,9 +201,14 @@ def _root_device_for_image(image: Path, base_device: str) -> str:
     ``vda1``).  Inspecting the image on the host keeps the kernel command line
     deterministic and avoids silently booting an unmountable root device.
     """
+    probe_image = image
+    if image.suffix.lower() in {".qcow2", ".qcow"}:
+        backing_hint = image.with_suffix(".backing")
+        if backing_hint.is_file():
+            probe_image = backing_hint.resolve()
     try:
         result = subprocess.run(
-            ["fdisk", "-l", str(image)], capture_output=True, text=True,
+            ["fdisk", "-l", str(probe_image)], capture_output=True, text=True,
             timeout=10, check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -498,6 +506,7 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
     host_matches_target = _host_arch() == arch
     kvm_available = host_matches_target and os.access("/dev/kvm", os.R_OK | os.W_OK)
 
+    image_format = "qcow2" if paths.image.suffix.lower() in {".qcow2", ".qcow"} else "raw"
     if arch == "x86_64":
         qemu = "qemu-system-x86_64"
         machine = recipe.machine or ("q35,accel=kvm:tcg" if kvm_available else "q35,accel=tcg")
@@ -505,7 +514,7 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
         root_device = "/dev/sda"
         console = "ttyS0"
         net_device = "e1000,netdev=net0"
-        drive_args = ["-drive", f"file={paths.image},format=raw,if=ide"]
+        drive_args = ["-drive", f"file={paths.image},format={image_format},if=ide"]
     elif arch == "arm64":
         qemu = "qemu-system-aarch64"
         machine = recipe.machine or ("virt,accel=kvm:tcg" if kvm_available else "virt,accel=tcg")
@@ -518,7 +527,7 @@ def build_qemu_command(plan: TestPlan, paths: PersistentQemuPaths, *, ssh_port: 
         # `virt` machine and keeps the root disk discoverable as /dev/vda.
         net_device = "virtio-net-pci,netdev=net0"
         drive_args = [
-            "-drive", f"if=none,id=rootfs,file={paths.image},format=raw",
+            "-drive", f"if=none,id=rootfs,file={paths.image},format={image_format}",
             "-device", "virtio-blk-pci,drive=rootfs",
         ]
     else:

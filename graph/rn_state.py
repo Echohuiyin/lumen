@@ -53,6 +53,7 @@ class MaintenanceWorkflowState(TypedDict):
     semcode_path_analysis: dict        # P2 semcode 事件图、覆盖边界或明确 blocked 原因
     kernel_ready_for_test: bool        # 内核专家是否产出了可由 loop 内 SSH-QEMU runner 验证的内容
     kernel_contract: dict              # 结构化内核专家输出（PoC 执行契约）
+    kernel_contract_history: list[dict] # 每轮 Kernel 合同，供增量校验
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
     boot_kernel_path: str              # QEMU 可启动内核镜像路径（bzImage/Image）
     reproducer_dir: str                # 复现用例目录
@@ -116,6 +117,7 @@ def make_initial_state(
         "semcode_path_analysis": {},
         "kernel_ready_for_test": True,
         "kernel_contract": {},
+        "kernel_contract_history": [],
         "target_arch": "",
         "boot_kernel_path": "",
         "reproducer_dir": "",
