@@ -81,6 +81,8 @@ the allow-listed `type` values (`setup_vcan`, `run_binary`, `run_pressure`,
 setup requirements in `warnings`, or leave the list empty when the userspace
 C harness performs the bounded workload itself.
 
+Do not encode a userspace operation or its requested error return as a `fault_injection` step: for example, `shutdown(..., fail_nth:1)`, `ioctl`, `connect`, or a socket close belongs in the C reproducer and `fault_injection_requirements` must remain empty. A `fault_injection` step is only for one of the explicit kernel debugfs profiles above and must include that profile explicitly; never rely on the model default `cpu`.
+
 Use `{"type":"setup_vcan","interface":"vcan0","rationale":"the declared rootfs has no vcan0 and the report requires CAN ingress"}` only when source/log evidence requires that interface. The runner performs the allow-listed `ip link add ... type vcan` and `ip link set ... up` actions before the C binary; it never loads a kernel module or executes arbitrary agent shell text. If the guest lacks `ip` or the vcan kernel capability, the runner emits a terminal component-capability result.
 
 `required_top_frames` is the strict runtime gate. Keep the original lower context for audit, but do not broaden the gate to accept a generic warning, panic banner, exception wrapper, or subsystem name. The target signal must occur after `LUMEN_REPRO_START` and in the declared target context.
