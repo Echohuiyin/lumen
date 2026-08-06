@@ -726,6 +726,10 @@ def _run_kernel_expert_with_agent_loop(
             retry_messages = messages + [HumanMessage(content=(
                 "当前最终输出缺少可解析的 KERNEL_CONTRACT。请在本次 loop 内补交完整结构化 JSON，"
                 "保留已完成的维护分析、用户态测试程序和验证结果；不要引用旧文件或省略字段。"
+                "现在停止继续探索和重复调用工具：先在当前 workdir 写入完整的 KERNEL_CONTRACT.json，"
+                "并确保其中声明的 diagnostic_test.c 与清单均已落盘，然后在最终消息中输出完整 JSON。"
+                "如果当前用户态程序或环境仍无法满足契约，必须写入 status=blocked 及明确原因；"
+                "不得只返回 prose、空响应或沿用旧 session 的文件。"
             ))]
             retry_response = llm.invoke(
                 retry_messages,
