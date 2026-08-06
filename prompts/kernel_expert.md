@@ -182,6 +182,8 @@ When evidence requires a guest precondition, use `setup_requirements` with the a
 
 Do not encode a userspace operation or its requested error return as a `fault_injection` step: for example, `shutdown(..., fail_nth:1)`, `ioctl`, `connect`, or a socket close belongs in the C reproducer and `fault_injection_requirements` must remain empty. A `fault_injection` step is only for one of the explicit kernel debugfs profiles above and must include that profile explicitly; never rely on the model default `cpu`.
 
+If the raw report omits a userspace setup operation but source/ABI evidence shows that a public interface (for example `/dev/vhci`) is required to reach the reported path, construct that bounded setup in the new C reproducer, emit stable setup markers, and explain it in `warnings`; do not mark the contract blocked solely because the operation is implicit. This is not permission to reuse a historical reproducer, load a module, or execute arbitrary shell, and Test Expert must still require the exact runtime call chain.
+
 ## Contract format
 
 
