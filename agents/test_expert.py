@@ -1073,6 +1073,17 @@ def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
         for match in marker_pattern.finditer(text):
             raw = match.group(0)
             name = match.group(1)
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.end())
+            if line_end < 0:
+                line_end = len(text)
+            line = text[line_start:line_end]
+            if (
+                re.search(r"\b(?:result|status)\s*=\s*(?:failed|error|setup-failed)\b", line, re.IGNORECASE)
+                or re.search(r"\berrno\s*=\s*(?!0\b)[+-]?\d+\b", line, re.IGNORECASE)
+                or re.search(r"\bifindex\s*=\s*0\b", line, re.IGNORECASE)
+            ):
+                continue
             if name in _TERMINAL_MARKERS:
                 continue
             if raw.startswith("LUMEN_REPRO_"):
