@@ -267,6 +267,8 @@ class InputArtifactsContract(BaseModel):
     qemu_extra_cmdline: str = ""
     target_arch: str = ""
     expected_kernel_commit: str = ""
+    fix_commit: str = ""
+    fix_patch_path: str = ""
     kernel_source_path: str = ""
     log_path: str = ""
     crash_report_path: str = ""

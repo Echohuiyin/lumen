@@ -307,10 +307,10 @@ def _stage_codex_evidence(
                     if in_trace and re.search(r"end\s+trace", line, re.IGNORECASE):
                         break
                 raw = "\n".join(selected) + "\n"
-            elif name == "semcode-evidence.json":
-                # This is deterministic, exact-commit evidence. Preserve it
-                # byte-for-byte; applying the generic risk-line filter would
-                # silently remove JSON fields that the Kernel Expert needs.
+            elif name in {"semcode-evidence.json", "fix.patch"}:
+                # These are explicit source-backed evidence artifacts.
+                # Preserve them byte-for-byte; generic risk filtering would
+                # silently remove patch hunks or JSON fields.
                 destination.write_text(raw, encoding="utf-8")
                 continue
             else:
@@ -820,6 +820,42 @@ def _materialize_primary_log(output_dir: Path, source_path: str) -> str:
             shutil.copyfile(source, destination)
         return str(destination.resolve())
     except OSError:
+        return ""
+
+
+def _materialize_fix_evidence(
+    output_dir: Path, input_artifacts: dict, source_root: str,
+) -> str:
+    """Stage an explicitly declared upstream fix for source-backed review.
+
+    The fix is optional evidence: absent or unreadable metadata never becomes
+    a guessed diagnosis. A commit is rendered from the exact pinned source
+    checkout; a patch path is copied byte-for-byte into the evidence dir.
+    """
+    patch_path = str(input_artifacts.get("fix_patch_path", "") or "").strip()
+    fix_commit = str(input_artifacts.get("fix_commit", "") or "").strip()
+    destination = output_dir / "fix.patch"
+    try:
+        if patch_path:
+            source = Path(os.path.expanduser(patch_path)).resolve()
+            if not source.is_file():
+                return ""
+            shutil.copyfile(source, destination)
+            return str(destination.resolve())
+        if not fix_commit or not re.fullmatch(r"[0-9a-fA-F]{7,40}", fix_commit):
+            return ""
+        if not source_root or not Path(source_root).is_dir():
+            return ""
+        result = subprocess.run(
+            ["git", "-C", str(Path(source_root).resolve()), "show",
+             "--format=", "--no-ext-diff", fix_commit],
+            check=False, capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return ""
+        destination.write_text(result.stdout, encoding="utf-8")
+        return str(destination.resolve())
+    except (OSError, subprocess.SubprocessError):
         return ""
 
 
@@ -1469,6 +1505,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     if workspace_log_path:
         original_log_path = workspace_log_path
     original_log_text = _read_primary_log_text(original_log_path)
+    fix_evidence_path = _materialize_fix_evidence(
+        paths_get_output_dir(), input_artifacts, kernel_source_path,
+    )
 
     # Only display expert outputs on first invocation (not on retries after test failures)
     if state.get("test_attempts", 0) == 0:
@@ -1520,6 +1559,8 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         # absolute durable-session paths are intentionally not readable from
         # the isolated workdir.
         evidence_files.append(("semcode-evidence.json", semcode_evidence_path))
+    if fix_evidence_path:
+        evidence_files.append(("fix.patch", fix_evidence_path))
     semcode_payload: dict[str, object] | None = None
     semcode_evidence_complete = False
     if semcode_evidence_path:
@@ -1652,6 +1693,14 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         )
     if semcode_path_analysis is not None:
         user_content += "\n\n" + render_semcode_analysis_context(semcode_path_analysis)
+    if fix_evidence_path:
+        user_content += (
+            "\n\n## Explicit upstream fix evidence\n"
+            "Read evidence/fix.patch before concluding. It is the exact declared "
+            "fix commit/patch for this maintenance case; align the root cause "
+            "and userspace trigger with its changed lifetime or synchronization "
+            "semantics, and state any remaining uncertainty."
+        )
 
     # 如果是重试（测试未通过），附加测试反馈
     test_result = state.get("test_result", "")

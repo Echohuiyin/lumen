@@ -355,6 +355,18 @@ def _audit_fix_evidence(
     report_path = _path(artifacts.get("crash_report_path"))
     case_dir = report_path.parent if report_path else None
     candidates: list[dict[str, Any]] = []
+    declared_fix_commit = str(artifacts.get("fix_commit") or "").strip()
+    if declared_fix_commit:
+        candidates.append({
+            "file": "input.txt", "field": "fix_commit",
+            "value": declared_fix_commit,
+        })
+    declared_patch_path = str(artifacts.get("fix_patch_path") or "").strip()
+    if declared_patch_path:
+        candidates.append({
+            "file": "input.txt", "field": "fix_patch_path",
+            "value": declared_patch_path,
+        })
     if case_dir and case_dir.is_dir():
         for metadata in sorted(case_dir.glob("*.json")):
             try:

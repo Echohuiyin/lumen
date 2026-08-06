@@ -151,3 +151,21 @@ def test_evaluator_preserves_failed_tool_as_unavailable(tmp_path):
 
     assert result["tool_experts"][0]["role"] == "unavailable"
     assert result["tool_experts"][0]["accuracy_score"] <= 15
+
+def test_evaluator_aligns_declared_fix_patch(tmp_path):
+    state = _state(tmp_path)
+    patch = tmp_path / "fix.patch"
+    patch.write_text(
+        "diff --git a/net/core/link_watch.c b/net/core/link_watch.c\n"
+        "+ __dev_put(dev); /* after netdev_unlock_ops */\n",
+        encoding="utf-8",
+    )
+    state["input_artifacts_contract"]["fix_commit"] = (
+        "83b67cc9be9223183caf91826d9c194d7fb128fa"
+    )
+    state["input_artifacts_contract"]["fix_patch_path"] = str(patch)
+    result = evaluate_root_cause(state)
+    fix = result["case_evidence"]["fix_audit"]
+    assert fix["available"] is True
+    assert fix["fix_commits"] == ["83b67cc9be9223183caf91826d9c194d7fb128fa"]
+    assert fix["patch_bytes"] > 0

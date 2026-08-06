@@ -221,6 +221,14 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     expected_kernel_commit, commit_label = _extract_labeled_value(
         text, ["expected_kernel_commit", "kernel_commit", "kernel commit"]
     )
+    fix_commit, fix_commit_label = _extract_labeled_value(
+        text,
+        ["fix_commit", "fixed_commit", "patch_commit", "upstream_fix_commit"],
+    )
+    fix_patch_path, fix_patch_label = _extract_labeled_path(
+        text,
+        ["fix_patch_path", "fix_patch", "patch_path", "patch_file"],
+    )
     log_excerpt = _extract_log_excerpt(text)
 
     fields = {
@@ -234,6 +242,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "log_path": (log_path, log_label),
         "crash_report_path": (crash_report_path, crash_report_label),
         "reproducer_path": (reproducer_path, reproducer_label),
+        "fix_patch_path": (fix_patch_path, fix_patch_label),
     }
     for field, (value, source) in fields.items():
         if value:
@@ -249,6 +258,16 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         evidence.append({
             "kind": "input_value", "field": "expected_kernel_commit",
             "value": expected_kernel_commit, "source": commit_label,
+        })
+    if fix_commit:
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", fix_commit):
+            warnings.append(
+                "fix_commit is not a hexadecimal git object id: "
+                f"{fix_commit}"
+            )
+        evidence.append({
+            "kind": "input_value", "field": "fix_commit",
+            "value": fix_commit, "source": fix_commit_label,
         })
     if log_excerpt:
         evidence.append({"kind": "input_log_excerpt", "field": "log_excerpt", "length": len(log_excerpt)})
@@ -267,6 +286,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "log_path": "file",
             "crash_report_path": "file",
             "reproducer_path": "file",
+            "fix_patch_path": "file",
         }
         for field, (value, _) in fields.items():
             if value and field in expected_kinds:
@@ -294,6 +314,8 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         test_assets_dir=test_assets_dir,
         qemu_extra_cmdline=qemu_extra_cmdline,
         expected_kernel_commit=expected_kernel_commit,
+        fix_commit=fix_commit,
+        fix_patch_path=fix_patch_path,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
         log_path=log_path,

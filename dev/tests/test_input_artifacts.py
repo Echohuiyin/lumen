@@ -85,3 +85,15 @@ def test_parse_input_expands_kernel_source_environment(tmp_path: Path, monkeypat
 
     fields = parse_input_file(str(input_file))
     assert fields["kernel_source"] == str(source_dir)
+
+def test_parse_optional_fix_evidence_fields():
+    contract = parse_input_artifacts(
+        "fix_commit: 83b67cc9be9223183caf91826d9c194d7fb128fa\n"
+        "fix_patch_path: /tmp/linkwatch.patch\n",
+        validate_paths=False,
+    )
+    assert contract.fix_commit == "83b67cc9be9223183caf91826d9c194d7fb128fa"
+    assert contract.fix_patch_path == "/tmp/linkwatch.patch"
+    assert {item["field"] for item in contract.evidence} >= {
+        "fix_commit", "fix_patch_path",
+    }
