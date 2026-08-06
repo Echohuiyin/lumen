@@ -1072,8 +1072,38 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         ]
         return result
     window = lines[start + 1:]
-    def frame_seen(line: str, frame: str) -> bool:
-        # Avoid treating ``evict`` as present in the distinct symbol
+    labelled_trace = any(
+        re.search(r"\bCall Trace:", line, flags=re.IGNORECASE)
+        for line in window
+    )
+
+    def frame_seen(
+        line: str,
+        frame: str,
+        *,
+        stack_line_only: bool = False,
+    ) -> bool:
+        # Match symbols as tokens; stack-shaped matching below additionally
+        # filters diagnostic text inside explicitly labeled Call Trace blocks.
+        if stack_line_only:
+            # A labeled trace may contain interleaved subsystem diagnostics
+            # (for example vcan0: ...) before the actual stack entry.
+            # Only accept a symbol at the beginning of a stack-shaped line,
+            # after the optional timestamp/CPU prefix and ?/RIP marker.
+            body = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
+            stack_pattern = (
+                r"^\s*(?:[?*]\s*)?"
+                r"(?:RIP:\s*(?:[0-9a-f]+:)?\s*)?"
+                + re.escape(frame)
+                + r"(?:\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?)?"
+                r"(?:\s|$)"
+            )
+            if re.search(stack_pattern, body, flags=re.IGNORECASE) is None:
+                return False
+        pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
+        return re.search(pattern, line, flags=re.IGNORECASE) is not None
+
+    # Avoid treating ``evict`` as present in the distinct symbol
         # ``jfs_evict_inode``.  Stack symbols are token-like identifiers;
         # boundaries make both presence and ordering deterministic.
         pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
@@ -1206,7 +1236,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
                     flags=re.IGNORECASE,
                 )
                 rip_frame = rip_match.group("frame") if rip_match else ""
-                if not rip_frame or not any(frame_seen(line, rip_frame) for line in block):
+                if not rip_frame or not any(frame_seen(line, rip_frame, stack_line_only=labelled_trace) for line in block):
                     block.insert(0, rip_line)
             blocks.append(block)
         return blocks
@@ -1223,17 +1253,17 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         # non-question occurrence in this same stack.
         question_fallback_frames = {
             frame for frame in required_chain
-            if not any(frame_seen(line, frame) for line in non_question_lines)
+            if not any(frame_seen(line, frame, stack_line_only=labelled_trace) for line in non_question_lines)
         }
         ordering_window = [
             line for line in trace_lines
             if not re.search(r"\]\s+\?", line)
-            or any(frame_seen(line, frame) for frame in question_fallback_frames)
+            or any(frame_seen(line, frame, stack_line_only=labelled_trace) for frame in question_fallback_frames)
         ]
         seen_positions: dict[str, int] = {
             frame: next(
                 (index for index, line in enumerate(ordering_window)
-                 if frame_seen(line, frame)),
+                 if frame_seen(line, frame, stack_line_only=labelled_trace)),
                 -1,
             )
             for group in required_groups
@@ -1253,7 +1283,7 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         order_positions: dict[str, int] = {
             frame: next(
                 (index for index, line in enumerate(ordering_window)
-                 if frame_seen(line, frame)),
+                 if frame_seen(line, frame, stack_line_only=labelled_trace)),
                 -1,
             )
             for frame in order_frames

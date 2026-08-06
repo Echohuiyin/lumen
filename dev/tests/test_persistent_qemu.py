@@ -489,6 +489,23 @@ def test_call_chain_order_uses_trace_not_printk_or_question_mark_frames(tmp_path
     assert match["frame_order_matched"] is True
 
 
+def test_call_chain_ignores_interleaved_diagnostic_lines_in_trace(tmp_path):
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "caller"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    plan.call_chain_oracle.required_frame_order = [["leaf", "caller"]]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1] vcan0: leaf: diagnostic before stack",
+        "[   1.2]  leaf+0x1/0x2",
+        "[   1.3]  caller+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
 def test_call_chain_does_not_count_userspace_lumen_diagnostics(tmp_path):
     plan = _plan(tmp_path)
     plan.call_chain_oracle.required_top_frames = [
