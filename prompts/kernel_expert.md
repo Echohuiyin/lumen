@@ -176,9 +176,9 @@ When Test Expert returns a mismatch, read its contract and raw guest/serial arti
 
 If the guest stack omits a source-level inline frame that is marked `[inline]` in the original report, retain that marker in the next contract instead of adding syscall wrappers or declaring the inline helper a required runtime frame. A compiler/runtime display difference must not be treated as a new kernel path.
 
-Runtime settings are executable only when they are encoded in the structured `qemu_recipe` (especially `qemu_recipe.extra_cmdline`); `pressure_requirements` and `fault_injection_requirements` are explanatory requirements and are not executed by Test Expert. If the raw guest serial shows that an early setting such as `panic_on_warn=1` prevents the original log's later target frames, put the evidence-backed replacement (for example `panic_on_warn=0`) explicitly in `qemu_recipe.extra_cmdline` and explain the change. Do not put an executable setting only in prose.
+Runtime settings are executable only when they are encoded in the structured `qemu_recipe` (especially `qemu_recipe.extra_cmdline`) or in the allow-listed `ExecutionStep` arrays; do not put an executable setting only in prose. If the raw guest serial shows that an early setting such as `panic_on_warn=1` prevents the original log's later target frames, put the evidence-backed replacement (for example `panic_on_warn=0`) explicitly in `qemu_recipe.extra_cmdline` and explain the change.
 
-When evidence requires controlled pressure or fault injection, use the allow-listed `ExecutionStep` objects in those two arrays; Test Expert executes them in order. A pressure step uses `{"type":"run_pressure","profile":"cpu|memory|io|scheduler|filesystem","workers":1,"seconds":30,"rationale":"..."}`. A kernel fault step uses `{"type":"fault_injection","profile":"failslab|fail_page_alloc|fail_futex|fail_function|fail_make_request","probability":1,"interval":1,"times":1,"space":0,"target":"","rationale":"..."}`. Other supported steps are `{"type":"write_sysctl","key":"kernel.example","value":"..."}` and `{"type":"wait","seconds":1}`. Use only values justified by the original log/source; do not invent a pressure or fault step merely to force a match. These steps must remain structured JSON, never shell text.
+When evidence requires a guest precondition, use `setup_requirements` with the allow-listed `ExecutionStep` object `{"type":"setup_vcan","interface":"vcan0","rationale":"..."}`. Test Expert executes it before pressure, fault injection, and the C binary; it performs only the runner-owned `ip link add/set` operations and never loads a kernel module. If the declared rootfs already provides the interface, the step is idempotent. When evidence requires controlled pressure or fault injection, use the allow-listed `ExecutionStep` objects in their arrays; Test Expert executes them in order. A pressure step uses `{"type":"run_pressure","profile":"cpu|memory|io|scheduler|filesystem","workers":1,"seconds":30,"rationale":"..."}`. A kernel fault step uses `{"type":"fault_injection","profile":"failslab|fail_page_alloc|fail_futex|fail_function|fail_make_request","probability":1,"interval":1,"times":1,"space":0,"target":"","rationale":"..."}`. Other supported steps are `{"type":"write_sysctl","key":"kernel.example","value":"..."}` and `{"type":"wait","seconds":1}`. Use only values justified by the original log/source; do not invent a pressure or fault step merely to force a match. These steps must remain structured JSON, never shell text.
 
 ## Contract format
 
@@ -233,6 +233,7 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
     "run_args": [],
     "runtime_timeout_sec": 60
   },
+  "setup_requirements": [],
   "pressure_requirements": [],
   "fault_injection_requirements": [],
   "change_from_previous_tryout": "initial diagnostic userspace test",

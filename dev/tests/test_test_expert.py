@@ -9,7 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer, model_to_dict
+from agents.contracts import CallChainOracle, ExecutionStep, KernelExpertOutput, TestResultContract, UserspaceReproducer, model_to_dict
 from agents.persistent_qemu import PersistentQemuPaths
 from agents.test_expert import (_append_attempt_output, _apply_progress_metadata, _apply_reproducer_regression_guard, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _configured_rootfs_mode, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _read_reproducer_setup_markers, _semantic_review, _validate_incremental_kernel_contract, test_expert_node)
 from agents.test_expert import _frame_symbol, _strict_call_chain_oracle
@@ -378,6 +378,15 @@ def test_test_plan_compiles_userspace_source_inside_guest():
         assert plan.execution_steps[-1].type == "run_binary"
         assert plan.execution_steps[-1].path == "bin/lumen-repro"
         assert plan.call_chain_oracle.required_frames == ["target_frame"]
+
+
+def test_test_plan_executes_setup_requirements_before_pressure_and_binary(tmp_path):
+    contract = _contract(tmp_path)
+    contract.setup_requirements = [
+        ExecutionStep(type="setup_vcan", interface="vcan0", rationale="required CAN fixture"),
+    ]
+    plan = _build_plan(contract)
+    assert [step.type for step in plan.execution_steps] == ["setup_vcan", "run_binary"]
 
 
 def test_test_plan_carries_declared_reproduction_assets():

@@ -237,6 +237,32 @@ def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
     assert "load_module" not in script
 
 
+def test_runner_renders_allowlisted_vcan_setup(tmp_path):
+    plan = _plan(tmp_path)
+    plan.execution_steps = [
+        ExecutionStep(
+            type="setup_vcan",
+            interface="vcan0",
+            rationale="the declared guest image does not guarantee the CAN fixture",
+        ),
+        ExecutionStep(type="run_binary", path="bin/trigger"),
+    ]
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+    assert "ip link add vcan0 type vcan" in script
+    assert "ip link set vcan0 up" in script
+    assert "LUMEN_SETUP_VCAN interface=vcan0 result=ok" in script
+    assert "insmod" not in script
+
+
+def test_runner_rejects_unsafe_vcan_interface(tmp_path):
+    plan = _plan(tmp_path)
+    plan.execution_steps = [
+        ExecutionStep(type="setup_vcan", interface="vcan0;touch /tmp/x"),
+    ]
+    with pytest.raises(ValueError, match="invalid vcan interface"):
+        _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+
+
 def test_runner_stages_only_declared_prebuilt_binary(tmp_path):
     plan = _plan(tmp_path)
     binaries = tmp_path / "benchmark-assets"

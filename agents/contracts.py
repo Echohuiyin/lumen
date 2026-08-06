@@ -115,8 +115,9 @@ class ExecutionStep(BaseModel):
     module load or evaluates an agent-authored shell script.
     """
 
-    type: Literal["run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
+    type: Literal["setup_vcan", "run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
     path: str = ""
+    interface: str = ""
     args: list[str] = Field(default_factory=list)
     key: str = ""
     value: str = ""
@@ -375,6 +376,7 @@ class KernelExpertOutput(BaseModel):
     original_call_chain: list[str] = Field(default_factory=list)
     call_chain_oracle: CallChainOracle = Field(default_factory=CallChainOracle)
     reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
+    setup_requirements: list[ExecutionStep] = Field(default_factory=list)
     pressure_requirements: list[ExecutionStep] = Field(default_factory=list)
     fault_injection_requirements: list[ExecutionStep] = Field(default_factory=list)
     # Retry contracts carry the concrete delta and the setup set already verified.

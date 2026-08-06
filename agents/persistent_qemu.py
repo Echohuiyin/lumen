@@ -31,6 +31,7 @@ from agents.test_runner import _check_causal_reproduction, _match_serial_signals
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_ROOT = PROJECT_ROOT / "runtime" / "qemu-ssh"
 _SAFE_PAYLOAD_PATH = re.compile(r"^bin/[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_SAFE_INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SAFE_GUEST_WORKDIR = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SAFE_SSH_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*\$?$")
@@ -301,7 +302,12 @@ def _validate_execution_steps(plan: TestPlan) -> None:
     if not plan.execution_steps:
         raise ValueError("execution_steps must not be empty")
     for index, step in enumerate(plan.execution_steps, start=1):
-        if step.type == "run_binary":
+        if step.type == "setup_vcan":
+            if not _SAFE_INTERFACE.fullmatch(step.interface):
+                raise ValueError(
+                    f"execution step {index} has invalid vcan interface: {step.interface!r}"
+                )
+        elif step.type == "run_binary":
             if not _SAFE_PAYLOAD_PATH.fullmatch(step.path):
                 raise ValueError(f"execution step {index} has invalid userspace binary path: {step.path!r}")
             if any("\x00" in arg or "\n" in arg for arg in step.args):
@@ -442,7 +448,32 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         f"echo {shlex.quote(marker)} > /dev/console",
     ])
     for step in plan.execution_steps:
-        if step.type == "run_binary":
+        if step.type == "setup_vcan":
+            interface = shlex.quote(step.interface)
+            marker_name = re.sub(r"[^A-Za-z0-9_.+-]", "_", step.interface)
+            component_marker = f"LUMEN_GUEST_COMPONENT_MISSING:kernel:vcan:{marker_name}"
+            setup_marker = f"LUMEN_SETUP_VCAN interface={step.interface} result=ok"
+            lines.extend([
+                "if ! command -v ip >/dev/null 2>&1; then",
+                "    printf '%s\\n' LUMEN_GUEST_COMPONENT_MISSING:ip:ip > /dev/console 2>/dev/null || true",
+                "    printf '%s\\n' LUMEN_GUEST_COMPONENT_MISSING:ip:ip >&2",
+                "    exit 125",
+                "fi",
+                f"if ! ip link show {interface} >/dev/null 2>&1; then",
+                f"    if ! ip link add {interface} type vcan >/dev/null 2>&1; then",
+                f"        printf '%s\\n' {shlex.quote(component_marker)} > /dev/console 2>/dev/null || true",
+                f"        printf '%s\\n' {shlex.quote(component_marker)} >&2",
+                "        exit 125",
+                "    fi",
+                "fi",
+                f"if ! ip link set {interface} up >/dev/null 2>&1; then",
+                f"    printf '%s\\n' {shlex.quote(component_marker)} > /dev/console 2>/dev/null || true",
+                f"    printf '%s\\n' {shlex.quote(component_marker)} >&2",
+                "    exit 125",
+                "fi",
+                f"printf '%s\\n' {shlex.quote(setup_marker)} > /dev/console 2>/dev/null || true",
+            ])
+        elif step.type == "run_binary":
             command = " ".join([shlex.quote("./" + step.path), *(shlex.quote(arg) for arg in step.args)])
             lines.append(f"test -x {shlex.quote('./' + step.path)}")
             lines.append(f"timeout --signal=KILL {runtime_timeout} {command}")

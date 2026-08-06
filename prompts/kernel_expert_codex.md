@@ -66,18 +66,22 @@ The contract must contain:
 - `call_chain_oracle.fault_signatures`, `required_top_frames`, `required_frames` (the same core list), `required_frame_order`, `required_frame_alternatives`, `target_subsystems`, `target_objects`, and optional `allowed_wrapper_frames`;
 - `qemu_recipe` with only evidence-supported settings;
 - a `reproducer` object with `language: "c"` and `artifact_type: "userspace"`;
+- structured `setup_requirements` for explicit guest preconditions such as a
+  vcan interface that the selected rootfs does not guarantee;
 - structured `pressure_requirements` and `fault_injection_requirements` only when justified by the report/source;
 - `change_from_previous_tryout`, `warnings`, and `blocked_reason`.
 
-`pressure_requirements` and `fault_injection_requirements` are typed Lumen
+`setup_requirements`, `pressure_requirements`, and `fault_injection_requirements` are typed Lumen
 `ExecutionStep` lists, not free-form annotations. Each item must use one of
-the allow-listed `type` values (`run_binary`, `run_pressure`, `write_sysctl`,
-`wait`, or `fault_injection`) and the corresponding fields such as `profile`,
+the allow-listed `type` values (`setup_vcan`, `run_binary`, `run_pressure`,
+`write_sysctl`, `wait`, or `fault_injection`) and the corresponding fields such as `interface`, `profile`,
 `workers`, `times`, `path`, `args`, `key`, `value`, `probability`, and
 `rationale`. Never invent fields such as `kind`, `required`, `filesystem`,
 `operations`, or `duration_seconds`; put environment facts and non-executable
 setup requirements in `warnings`, or leave the list empty when the userspace
 C harness performs the bounded workload itself.
+
+Use `{"type":"setup_vcan","interface":"vcan0","rationale":"the declared rootfs has no vcan0 and the report requires CAN ingress"}` only when source/log evidence requires that interface. The runner performs the allow-listed `ip link add ... type vcan` and `ip link set ... up` actions before the C binary; it never loads a kernel module or executes arbitrary agent shell text. If the guest lacks `ip` or the vcan kernel capability, the runner emits a terminal component-capability result.
 
 `required_top_frames` is the strict runtime gate. Keep the original lower context for audit, but do not broaden the gate to accept a generic warning, panic banner, exception wrapper, or subsystem name. The target signal must occur after `LUMEN_REPRO_START` and in the declared target context.
 
@@ -134,6 +138,7 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
     "run_args": [],
     "runtime_timeout_sec": 60
   },
+  "setup_requirements": [],
   "pressure_requirements": [],
   "fault_injection_requirements": [],
   "change_from_previous_tryout": "initial maintenance regression harness",

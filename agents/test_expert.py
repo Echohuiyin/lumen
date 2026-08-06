@@ -387,7 +387,11 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
             + ", ".join(sorted(set(unresolved_args)))
         )
     oracle = _strict_call_chain_oracle(contract)
-    steps = [*contract.pressure_requirements, *contract.fault_injection_requirements]
+    steps = [
+        *contract.setup_requirements,
+        *contract.pressure_requirements,
+        *contract.fault_injection_requirements,
+    ]
     steps.append(ExecutionStep(
         type="run_binary",
         path=f"bin/{reproducer.output_binary}",
