@@ -372,12 +372,33 @@ class SemcodeMcpClient:
         requested = [str(name).strip() for name in names if str(name).strip()]
         if not requested:
             return []
-        function_texts = self._call_many([
-            ("find_function", {"name": name}) for name in requested
-        ])
-        calls_texts = self._call_many([
-            ("find_calls", {"name": name}) for name in requested
-        ])
+        try:
+            function_texts = self._call_many([
+                ("find_function", {"name": name}) for name in requested
+            ])
+            calls_texts = self._call_many([
+                ("find_calls", {"name": name}) for name in requested
+            ])
+        except SemcodePathAnalysisError as batch_error:
+            # Some semcode releases lose individual responses when several
+            # requests are outstanding on one stdio session.  A single
+            # request is still authoritative and avoids treating a transport
+            # limitation as a missing exact-commit index.  Do not recover
+            # from an explicit indexing failure: that remains fail-closed.
+            if "no parseable MCP response" not in str(batch_error):
+                raise
+            recovered: list[SemcodeFunction] = []
+            for name in requested:
+                try:
+                    recovered.append(self.find_function(name))
+                except SemcodePathAnalysisError:
+                    # Generated wrappers and syscall aliases may not have a
+                    # standalone definition; preserve the existing behavior
+                    # of retaining any other exact-commit functions.
+                    continue
+            if recovered:
+                return recovered
+            raise batch_error
         functions: list[SemcodeFunction] = []
         for name, function_text, calls_text in zip(requested, function_texts, calls_texts):
             try:

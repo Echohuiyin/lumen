@@ -18,6 +18,7 @@ from agents.kernel_expert import _apply_semcode_path_analysis
 from agents.semcode_path_analysis import (
     SemcodeMcpClient,
     SemcodeFunction,
+    SemcodePathAnalysisError,
     resolve_kernel_commit,
     resolve_kernel_source_for_commit,
     verify_semcode_target,
@@ -173,6 +174,35 @@ def test_semcode_client_keeps_parseable_functions_when_wrapper_is_missing(tmp_pa
     functions = client.find_functions(["foo_ioctl", "generated_wrapper"])
 
     assert [function.name for function in functions] == ["foo_ioctl"]
+
+
+def test_semcode_client_retries_single_requests_after_batch_transport_drop(tmp_path):
+    """A dropped multi-request reply must not block valid exact-commit entries."""
+    source = tmp_path / "linux"
+    source.mkdir()
+    (source / ".semcode.db").mkdir()
+    client = SemcodeMcpClient(
+        command="/bin/true", args=(), kernel_source_path=str(source),
+        git_sha="a" * 40,
+    )
+
+    def fake_call_many(requests):
+        items = list(requests)
+        if len(items) > 1:
+            raise SemcodePathAnalysisError(
+                "semcode batch returned no parseable MCP response for request ids [2]"
+            )
+        tool_name, arguments = items[0]
+        name = arguments["name"]
+        if tool_name == "find_function":
+            return [f"Function: {name}\nFile: drivers/foo.c:42\nBody:\nfoo_access();\n"]
+        return ["Direct calls:\n1. foo_access\n"]
+
+    client._call_many = fake_call_many
+
+    functions = client.find_functions(["foo_ioctl", "bar_ioctl"])
+
+    assert [function.name for function in functions] == ["foo_ioctl", "bar_ioctl"]
 
 
 def test_semcode_path_analysis_reuses_exact_cached_evidence(tmp_path):
