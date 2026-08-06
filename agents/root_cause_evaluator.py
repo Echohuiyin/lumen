@@ -250,10 +250,22 @@ def _observed_facts(
             ))
             for name in fault_functions
         },
+        # KASAN is a sanitizer, not a diagnosis: it also reports wild
+        # pointers, out-of-bounds accesses, and invalid frees. Treat a case
+        # as UAF only when the first-hand log explicitly identifies a freed
+        # object/lifetime violation; otherwise pointer cases would be scored
+        # against the wrong mechanism vocabulary.
         "uaf_signal": bool(re.search(
-            r"use[- ]after[- ]free|slab-use-after-free|kasan", lowered,
+            r"use[- ]after[- ]free|slab-use-after-free|freed\s+(?:object|allocation|stack)|\bUAF\b",
+            lowered,
         )),
-        "warning_signal": bool(re.search(r"\bwarning\b|warn_on|assert", lowered)),
+        # Ignore SSH/transport chatter such as "Warning: Permanently added";
+        # only a kernel-style WARNING line or an explicit assertion selects
+        # the warning mechanism vocabulary.
+        "warning_signal": bool(
+            re.search(r"(?m)^\s*WARNING\b", report_text)
+            or re.search(r"\bwarn_on\b|\bassert(?:ion)?\b", lowered)
+        ),
         "pointer_signal": bool(re.search(
             r"general protection|paging request|null pointer|invalid address", lowered,
         )),

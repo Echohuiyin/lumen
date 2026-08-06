@@ -77,6 +77,38 @@ def test_evaluator_scores_source_grounded_root_cause_and_ignores_repro(tmp_path)
     assert "this text must never be read" not in str(result)
 
 
+def test_kasan_wild_pointer_is_not_scored_as_uaf(tmp_path):
+    state = _state(tmp_path)
+    log = Path(state["input_artifacts_contract"]["log_path"])
+    log.write_text(
+        "demo_open: wild pointer observed\n"
+        "Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.\n",
+        encoding="utf-8",
+    )
+    report = Path(state["input_artifacts_contract"]["crash_report_path"])
+    report.write_text(
+        "Oops: general protection fault for non-canonical address\n"
+        "KASAN: maybe wild-memory-access\n"
+        "RIP: 0010:demo_open+0x2c/0x70\n",
+        encoding="utf-8",
+    )
+    state["kernel_contract"]["root_cause"] = (
+        "demo_open dereferences an invalid pointer address; the wild pointer "
+        "reaches the diagnostic path without evidence of a freed object."
+    )
+    result = evaluate_root_cause(state)
+
+    observed = result["case_evidence"]["observed"]
+    assert observed["uaf_signal"] is False
+    # Transport noise must not select the kernel-warning vocabulary.
+    assert observed["warning_signal"] is False
+    mechanism = next(
+        item for item in result["root_cause"]["dimensions"]
+        if item["id"] == "mechanism"
+    )
+    assert mechanism["score"] > 0
+
+
 def test_evaluator_uses_semcode_pinned_source_scope(tmp_path, monkeypatch):
     state = _state(tmp_path)
     shared = Path(state["input_artifacts_contract"]["kernel_source_path"])
