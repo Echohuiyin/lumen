@@ -184,6 +184,8 @@ Do not encode a userspace operation or its requested error return as a `fault_in
 
 If the raw report omits a userspace setup operation but source/ABI evidence shows that a public interface (for example `/dev/vhci`) is required to reach the reported path, construct that bounded setup in the new C reproducer, emit stable setup markers, and explain it in `warnings`; do not mark the contract blocked solely because the operation is implicit. This is not permission to reuse a historical reproducer, load a module, or execute arbitrary shell, and Test Expert must still require the exact runtime call chain.
 
+For VHCI/HCI specifically, follow the source-required public command/event handshake (including any capability or address query needed before `HCI_DEVUP`) in the C program, with bounded replies and setup markers. Treat this as an evidence-backed ABI precondition, not a fault injection or hidden shell setup; do not block merely because the original syzkaller excerpt omitted those handshake packets.
+
 ## Contract format
 
 
