@@ -921,12 +921,14 @@ def test_progress_gate_stops_two_no_progress_rounds(tmp_path):
 def test_generic_setup_markers_are_structured(tmp_path):
     ssh_output = tmp_path / "ssh-command.log"
     ssh_output.write_text(
-        "LUMEN_FIXTURE interface=vcan0 payload=64 sessions=16\n"
-        "LUMEN_LOOP_READY device=/dev/loop0\n"
+        "LUMEN_VCAN_CREATE rc=0 interface=vcan0\n"
+        "LUMEN_VCAN_UP rc=0 ifindex=39\n"
+        "LUMEN_J1939_BIND rc=0 ifindex=39\n"
+        "LUMEN_SETUP_FAILURE operation=bind\n"
         "LUMEN_REPRO_RESULT setup=ok\n",
         encoding="utf-8",
     )
     markers = _read_reproducer_setup_markers(
         {"artifacts": {"ssh_output": str(ssh_output)}}
     )
-    assert markers == {"FIXTURE", "LOOP_READY"}
+    assert markers == {"VCAN_CREATE", "VCAN_UP", "J1939_BIND"}

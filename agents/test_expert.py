@@ -1029,8 +1029,9 @@ def _augment_kernel_feedback(
 
 
 _SETUP_MARKER_TOKENS = (
-    "ASSET", "BOUND", "CONFIG", "CREATE", "DEVICE", "FIXTURE", "INIT",
-    "MOUNT", "OPEN", "READY", "SETUP", "UP",
+    "ASSET", "BIND", "CONFIG", "CONNECT", "CREATE", "DEVICE", "FIXTURE",
+    "INIT", "INTERFACE", "MOUNT", "OPEN", "READY", "SETUP", "SOCKET",
+    "UP", "VCAN",
 )
 _TERMINAL_MARKERS = {"START", "DONE", "ERROR", "FAIL", "RESULT", "SUMMARY"}
 
@@ -1070,7 +1071,16 @@ def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
             if raw.startswith("LUMEN_REPRO_"):
                 if any(token in name for token in _SETUP_MARKER_TOKENS):
                     markers.add(name)
-            elif name in generic_setup_markers:
+            elif (
+                name in generic_setup_markers
+                or (
+                    any(token in name for token in _SETUP_MARKER_TOKENS)
+                    and not any(
+                        token in name
+                        for token in ("FAIL", "ERROR", "START", "DONE", "RESULT", "SUMMARY")
+                    )
+                )
+            ):
                 markers.add(name)
     return markers
 
