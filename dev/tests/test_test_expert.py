@@ -44,6 +44,7 @@ def test_reproducer_setup_markers_keep_only_stable_setup_names(tmp_path):
     ssh_output = tmp_path / "ssh-command.log"
     ssh_output.write_text(
         "LUMEN_REPRO_START target=case\n"
+        "LUMEN_REPRO_SETUP_FAIL op=if_nametoindex errno=19\n"
         "LUMEN_REPRO_VCAN_CREATE ifname=vcan0 result=ok\n"
         "LUMEN_REPRO_VCAN_UP ifindex=39 result=ok\n"
         "LUMEN_REPRO_J1939_SEND iteration=3 fd=17\n"

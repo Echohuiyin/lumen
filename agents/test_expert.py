@@ -1076,6 +1076,11 @@ def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
             if name in _TERMINAL_MARKERS:
                 continue
             if raw.startswith("LUMEN_REPRO_"):
+                if (
+                    any(token in name for token in ("FAIL", "ERROR", "START", "DONE", "RESULT", "SUMMARY"))
+                    or not any(token in name for token in _SETUP_MARKER_TOKENS)
+                ):
+                    continue
                 if any(token in name for token in _SETUP_MARKER_TOKENS):
                     markers.add(name)
             elif (
