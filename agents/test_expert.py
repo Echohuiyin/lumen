@@ -1045,6 +1045,9 @@ _SETUP_MARKER_TOKENS = (
     "UP", "VCAN",
 )
 _TERMINAL_MARKERS = {"START", "DONE", "ERROR", "FAIL", "RESULT", "SUMMARY"}
+_BARE_SETUP_MARKER_PATTERN = re.compile(
+    r"^\s*((?:FIXTURE|VHCI)(?:_[A-Z][A-Z0-9_]*)*)\b"
+)
 
 
 def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
@@ -1109,6 +1112,29 @@ def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
                 )
             ):
                 markers.add(name)
+        # A few otherwise valid userspace reproducers use the canonical setup
+        # names without a LUMEN_ prefix (for example FIXTURE_SIZE=4096 and
+        # VHCI_OPEN=ok).  Accept only line-leading FIXTURE/VHCI names so that
+        # arbitrary kernel log words are not promoted to setup evidence.
+        for line in text.splitlines():
+            bare = _BARE_SETUP_MARKER_PATTERN.match(line)
+            if not bare:
+                continue
+            name = bare.group(1)
+            if (
+                name in _TERMINAL_MARKERS
+                or any(token in name for token in ("FAIL", "ERROR", "START", "DONE", "RESULT", "SUMMARY"))
+                or not any(token in name for token in _SETUP_MARKER_TOKENS)
+                or re.search(
+                    r"\b(?:result|status)\s*=\s*(?:failed|error|setup-failed)\b",
+                    line,
+                    re.IGNORECASE,
+                )
+                or re.search(r"\berrno\s*=\s*(?!0\b)[+-]?\d+\b", line, re.IGNORECASE)
+                or re.search(r"\bifindex\s*=\s*0\b", line, re.IGNORECASE)
+            ):
+                continue
+            markers.add(name)
     return markers
 
 

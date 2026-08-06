@@ -60,6 +60,22 @@ def test_reproducer_setup_markers_keep_only_stable_setup_names(tmp_path):
     assert markers == {"VCAN_CREATE", "VCAN_UP"}
 
 
+def test_bare_fixture_and_vhci_setup_markers_are_structured(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "FIXTURE_SIZE=4096\n"
+        "FIXTURE_MMAP=ok\n"
+        "VHCI_OPEN=ok path=/dev/vhci\n"
+        "VHCI_DEVICE=ok id=0\n"
+        "VHCI_OPEN=failed errno=19\n",
+        encoding="utf-8",
+    )
+    markers = _read_reproducer_setup_markers(
+        {"artifacts": {"ssh_output": str(ssh_output)}}
+    )
+    assert markers == {"FIXTURE_SIZE", "FIXTURE_MMAP", "VHCI_OPEN", "VHCI_DEVICE"}
+
+
 def test_reproducer_regression_guard_rejects_dropped_setup(tmp_path):
     previous_log = tmp_path / "previous.log"
     previous_log.write_text(
