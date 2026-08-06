@@ -916,3 +916,17 @@ def test_progress_gate_stops_two_no_progress_rounds(tmp_path):
     assert updated.code == "BLOCKED_PROGRESS_GATE"
     assert updated.progress_kind == "no_progress"
     assert updated.no_progress_streak == 2
+
+
+def test_generic_setup_markers_are_structured(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_FIXTURE interface=vcan0 payload=64 sessions=16\n"
+        "LUMEN_LOOP_READY device=/dev/loop0\n"
+        "LUMEN_REPRO_RESULT setup=ok\n",
+        encoding="utf-8",
+    )
+    markers = _read_reproducer_setup_markers(
+        {"artifacts": {"ssh_output": str(ssh_output)}}
+    )
+    assert markers == {"FIXTURE", "LOOP_READY"}

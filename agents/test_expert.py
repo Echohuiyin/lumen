@@ -1055,11 +1055,22 @@ def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
             text = Path(raw_path).read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in re.finditer(r"\bLUMEN_REPRO_([A-Z][A-Z0-9_]*)\b", text):
+        marker_pattern = re.compile(
+            r"\b(?:LUMEN_REPRO_|LUMEN_)([A-Z][A-Z0-9_]*)\b"
+        )
+        generic_setup_markers = {
+            "FIXTURE", "SETUP", "LOOP_READY", "MOUNT_OK", "FORMAT_OK",
+            "ASSET_READY", "DEVICE_READY",
+        }
+        for match in marker_pattern.finditer(text):
+            raw = match.group(0)
             name = match.group(1)
             if name in _TERMINAL_MARKERS:
                 continue
-            if any(token in name for token in _SETUP_MARKER_TOKENS):
+            if raw.startswith("LUMEN_REPRO_"):
+                if any(token in name for token in _SETUP_MARKER_TOKENS):
+                    markers.add(name)
+            elif name in generic_setup_markers:
                 markers.add(name)
     return markers
 
