@@ -967,6 +967,83 @@ def _augment_kernel_feedback(
     return f"{feedback}\n{summary}".strip()
 
 
+_SETUP_MARKER_TOKENS = (
+    "ASSET", "BOUND", "CONFIG", "CREATE", "DEVICE", "FIXTURE", "INIT",
+    "MOUNT", "OPEN", "READY", "SETUP", "UP",
+)
+_TERMINAL_MARKERS = {"START", "DONE", "ERROR", "FAIL", "RESULT", "SUMMARY"}
+
+
+def _read_reproducer_setup_markers(round_data: dict) -> set[str]:
+    """Return stable setup markers emitted by one guest try-out.
+
+    Kernel Expert retries are incremental revisions, not fresh independent
+    experiments. LUMEN_REPRO_* setup markers are the only durable,
+    userspace-owned evidence that a prerequisite (for example creating and
+    bringing up vcan0) was actually established in the guest. Values such
+    as fd numbers, ports, and iteration counters are intentionally discarded;
+    the marker names are the stable contract.
+    """
+    artifacts = round_data.get("artifacts") or {}
+    markers: set[str] = set()
+    for key in ("ssh_output", "serial_log"):
+        raw_path = str(artifacts.get(key, "") or "")
+        if not raw_path:
+            continue
+        try:
+            text = Path(raw_path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in re.finditer(r"\bLUMEN_REPRO_([A-Z][A-Z0-9_]*)\b", text):
+            name = match.group(1)
+            if name in _TERMINAL_MARKERS:
+                continue
+            if any(token in name for token in _SETUP_MARKER_TOKENS):
+                markers.add(name)
+    return markers
+
+
+def _apply_reproducer_regression_guard(
+    result: TestResultContract,
+    previous_rounds: list[dict],
+) -> TestResultContract:
+    """Reject an incremental POC that drops a previously verified setup step.
+
+    A later Kernel Expert revision must preserve the last round's verified
+    guest prerequisites and change only the trigger under investigation.
+    Missing setup markers are a deterministic regression, not evidence that
+    the kernel path disappeared. The raw try-out remains archived and the
+    feedback sends the model back with an actionable, minimal-change request.
+    """
+    prior_markers: set[str] = set()
+    for previous in reversed(previous_rounds):
+        prior_markers = _read_reproducer_setup_markers(previous)
+        if prior_markers:
+            break
+    if not prior_markers or result.status != "failed":
+        return result
+
+    current_markers = _read_reproducer_setup_markers(model_to_dict(result))
+    missing = sorted(prior_markers - current_markers)
+    if not missing:
+        return result
+
+    result.status = "failed"
+    result.code = "FAILED_REPRODUCER_REGRESSION"
+    result.summary = (
+        "The revised userspace reproducer dropped setup prerequisites already "
+        "verified by an earlier QEMU try-out: " + ", ".join(missing)
+    )
+    result.kernel_feedback = (
+        "REPRODUCER_REGRESSION_GUARD: preserve the previous userspace source "
+        "and all verified setup steps, then make only an incremental trigger "
+        "change. Missing setup markers: " + ", ".join(missing)
+    )
+    result.artifacts["regression_required_setup_markers"] = ",".join(sorted(prior_markers))
+    result.artifacts["regression_missing_setup_markers"] = ",".join(missing)
+    return result
+
+
 def _format_attempt(result: TestResultContract) -> str:
     lines = [
         f"TEST STATUS: {result.status}",
@@ -1051,6 +1128,9 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                     )
                     result.artifacts.update(image_artifacts)
                     result = _promote_guest_capability_block(result)
+                    result = _apply_reproducer_regression_guard(
+                        result, previous_rounds,
+                    )
                     result.call_chain_consistent = bool(result.test_passed)
                     result.principle_consistent, result.semantic_review_reason = _semantic_review(contract, result)
                     result.test_passed = bool(result.call_chain_consistent and result.principle_consistent)

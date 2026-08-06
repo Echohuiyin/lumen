@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer
 from agents.persistent_qemu import PersistentQemuPaths
-from agents.test_expert import _append_attempt_output, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _semantic_review, test_expert_node
+from agents.test_expert import (_append_attempt_output, _apply_reproducer_regression_guard, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _read_reproducer_setup_markers, _semantic_review, test_expert_node)
 from agents.test_expert import _frame_symbol, _strict_call_chain_oracle
 
 
@@ -38,6 +38,53 @@ def _contract(root: Path) -> KernelExpertOutput:
 
 def test_frame_symbol_ignores_kernel_question_prefix():
     assert _frame_symbol("? end_buffer_async_write+0x10/0x20") == "end_buffer_async_write"
+
+
+def test_reproducer_setup_markers_keep_only_stable_setup_names(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_REPRO_START target=case\n"
+        "LUMEN_REPRO_VCAN_CREATE ifname=vcan0 result=ok\n"
+        "LUMEN_REPRO_VCAN_UP ifindex=39 result=ok\n"
+        "LUMEN_REPRO_J1939_SEND iteration=3 fd=17\n"
+        "LUMEN_REPRO_RESULT setup=ok\n"
+        "LUMEN_REPRO_DONE result=0\n",
+        encoding="utf-8",
+    )
+    markers = _read_reproducer_setup_markers(
+        {"artifacts": {"ssh_output": str(ssh_output)}}
+    )
+    assert markers == {"VCAN_CREATE", "VCAN_UP"}
+
+
+def test_reproducer_regression_guard_rejects_dropped_setup(tmp_path):
+    previous_log = tmp_path / "previous.log"
+    previous_log.write_text(
+        "LUMEN_REPRO_FIXTURE size=16\n"
+        "LUMEN_REPRO_VCAN_CREATE ifname=vcan0 result=ok\n"
+        "LUMEN_REPRO_VCAN_UP ifindex=39 result=ok\n",
+        encoding="utf-8",
+    )
+    current_log = tmp_path / "current.log"
+    current_log.write_text(
+        "LUMEN_REPRO_FIXTURE size=64\n"
+        "LUMEN_REPRO_RESULT setup=failed\n",
+        encoding="utf-8",
+    )
+    result = TestResultContract(
+        status="failed",
+        code="FAILED_SIGNAL_NOT_FOUND",
+        summary="target signal missing",
+        artifacts={"ssh_output": str(current_log)},
+    )
+    guarded = _apply_reproducer_regression_guard(
+        result,
+        [{"artifacts": {"ssh_output": str(previous_log)}}],
+    )
+    assert guarded.code == "FAILED_REPRODUCER_REGRESSION"
+    assert "VCAN_CREATE" in guarded.artifacts["regression_missing_setup_markers"]
+    assert "VCAN_UP" in guarded.artifacts["regression_missing_setup_markers"]
+    assert "REPRODUCER_REGRESSION_GUARD" in guarded.kernel_feedback
 
 
 def test_kernel_feedback_includes_bounded_runtime_evidence(tmp_path):
