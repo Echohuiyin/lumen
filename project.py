@@ -90,6 +90,8 @@ INPUT_FILE_FIELDS = {
     "kernel_config",
     "target_arch",
     "expected_kernel_commit",
+    "fix_commit",
+    "fix_patch_path",
     # Runtime artifacts and recipe constraints are part of the maintenance
     # input contract and must reach the structured workflow state.
     "qemu_extra_cmdline",
