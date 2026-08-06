@@ -363,8 +363,9 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
     if not c_sources:
         raise ValueError("userspace reproducer requires at least one C translation unit")
     pthread_pattern = re.compile(
-        r"#\s*include\s*[<\"]pthread\.h[>\"]|"
-        r"\bpthread_(?:create|join|barrier_|mutex_|cond_)"
+        r"^\s*#\s*include\s*[<\"]pthread\.h[>\"]|"
+        r"\bpthread_(?:create|join|barrier_|mutex_|cond_)\s*\(",
+        flags=re.MULTILINE,
     )
     uses_pthread = False
     source_root = Path(reproducer.source_dir)

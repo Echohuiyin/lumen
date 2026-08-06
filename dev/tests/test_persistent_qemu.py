@@ -215,6 +215,20 @@ def test_runner_preflights_guest_pthread_runtime(tmp_path):
     assert "-pthread" in script
 
 
+def test_runner_ignores_pthread_mentions_in_comments(tmp_path):
+    plan = _plan(tmp_path)
+    (Path(plan.reproducer.source_dir) / "repro.c").write_text(
+        "/* userspace contract: no pthread_create/clone3 */\n"
+        "#include <unistd.h>\n"
+        "int main(void) { return (int)getpid(); }\n",
+        encoding="utf-8",
+    )
+
+    script = _render_execution_script(plan, "LUMEN_REPRO_START:case:path")
+
+    assert ".lumen-pthread-probe.c" not in script
+
+
 def test_missing_guest_artifacts_are_blocked_without_reuse(tmp_path):
     result = run_persistent_qemu_test_plan(_plan(tmp_path), attempt=1, runtime_root=tmp_path / "guests")
     assert result.status == "blocked"
