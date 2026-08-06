@@ -33,6 +33,8 @@ EXCLUDE_PATTERNS = (
     "Analysis-SKILL/",           # git submodule
     "syzfetch-cases/",           # fetched/deployed case metadata, not source
     "runtime/",                  # generated QEMU/session artifacts
+    "retained_cases/",           # intentionally preserved evidence archives
+    "syzfetch-storage-inventory.json",  # generated host-storage inventory
     ".agents/skills-disabled/",  # local disabled skills, not project source
     "dev/tests/test_hardcoded_paths.py",  # this file itself is fine
 )
