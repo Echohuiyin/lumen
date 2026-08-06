@@ -835,6 +835,23 @@ def test_missing_guest_kvm_is_terminal():
     assert "/dev/kvm" in blocked.summary
 
 
+def test_structured_missing_guest_kvm_is_terminal():
+    with tempfile.TemporaryDirectory() as directory:
+        output = Path(directory) / "ssh-command.log"
+        output.write_text(
+            "LUMEN_SETUP_FAIL op=open_dev_kvm errno=2 (No such file or directory)\n",
+            encoding="utf-8",
+        )
+        failed = TestResultContract(
+            status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+            artifacts={"ssh_output": str(output)},
+        )
+        blocked = _promote_guest_capability_block(failed)
+    assert blocked.status == "blocked"
+    assert blocked.code == "BLOCKED_GUEST_KVM_UNAVAILABLE"
+    assert "/dev/kvm" in blocked.summary
+
+
 def test_missing_guest_ocfs2_mount_is_terminal():
     with tempfile.TemporaryDirectory() as directory:
         output = Path(directory) / "ssh-command.log"

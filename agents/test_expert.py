@@ -717,6 +717,9 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
             r"open\(/dev/kvm\).*?(?:no such file|not found|operation not permitted|permission denied)",
             lowered,
             flags=re.DOTALL,
+        ) or re.search(
+            r"lumen_setup_fail\s+op=open_dev_kvm(?:\s+errno=\S+)?",
+            lowered,
         )
         if kvm_unavailable:
             result.status = "blocked"
