@@ -486,3 +486,34 @@ def test_semcode_path_analysis_online_llm_roundtrip():
         HumanMessage(content=render_semcode_analysis_context(result)),
     ])
     assert result.analysis.case_id in (response.content or "")
+
+def test_attested_external_snapshot_skips_git_and_semcode_index(tmp_path: Path):
+    source = tmp_path / "snapshot" / "tree"
+    (source / "include/linux").mkdir(parents=True)
+    (source / "init").mkdir()
+    (source / "include/linux/kernel.h").write_text("/* fixture */\n", encoding="utf-8")
+    (source / "Makefile").write_text("all:\n", encoding="utf-8")
+    (source / "Kconfig").write_text("mainmenu \"fixture\"\n", encoding="utf-8")
+    (source / "init/main.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    manifest = source.parent / "source-snapshot.json"
+    manifest.write_text(
+        __import__("json").dumps({
+            "verified": True,
+            "source_kind": "kernelci_snapshot",
+            "expected_commit": "a" * 40,
+            "tree": {"path": str(source), "sha256": "tree-hash"},
+        }),
+        encoding="utf-8",
+    )
+
+    result = verify_semcode_target(
+        kernel_source_path=str(source),
+        expected_kernel_commit="a" * 40,
+        semcode_command="/bin/false",
+        source_snapshot_manifest_path=str(manifest),
+    )
+
+    assert result["status"] == "ok"
+    assert result["mode"] == "attested_external_snapshot"
+    assert result["semcode_available"] is False
+    assert result["evidence"][0]["manifest"] == str(manifest.resolve())

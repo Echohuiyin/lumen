@@ -99,3 +99,14 @@ def test_parse_optional_fix_evidence_fields():
     assert {item["field"] for item in contract.evidence} >= {
         "fix_commit", "fix_patch_path",
     }
+
+def test_parse_source_snapshot_manifest_path():
+    contract = parse_input_artifacts(
+        "kernel_source: /tmp/linux\n"
+        "source_snapshot_manifest: /tmp/source-snapshot.json\n",
+        validate_paths=False,
+    )
+    assert contract.source_snapshot_manifest_path == "/tmp/source-snapshot.json"
+    assert {
+        item["field"] for item in contract.evidence
+    } >= {"kernel_source_path", "source_snapshot_manifest_path"}

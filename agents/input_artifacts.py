@@ -200,6 +200,14 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "source tree",
         ],
     )
+    source_snapshot_manifest_path, source_snapshot_label = _extract_labeled_path(
+        text,
+        [
+            "source_snapshot_manifest",
+            "kernel_source_manifest",
+            "source_manifest",
+        ],
+    )
     log_path, log_label = _extract_labeled_path(
         text,
         ["log_path", "log", "kernel log", "dmesg"],
@@ -239,6 +247,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "test_assets_dir": (test_assets_dir, test_assets_label),
         "qemu_extra_cmdline": (qemu_extra_cmdline, qemu_extra_label),
         "kernel_source_path": (kernel_source_path, source_label),
+        "source_snapshot_manifest_path": (source_snapshot_manifest_path, source_snapshot_label),
         "log_path": (log_path, log_label),
         "crash_report_path": (crash_report_path, crash_report_label),
         "reproducer_path": (reproducer_path, reproducer_label),
@@ -283,6 +292,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "rootfs_path": "file",
             "test_assets_dir": "dir",
             "kernel_source_path": "dir",
+            "source_snapshot_manifest_path": "file",
             "log_path": "file",
             "crash_report_path": "file",
             "reproducer_path": "file",
@@ -318,6 +328,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         fix_patch_path=fix_patch_path,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
+        source_snapshot_manifest_path=source_snapshot_manifest_path,
         log_path=log_path,
         crash_report_path=crash_report_path,
         reproducer_path=reproducer_path,

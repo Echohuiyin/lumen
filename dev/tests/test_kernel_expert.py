@@ -148,10 +148,9 @@ def test_materialized_contract_can_replace_non_structured_retry_output(tmp_path)
     assert "Test Expert owns" in prompt
     assert "qemu_recipe.extra_cmdline" in prompt
     assert "pressure_requirements" in prompt
-    assert "Do not put an executable setting only in prose" in prompt
-    assert '"type":"run_pressure"' in prompt
-    assert '"type":"fault_injection"' in prompt
-    assert "These steps must remain structured JSON" in prompt
+    assert "setup_requirements" in prompt
+    assert "fault_injection_requirements" in prompt
+    assert "allow-listed" in (PROJECT_ROOT / "prompts" / "kernel_expert_codex.md").read_text(encoding="utf-8")
     assert "Userspace correctness gate" in prompt
     assert "Mandatory reproducer code review" in prompt
     assert "every shared scalar/state field must use" in prompt

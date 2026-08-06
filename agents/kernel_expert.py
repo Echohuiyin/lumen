@@ -1505,22 +1505,31 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             if value and not input_artifacts.get(key):
                 input_artifacts[key] = value
     kernel_source_path = input_artifacts.get("kernel_source_path", "")
-    # Keep direct source reads on a detached exact-commit worktree, while
-    # Semcode queries use the deployment's completed multi-branch database.
+    source_snapshot_manifest = str(
+        input_artifacts.get("source_snapshot_manifest_path", "") or ""
+    ).strip()
+    # Keep direct source reads on a detached exact-commit worktree.  An
+    # explicitly attested external snapshot is immutable but may not contain a
+    # Git object or Semcode database, so it is handled as a separate mode.
     semcode_source_path = kernel_source_path
     expected_kernel_commit = input_artifacts.get("expected_kernel_commit", "")
+    external_snapshot = bool(source_snapshot_manifest)
     try:
         kernel_source_path = resolve_kernel_source_for_commit(
             kernel_source_path,
             expected_kernel_commit,
             workspace_root=str(session_dir or ""),
+            source_snapshot_manifest_path=source_snapshot_manifest,
         )
         input_artifacts["kernel_source_path"] = kernel_source_path
-        # Normalize an abbreviated input prefix to the exact full commit before
-        # it reaches Semcode, Codex evidence, or the durable contract.
-        expected_kernel_commit = resolve_kernel_commit(
-            semcode_source_path, expected_kernel_commit,
-        )
+        if external_snapshot:
+            semcode_source_path = kernel_source_path
+        else:
+            # Normalize an abbreviated input prefix to the exact full commit before
+            # it reaches Semcode, Codex evidence, or the durable contract.
+            expected_kernel_commit = resolve_kernel_commit(
+                semcode_source_path, expected_kernel_commit,
+            )
     except Exception as exc:
         return _blocked_source_verification({
             "status": "blocked",
@@ -1541,9 +1550,18 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         expected_kernel_commit=expected_kernel_commit,
         semcode_command=str(semcode_config.get("command", "")),
         semcode_args=semcode_config.get("args", []) or [],
+        source_snapshot_manifest_path=source_snapshot_manifest if external_snapshot else "",
     )
     if source_verification.get("status") != "ok":
         return _blocked_source_verification(source_verification)
+
+    if source_verification.get("mode") == "attested_external_snapshot":
+        # The exact source tree is verified by its immutable manifest.  Do not
+        # start a Semcode client against a tree that has no index.
+        agent_config = dict(agent_config)
+        agent_config["semcode_mcp"] = {"disabled": True}
+        semcode_config = {}
+        external_snapshot = True
 
     system_prompt = load_prompt_from_file(
         agent_config.get("prompt_file", "prompts/kernel_expert.md")
@@ -1598,15 +1616,28 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         *(json.dumps(item.get("structured_output", {}), ensure_ascii=False)
           for item in expert_results),
     ])
-    semcode_evidence_path = _materialize_semcode_evidence(
-        paths_get_output_dir(),
-        source_path=kernel_source_path,
-        semcode_source_path=semcode_source_path,
-        expected_commit=expected_kernel_commit,
-        command=str(semcode_config.get("command", "")),
-        args=list(semcode_config.get("args", []) or []),
-        evidence_text=semcode_evidence_text,
-    )
+    if external_snapshot:
+        semcode_evidence_path = str(paths_get_output_dir() / "semcode-evidence.json")
+        Path(semcode_evidence_path).write_text(
+            json.dumps({
+                "status": "ok",
+                "mode": "attested_external_snapshot",
+                "semcode_available": False,
+                "expected_commit": expected_kernel_commit,
+                "source_verification": source_verification,
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    else:
+        semcode_evidence_path = _materialize_semcode_evidence(
+            paths_get_output_dir(),
+            source_path=kernel_source_path,
+            semcode_source_path=semcode_source_path,
+            expected_commit=expected_kernel_commit,
+            command=str(semcode_config.get("command", "")),
+            args=list(semcode_config.get("args", []) or []),
+            evidence_text=semcode_evidence_text,
+        )
     if semcode_evidence_path:
         # Stage deterministic adapter output inside the Codex sandbox;
         # absolute durable-session paths are intentionally not readable from
@@ -1740,10 +1771,19 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "```"
         )
     if semcode_evidence_path:
-        user_content += (
-            "\n\nRead evidence/semcode-evidence.json before interactive MCP. "
-            "It contains deterministic exact-commit Semcode results; do not replace it with source-text or grep fallback."
-        )
+        if external_snapshot:
+            user_content += (
+                "\n\nRead evidence/semcode-evidence.json before concluding. "
+                "This is an operator-attested immutable exact-commit source snapshot; "
+                "interactive Semcode is intentionally unavailable for this external tree. "
+                "Use the staged exact source directly, cite file/line evidence, and do not "
+                "block solely because semcode_available is false."
+            )
+        else:
+            user_content += (
+                "\n\nRead evidence/semcode-evidence.json before interactive MCP. "
+                "It contains deterministic exact-commit Semcode results; do not replace it with source-text or grep fallback."
+            )
     if semcode_path_analysis is not None:
         user_content += "\n\n" + render_semcode_analysis_context(semcode_path_analysis)
     if fix_evidence_path:

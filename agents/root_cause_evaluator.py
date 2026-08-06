@@ -13,6 +13,7 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any
+from agents.semcode_path_analysis import _read_attested_source_snapshot
 
 
 SCHEMA_VERSION = 1
@@ -37,6 +38,18 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
     source_root = _select_verified_source_root(
         state, declared_source_root, expected_commit,
     )
+    attested_source_commit = ""
+    manifest = artifacts.get("source_snapshot_manifest_path")
+    if manifest:
+        try:
+            snapshot = _read_attested_source_snapshot(
+                str(manifest), expected_kernel_commit=expected_commit,
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            pass
+        else:
+            source_root = Path(str(snapshot["tree"]))
+            attested_source_commit = str(snapshot["expected_commit"])
     root_cause = str(contract.get("root_cause") or "").strip()
     evidence = _dicts(contract.get("root_cause_evidence"))
     oracle = dict(contract.get("call_chain_oracle") or {})
@@ -48,6 +61,9 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
     source_audit = _audit_source_evidence(
         source_root, evidence, str(artifacts.get("expected_kernel_commit") or ""),
     )
+    if attested_source_commit:
+        source_audit["source_commit_matches"] = True
+        source_audit["source_attested"] = True
     fix_audit = _audit_fix_evidence(artifacts, source_root)
     dimensions = _score_dimensions(
         root_cause=root_cause, observed=observed,

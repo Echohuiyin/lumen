@@ -92,6 +92,77 @@ class SemcodePathAnalysisError(RuntimeError):
     """A semcode dependency/protocol failure that must block P2 analysis."""
 
 
+def _read_attested_source_snapshot(
+    manifest_path: str,
+    *,
+    expected_kernel_commit: str,
+) -> dict[str, Any]:
+    """Validate an immutable, externally prepared kernel source snapshot.
+
+    KernelCI archives may provide an exact source tree without a Git object or
+    Semcode index.  This path is accepted only when the operator declares the
+    signed/attested snapshot manifest; it never falls back to a moving HEAD.
+    """
+    manifest = Path(os.path.expanduser(str(manifest_path or ""))).resolve()
+    if not manifest.is_file():
+        raise SemcodePathAnalysisError(
+            f"source snapshot manifest does not exist: {manifest}"
+        )
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise SemcodePathAnalysisError(
+            f"cannot read source snapshot manifest {manifest}: {exc}"
+        ) from exc
+    nested = payload.get("source_snapshot")
+    snapshot = nested if isinstance(nested, dict) else payload
+    expected = str(
+        payload.get("expected_commit")
+        or snapshot.get("expected_commit")
+        or ""
+    ).strip().lower()
+    target = str(expected_kernel_commit or "").strip().lower()
+    if not target or expected != target:
+        raise SemcodePathAnalysisError(
+            f"source snapshot commit mismatch: manifest={expected or '<missing>'} "
+            f"expected={target or '<missing>'}"
+        )
+    if not bool(payload.get("verified", False) or snapshot.get("verified", False)):
+        raise SemcodePathAnalysisError(
+            f"source snapshot manifest is not verified: {manifest}"
+        )
+    if "tree_hash_verified" in payload and not bool(payload["tree_hash_verified"]):
+        raise SemcodePathAnalysisError(
+            f"source snapshot tree hash is not verified: {manifest}"
+        )
+    tree = snapshot.get("tree")
+    if not isinstance(tree, dict):
+        tree = payload.get("tree")
+    tree_path = str((tree or {}).get("path") or "").strip()
+    if not tree_path:
+        raise SemcodePathAnalysisError(
+            f"source snapshot manifest has no tree.path: {manifest}"
+        )
+    source = Path(os.path.expanduser(tree_path)).resolve()
+    if not source.is_dir():
+        raise SemcodePathAnalysisError(
+            f"attested source snapshot tree does not exist: {source}"
+        )
+    markers = ("Makefile", "Kconfig", "include/linux/kernel.h", "init/main.c")
+    missing = [marker for marker in markers if not (source / marker).exists()]
+    if missing:
+        raise SemcodePathAnalysisError(
+            f"attested source snapshot is not a Linux tree; missing: {', '.join(missing)}"
+        )
+    return {
+        "manifest": str(manifest),
+        "tree": str(source),
+        "expected_commit": target,
+        "source_kind": str(payload.get("source_kind") or snapshot.get("source_kind") or "external_snapshot"),
+        "tree_hash": str((tree or {}).get("sha256") or ""),
+    }
+
+
 def resolve_kernel_commit(
     kernel_source_path: str,
     expected_kernel_commit: str,
@@ -139,6 +210,7 @@ def resolve_kernel_source_for_commit(
     expected_kernel_commit: str,
     *,
     workspace_root: str = "",
+    source_snapshot_manifest_path: str = "",
 ) -> str:
     """Return a source checkout whose default HEAD is the declared commit.
 
@@ -151,6 +223,12 @@ def resolve_kernel_source_for_commit(
     source = str(Path(kernel_source_path).expanduser().resolve()) if kernel_source_path else ""
     if not source or not Path(source).is_dir():
         raise SemcodePathAnalysisError(f"kernel_source does not exist: {source}")
+    if source_snapshot_manifest_path:
+        snapshot = _read_attested_source_snapshot(
+            source_snapshot_manifest_path,
+            expected_kernel_commit=expected_kernel_commit,
+        )
+        return str(snapshot["tree"])
     target = resolve_kernel_commit(source, expected_kernel_commit)
     try:
         head = _git_head(source)
@@ -656,6 +734,7 @@ def verify_semcode_target(
     semcode_command: str,
     semcode_args: Iterable[str] = (),
     client: Any | None = None,
+    source_snapshot_manifest_path: str = "",
 ) -> dict[str, Any]:
     """Prove that Semcode can answer against the requested kernel snapshot.
 
@@ -674,6 +753,31 @@ def verify_semcode_target(
             "status": "blocked",
             "blocked_reason": "expected_kernel_commit is required for source verification",
         }
+    if source_snapshot_manifest_path:
+        try:
+            snapshot = _read_attested_source_snapshot(
+                source_snapshot_manifest_path,
+                expected_kernel_commit=declared_target,
+            )
+        except SemcodePathAnalysisError as exc:
+            return {"status": "blocked", "blocked_reason": str(exc)}
+        return {
+            "status": "ok",
+            "mode": "attested_external_snapshot",
+            "resolved_commit": declared_target,
+            "semcode_available": False,
+            "evidence": [{
+                "kind": "external_source_snapshot_verification",
+                "kernel_source": source,
+                "expected_commit": declared_target,
+                "manifest": snapshot["manifest"],
+                "tree": snapshot["tree"],
+                "source_kind": snapshot["source_kind"],
+                "tree_hash": snapshot["tree_hash"],
+                "semcode_available": False,
+            }],
+        }
+
     try:
         target = resolve_kernel_commit(source, declared_target)
     except SemcodePathAnalysisError as exc:

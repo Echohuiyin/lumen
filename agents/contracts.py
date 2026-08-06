@@ -281,6 +281,7 @@ class InputArtifactsContract(BaseModel):
     fix_commit: str = ""
     fix_patch_path: str = ""
     kernel_source_path: str = ""
+    source_snapshot_manifest_path: str = ""
     log_path: str = ""
     crash_report_path: str = ""
     reproducer_path: str = ""

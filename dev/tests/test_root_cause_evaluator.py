@@ -169,3 +169,34 @@ def test_evaluator_aligns_declared_fix_patch(tmp_path):
     assert fix["available"] is True
     assert fix["fix_commits"] == ["83b67cc9be9223183caf91826d9c194d7fb128fa"]
     assert fix["patch_bytes"] > 0
+
+
+def test_evaluator_uses_attested_external_snapshot(tmp_path):
+    state = _state(tmp_path)
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "drivers").mkdir(parents=True)
+    (snapshot / "include" / "linux").mkdir(parents=True)
+    (snapshot / "init").mkdir()
+    (snapshot / "Makefile").write_text("all:\n", encoding="utf-8")
+    (snapshot / "Kconfig").write_text("mainmenu \"Linux\"\n", encoding="utf-8")
+    (snapshot / "include" / "linux" / "kernel.h").write_text("\n", encoding="utf-8")
+    (snapshot / "init" / "main.c").write_text("\n", encoding="utf-8")
+    (snapshot / "drivers" / "demo.c").write_text(
+        "void demo_open(void) { /* lock after free */ }\n", encoding="utf-8"
+    )
+    expected = "deadbeef" * 5
+    manifest = tmp_path / "source-snapshot.json"
+    manifest.write_text(
+        json.dumps({
+            "verified": True,
+            "expected_commit": expected,
+            "tree": {"path": str(snapshot)},
+        }),
+        encoding="utf-8",
+    )
+    state["input_artifacts_contract"]["expected_kernel_commit"] = expected
+    state["input_artifacts_contract"]["source_snapshot_manifest_path"] = str(manifest)
+
+    result = evaluate_root_cause(state)
+
+    assert result["case_evidence"]["source_path"] == str(snapshot.resolve())
