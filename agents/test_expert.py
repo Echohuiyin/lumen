@@ -1258,6 +1258,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     previous_rounds = list(state.get("test_rounds", []) or [])
     contract_history = list(state.get("kernel_contract_history", []) or [])
     rootfs_mode = _configured_rootfs_mode(state.get("config") or {})
+    consumes_loop = True
     if maximum != 10:
         raise ValueError("max_tryouts is fixed at 10 by the maintenance workflow contract")
 
@@ -1282,8 +1283,9 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
             result = _blocked_attempt(
                 code="BLOCKED_ENVIRONMENT_CAPABILITY",
                 summary=host_error,
-                tryout=tryout,
+                tryout=0,
             )
+            consumes_loop = False
         elif contract.reproducer.artifact_type != "userspace" or contract.reproducer.language != "c" or contract.reproducer_module_path:
             result = _blocked_attempt(
                 code="BLOCKED_NON_USERSPACE_REPRODUCER",
@@ -1349,11 +1351,12 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     )
     result_data = model_to_dict(result)
     previous_rounds.append(result_data)
+    effective_tryout = tryout if consumes_loop else int(state.get("tryout_count", 0) or 0)
     return {
         "test_result": text,
         "test_passed": result.test_passed,
-        "test_attempts": tryout,
-        "tryout_count": tryout,
+        "test_attempts": effective_tryout,
+        "tryout_count": effective_tryout,
         "test_rounds": previous_rounds,
         "test_contract": result_data,
         "test_attempt_contract": result_data,
