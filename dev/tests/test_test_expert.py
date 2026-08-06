@@ -11,7 +11,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.contracts import CallChainOracle, KernelExpertOutput, TestResultContract, UserspaceReproducer, model_to_dict
 from agents.persistent_qemu import PersistentQemuPaths
-from agents.test_expert import (_append_attempt_output, _apply_progress_metadata, _apply_reproducer_regression_guard, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _read_reproducer_setup_markers, _semantic_review, _validate_incremental_kernel_contract, test_expert_node)
+from agents.test_expert import (_append_attempt_output, _apply_progress_metadata, _apply_reproducer_regression_guard, _attempt_runtime_root, _augment_kernel_feedback, _build_plan, _configured_rootfs_mode, _copy_base_image, _mount_detach_path_feedback, _promote_guest_capability_block, _read_reproducer_setup_markers, _semantic_review, _validate_incremental_kernel_contract, test_expert_node)
 from agents.test_expert import _frame_symbol, _strict_call_chain_oracle
 
 
@@ -467,6 +467,46 @@ def test_qemu_runtime_root_is_configurable(tmp_path, monkeypatch):
 
     assert actual == scratch.resolve() / "session-id" / "tryouts" / "tryout-03" / "qemu-ssh"
 
+def test_deployment_rootfs_mode_uses_configured_debian_image(tmp_path, monkeypatch):
+    custom_dir = tmp_path / "case-root"
+    custom_dir.mkdir()
+    declared = custom_dir / "non_bootable.raw"
+    declared.write_bytes(b"declared-case-image")
+
+    base_dir = tmp_path / "base" / "arm64"
+    base_dir.mkdir(parents=True)
+    base_image = base_dir / "debian.img"
+    base_image.write_bytes(b"deployment-image")
+    default_key = base_dir / "lumen_qemu_ed25519"
+    default_key.write_text("deployment-key\n", encoding="utf-8")
+    base = PersistentQemuPaths(
+        arch="arm64", image=base_image, ssh_key=default_key,
+        runtime_dir=base_dir / "runtime",
+    )
+
+    def fake_paths(arch, *, runtime_root=None):
+        if runtime_root is None:
+            return base
+        attempt_dir = Path(runtime_root) / "arm64"
+        return PersistentQemuPaths(
+            arch="arm64", image=attempt_dir / "debian.img",
+            ssh_key=attempt_dir / "lumen_qemu_ed25519",
+            runtime_dir=attempt_dir / "runtime",
+        )
+
+    monkeypatch.setattr("agents.test_expert.persistent_qemu_paths", fake_paths)
+    artifacts = _copy_base_image(
+        arch="arm64", runtime_root=tmp_path / "attempt",
+        source_image=str(declared), rootfs_mode="deployment",
+    )
+
+    assert Path(artifacts["base_image"]) == base_image.resolve()
+    assert artifacts["attempt_image_format"] == "qcow2"
+    assert artifacts["ssh_key_resolution"] == "deployment-base"
+
+
+def test_rootfs_mode_defaults_to_deployment():
+    assert _configured_rootfs_mode({}) == "deployment"
 
 def test_declared_rootfs_uses_co_located_ssh_key(tmp_path, monkeypatch):
     custom_dir = tmp_path / "case-root"

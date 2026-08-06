@@ -96,24 +96,36 @@ def _sha256_file(path: Path) -> str:
     return value
 
 
-def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -> dict[str, str]:
-    """Copy the declared case image into an isolated try-out directory."""
+def _copy_base_image(
+    *, arch: str, runtime_root: Path, source_image: str = "", rootfs_mode: str = "declared",
+) -> dict[str, str]:
+    """Copy the selected rootfs into an isolated QEMU overlay.
+
+    ``declared`` preserves per-case asset behavior for explicit compatibility
+    tests.  Production uses ``deployment`` so every fixed case boots the
+    SSH-capable ``debian.img`` selected by ``LUMEN_QEMU_IMAGE_ROOT``; the
+    original case rootfs remains evidence only.
+    """
+    rootfs_mode = str(rootfs_mode or "declared").strip().lower()
+    if rootfs_mode not in {"declared", "deployment"}:
+        raise ValueError("rootfs_mode must be 'declared' or 'deployment'")
+    use_declared = rootfs_mode == "declared"
     base = persistent_qemu_paths(arch)
     attempt = persistent_qemu_paths(arch, runtime_root=runtime_root)
-    image_source = Path(source_image).expanduser().resolve() if source_image else base.image
+    image_source = (
+        Path(source_image).expanduser().resolve()
+        if use_declared and source_image else base.image
+    )
     if not image_source.is_file():
         raise FileNotFoundError(f"base image is missing: {image_source}")
     # A case-provided rootfs may have been built with a different authorized
-    # key than the deployment default.  Pair an explicit image with the key
-    # next to that image; silently mixing keys makes a healthy guest look like
-    # a QEMU/SSH boot failure and would repeat the same error ten times.
-    if source_image:
+    # key than the deployment default. Pair an explicit image with its key;
+    # silently mixing keys makes a healthy guest look like an SSH failure.
+    if use_declared and source_image:
         sibling_key = image_source.parent / base.ssh_key.name
         if not sibling_key.is_file():
-            # Benchmark asset export may copy the deployment image without
-            # its key sidecar.  Reuse the deployment key only after proving
-            # the two raw images are byte-identical; never mix keys for a
-            # merely similar or independently built rootfs.
+            # Reuse the deployment key only after proving that the two raw
+            # images are byte-identical; never mix keys for a similar image.
             if not base.image.is_file() or _sha256_file(image_source) != _sha256_file(base.image):
                 raise FileNotFoundError(
                     f"declared rootfs has no co-located SSH key and is not "
@@ -165,6 +177,18 @@ def _copy_base_image(*, arch: str, runtime_root: Path, source_image: str = "") -
         "attempt_ssh_key": str(attempt.ssh_key),
         "ssh_key_resolution": key_resolution,
     }
+
+
+def _configured_rootfs_mode(config: dict | None) -> str:
+    """Resolve the rootfs source mode without embedding a host path."""
+    workflow = (config or {}).get("workflow") or {}
+    raw = str(workflow.get("qemu_rootfs_mode", "deployment") or "deployment").strip()
+    if raw.startswith("${"):
+        raw = os.environ.get("LUMEN_QEMU_ROOTFS_MODE", "deployment")
+    mode = raw.lower()
+    if mode not in {"declared", "deployment"}:
+        raise ValueError("workflow.qemu_rootfs_mode must be 'declared' or 'deployment'")
+    return mode
 
 
 def _build_detection_signals(
@@ -1233,6 +1257,7 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     maximum = int(state.get("max_tryouts", 10) or 10)
     previous_rounds = list(state.get("test_rounds", []) or [])
     contract_history = list(state.get("kernel_contract_history", []) or [])
+    rootfs_mode = _configured_rootfs_mode(state.get("config") or {})
     if maximum != 10:
         raise ValueError("max_tryouts is fixed at 10 by the maintenance workflow contract")
 
@@ -1283,7 +1308,11 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                         arch=contract.target_arch,
                         runtime_root=runtime_root,
                         source_image=contract.rootfs_path,
+                        rootfs_mode=rootfs_mode,
                     )
+                    image_artifacts["rootfs_mode"] = rootfs_mode
+                    if contract.rootfs_path:
+                        image_artifacts["declared_rootfs"] = contract.rootfs_path
                 except (OSError, ValueError) as exc:
                     result = _blocked_attempt(code="BLOCKED_BASE_IMAGE_MISSING", summary=str(exc), tryout=tryout)
                 else:
