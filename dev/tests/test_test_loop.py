@@ -45,6 +45,17 @@ def test_environment_block_finishes_without_more_tryouts():
     )) == "knowledge_base"
 
 
+def test_reproducer_regression_returns_to_kernel_expert_for_repair():
+    assert route_after_test(_state(
+        test_attempt_contract={
+            "status": "failed",
+            "code": "FAILED_REPRODUCER_REGRESSION",
+            "progress_kind": "retracted",
+            "no_progress_streak": 0,
+        },
+    )) == "kernel_expert"
+
+
 if __name__ == "__main__":
     for test in (
         test_first_consistent_call_chain_finishes_immediately,

@@ -57,11 +57,12 @@ def route_after_test(state: MaintenanceWorkflowState):
         return "knowledge_base"
     if contract.get("status") in {"blocked", "skipped"}:
         return "knowledge_base"
-    if (
-        contract.get("progress_kind") == "retracted"
-        or contract.get("code") == "FAILED_REPRODUCER_REGRESSION"
-        or int(contract.get("no_progress_streak", 0) or 0) >= 2
-    ):
+    # A reproducer regression is actionable feedback for Kernel Expert: the
+    # next revision must restore the previously verified setup before changing
+    # the trigger. Route that case back into the loop instead of archiving it
+    # as terminal. Only the repeated-no-progress gate (or an explicit block
+    # above) ends the branch.
+    if int(contract.get("no_progress_streak", 0) or 0) >= 2:
         return "knowledge_base"
     maximum = int(state.get("max_tryouts", 10) or 10)
     if int(state.get("tryout_count", state.get("test_attempts", 0)) or 0) >= maximum:
