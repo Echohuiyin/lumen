@@ -17,6 +17,7 @@ from agents.persistent_qemu import (
     _check_call_chain_match,
     _terminal_boot_failure,
     _render_execution_script,
+    _call_chain_capture_grace_seconds,
     build_qemu_command,
     persistent_qemu_paths,
     run_persistent_qemu_test_plan,
@@ -234,6 +235,16 @@ def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
     assert "./bin/trigger" in script
     assert "insmod" not in script
     assert "load_module" not in script
+
+
+def test_call_chain_capture_grace_is_bounded(monkeypatch):
+    monkeypatch.delenv("LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC", raising=False)
+    assert _call_chain_capture_grace_seconds() == 5
+    monkeypatch.setenv("LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC", "12")
+    assert _call_chain_capture_grace_seconds() == 12
+    monkeypatch.setenv("LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC", "61")
+    with pytest.raises(ValueError, match="CALL_CHAIN_CAPTURE_GRACE_SEC"):
+        _call_chain_capture_grace_seconds()
 
 
 def test_runner_honors_declared_guest_runtime_timeout(tmp_path):

@@ -115,8 +115,10 @@ _FAULT_PROFILES = {"failslab", "fail_page_alloc", "fail_futex", "fail_function",
 _DEFAULT_BOOT_TIMEOUT_SEC = 900
 _DEFAULT_REPRODUCER_TIMEOUT_SEC = 60
 _DEFAULT_SSH_EXECUTION_GRACE_SEC = 30
+_DEFAULT_CALL_CHAIN_CAPTURE_GRACE_SEC = 5
 _MAX_REPRODUCER_TIMEOUT_SEC = 7200
 _MAX_SSH_EXECUTION_GRACE_SEC = 600
+_MAX_CALL_CHAIN_CAPTURE_GRACE_SEC = 60
 _MAX_CONCURRENT_INSTANCES = 16
 _TERMINAL_BOOT_MARKERS = (
     "Kernel panic - not syncing:",
@@ -879,6 +881,7 @@ class PersistentQemuManager:
             self.plan.reproducer.runtime_timeout_sec
         ) + _ssh_execution_grace_seconds()
         signal_seen = False
+        signal_capture_deadline: float | None = None
         while executed_proc.poll() is None and time.monotonic() < deadline:
             if self.paths.serial_log.exists():
                 serial_text = self.paths.serial_log.read_text(encoding="utf-8", errors="replace")
@@ -896,8 +899,17 @@ class PersistentQemuManager:
                     expected_signal=self.plan.expected_signal,
                 ))
                 if signal_seen:
-                    executed_proc.terminate()
-                    break
+                    if signal_capture_deadline is None:
+                        signal_capture_deadline = (
+                            time.monotonic() + _call_chain_capture_grace_seconds()
+                        )
+                    chain = _check_call_chain_match(post_marker, self.plan)
+                    if (
+                        chain.get('frame_order_matched')
+                        or time.monotonic() >= signal_capture_deadline
+                    ):
+                        executed_proc.terminate()
+                        break
             time.sleep(1)
         if executed_proc.poll() is None:
             executed_proc.kill()
@@ -1226,6 +1238,25 @@ def _ssh_execution_grace_seconds() -> int:
     if not 0 <= grace <= _MAX_SSH_EXECUTION_GRACE_SEC:
         raise ValueError(
             "LUMEN_QEMU_SSH_EXECUTION_GRACE_SEC must be in range 0..600"
+        )
+    return grace
+
+
+def _call_chain_capture_grace_seconds() -> int:
+    """Return the post-signal serial-drain window before stopping SSH."""
+    raw = os.environ.get(
+        "LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC",
+        str(_DEFAULT_CALL_CHAIN_CAPTURE_GRACE_SEC),
+    )
+    try:
+        grace = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC must be an integer"
+        ) from exc
+    if not 0 <= grace <= _MAX_CALL_CHAIN_CAPTURE_GRACE_SEC:
+        raise ValueError(
+            "LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC must be in range 0..60"
         )
     return grace
 
