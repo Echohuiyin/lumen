@@ -182,9 +182,16 @@ def _copy_base_image(
 def _configured_rootfs_mode(config: dict | None) -> str:
     """Resolve the rootfs source mode without embedding a host path."""
     workflow = (config or {}).get("workflow") or {}
-    raw = str(workflow.get("qemu_rootfs_mode", "deployment") or "deployment").strip()
-    if raw.startswith("${"):
-        raw = os.environ.get("LUMEN_QEMU_ROOTFS_MODE", "deployment")
+    configured = workflow.get("qemu_rootfs_mode")
+    if configured is None or not str(configured).strip():
+        # Older generated config.json files predate qemu_rootfs_mode.  In
+        # that case an explicit case rootfs must remain the default; callers
+        # can still opt into the deployment image through the environment.
+        raw = os.environ.get("LUMEN_QEMU_ROOTFS_MODE", "declared")
+    else:
+        raw = str(configured).strip()
+        if raw.startswith("${"):
+            raw = os.environ.get("LUMEN_QEMU_ROOTFS_MODE", "deployment")
     mode = raw.lower()
     if mode not in {"declared", "deployment"}:
         raise ValueError("workflow.qemu_rootfs_mode must be 'declared' or 'deployment'")

@@ -505,7 +505,13 @@ def test_deployment_rootfs_mode_uses_configured_debian_image(tmp_path, monkeypat
     assert artifacts["ssh_key_resolution"] == "deployment-base"
 
 
-def test_rootfs_mode_defaults_to_deployment():
+def test_rootfs_mode_defaults_to_declared_for_legacy_config(monkeypatch):
+    monkeypatch.delenv("LUMEN_QEMU_ROOTFS_MODE", raising=False)
+    assert _configured_rootfs_mode({}) == "declared"
+
+
+def test_rootfs_mode_legacy_config_can_opt_into_deployment(monkeypatch):
+    monkeypatch.setenv("LUMEN_QEMU_ROOTFS_MODE", "deployment")
     assert _configured_rootfs_mode({}) == "deployment"
 
 def test_declared_rootfs_uses_co_located_ssh_key(tmp_path, monkeypatch):
