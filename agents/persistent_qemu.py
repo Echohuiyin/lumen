@@ -1114,6 +1114,19 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         and _canonical_frame(pair[0]) in order_frames
         and _canonical_frame(pair[1]) in order_frames
     ]
+    # Some historical contracts encoded the accepted stack orientation by
+    # declaring both directions for the same frame pair. Treating those
+    # edges as simultaneous constraints makes every complete trace fail
+    # (A < B and B < A), even though the evaluator below already accepts the
+    # whole chain in either leaf-to-caller or caller-to-leaf orientation.
+    # Fall back to the authoritative adjacent core chain in that case.
+    pair_set = {tuple(pair) for pair in pairs}
+    has_bidirectional_edge = any(
+        left != right and (right, left) in pair_set
+        for left, right in pair_set
+    )
+    if has_bidirectional_edge and required_chain:
+        pairs = [list(pair) for pair in zip(required_chain, required_chain[1:])]
     if required_chain and not pairs:
         # The declared core chain is authoritative for ordering. The complete
         # original log chain remains available in the plan for audit, but its

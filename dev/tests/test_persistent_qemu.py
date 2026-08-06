@@ -640,6 +640,29 @@ def test_call_chain_order_ignores_reversed_duplicate_contract_pairs(tmp_path):
     assert match["frame_order_matched"] is True
 
 
+def test_call_chain_order_accepts_both_declared_orientations(tmp_path):
+    """Bidirectional contract edges describe either accepted orientation."""
+    plan = _plan(tmp_path)
+    plan.original_call_chain = ["leaf", "mid", "caller"]
+    plan.call_chain_oracle.required_frames = list(plan.original_call_chain)
+    plan.call_chain_oracle.required_frame_order = [
+        ["leaf", "mid"],
+        ["mid", "leaf"],
+        ["mid", "caller"],
+        ["caller", "mid"],
+    ]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  leaf+0x1/0x2",
+        "[   1.2]  mid+0x1/0x2",
+        "[   1.3]  caller+0x1/0x2",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["frame_order_matched"] is True
+
+
 def test_call_chain_ignores_non_adjacent_reversed_contract_pair(tmp_path):
     plan = _plan(tmp_path)
     plan.original_call_chain = ["leaf", "middle", "caller"]
