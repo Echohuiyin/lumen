@@ -60,6 +60,20 @@ def test_reproducer_setup_markers_keep_only_stable_setup_names(tmp_path):
     assert markers == {"VCAN_CREATE", "VCAN_UP"}
 
 
+def test_blocked_setup_marker_is_not_verified_progress(tmp_path):
+    ssh_output = tmp_path / "ssh-command.log"
+    ssh_output.write_text(
+        "LUMEN_SETUP_BLOCKED: mtdram test device or its char node is absent\n"
+        "LUMEN_REPRO_START:maintenance-case:tryout-1\n"
+        "LUMEN_REPRO_MTD_OPEN fd=3 result=ok\n",
+        encoding="utf-8",
+    )
+    markers = _read_reproducer_setup_markers(
+        {"artifacts": {"ssh_output": str(ssh_output)}}
+    )
+    assert markers == {"MTD_OPEN"}
+
+
 def test_bare_fixture_and_vhci_setup_markers_are_structured(tmp_path):
     ssh_output = tmp_path / "ssh-command.log"
     ssh_output.write_text(
