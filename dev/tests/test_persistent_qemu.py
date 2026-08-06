@@ -237,6 +237,23 @@ def test_runner_compiles_c_and_never_loads_a_module(tmp_path):
     assert "load_module" not in script
 
 
+def test_runner_stages_only_declared_prebuilt_binary(tmp_path):
+    plan = _plan(tmp_path)
+    binaries = tmp_path / "benchmark-assets"
+    binaries.mkdir()
+    (binaries / "trigger").write_bytes(b"declared")
+    (binaries / "vmlinux").write_bytes(b"unrelated debug image")
+    (binaries / "disk.raw").write_bytes(b"unrelated rootfs")
+    plan.binaries_dir = str(binaries)
+
+    manager = PersistentQemuManager(plan, runtime_root=tmp_path / "guests")
+    stage, _ = manager._stage_poc()
+
+    assert (stage / "bin" / "trigger").read_bytes() == b"declared"
+    assert not (stage / "bin" / "vmlinux").exists()
+    assert not (stage / "bin" / "disk.raw").exists()
+
+
 def test_call_chain_capture_grace_is_bounded(monkeypatch):
     monkeypatch.delenv("LUMEN_QEMU_CALL_CHAIN_CAPTURE_GRACE_SEC", raising=False)
     assert _call_chain_capture_grace_seconds() == 5

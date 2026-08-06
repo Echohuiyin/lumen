@@ -629,6 +629,60 @@ def _stage_declared_test_assets(plan: TestPlan, destination: Path) -> None:
             step.args = normalize(step.args)
 
 
+def _stage_declared_binaries(plan: TestPlan, source_root: Path, destination: Path) -> None:
+    """Stage only prebuilt binaries named by the structured execution plan.
+
+    binaries_dir may point at a benchmark asset bundle that also contains
+    multi-gigabyte kernels, disk images, and debug symbols.  Copying that
+    directory wholesale makes the SSH upload depend on unrelated host assets
+    and can time out before the userspace reproducer starts.  The guest still
+    compiles declared C sources; this helper only preserves an explicitly
+    declared prebuilt payload when one exists.
+    """
+    declared: list[Path] = []
+    for step in plan.execution_steps:
+        if step.type != "run_binary" or not step.path.startswith("bin/"):
+            continue
+        relative = Path(step.path[len("bin/"):])
+        if (
+            not relative.name
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or len(relative.parts) != 1
+        ):
+            continue
+        declared.append(relative)
+
+    output_name = str(plan.reproducer.output_binary or "").strip()
+    output = Path(output_name)
+    if (
+        output.name
+        and not output.is_absolute()
+        and ".." not in output.parts
+        and len(output.parts) == 1
+    ):
+        declared.append(output)
+
+    seen: set[str] = set()
+    for relative in declared:
+        key = relative.as_posix()
+        if key in seen:
+            continue
+        seen.add(key)
+        source = (source_root / relative).resolve()
+        try:
+            source.relative_to(source_root)
+        except ValueError:
+            continue
+        if not source.is_file():
+            # Missing prebuilt payloads are normal: the guest script compiles
+            # the declared userspace C reproducer before executing it.
+            continue
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
 class PersistentQemuManager:
     """Own one architecture/kernel-specific QEMU guest and run a POC via SSH."""
 
@@ -842,7 +896,7 @@ class PersistentQemuManager:
         if self.plan.binaries_dir:
             binaries = Path(os.path.expanduser(self.plan.binaries_dir)).resolve()
             if binaries.is_dir():
-                shutil.copytree(binaries, stage / "bin", dirs_exist_ok=True)
+                _stage_declared_binaries(self.plan, binaries, stage / "bin")
         _stage_declared_test_assets(self.plan, stage / "bin")
         case_id = self.plan.reproduction_case_id or "untracked"
         path_id = self.plan.target_path_id or "untracked"
