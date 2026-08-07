@@ -1262,12 +1262,30 @@ def _apply_progress_metadata(
     current_prefix_len = len(result.best_call_chain_prefix)
     if (prior_setup and not prior_setup.issubset(current_setup)) or current_prefix_len < prior_prefix_len:
         result.progress_kind = "retracted"
-        result.no_progress_streak = 0
+        repeated_retraction = (
+            previous_rounds[-1].get("progress_kind") == "retracted"
+            and set(result.missing_frames) == set(previous_rounds[-1].get("missing_frames") or [])
+            and not result.signal_after_start
+            and not result.target_context_matched
+            and not result.best_call_chain_prefix
+        )
+        if repeated_retraction:
+            prior_streak = int(previous_rounds[-1].get("no_progress_streak", 0) or 0)
+            result.no_progress_streak = prior_streak + 1
+        else:
+            result.no_progress_streak = 0
         if result.code != "FAILED_REPRODUCER_REGRESSION":
             result.code = "FAILED_REPRODUCER_REGRESSION"
             result.summary = (
                 "The current round regressed previously verified setup or the "
                 "best call-chain prefix; preserve both before changing the trigger."
+            )
+        if result.no_progress_streak >= 2:
+            result.status = "blocked"
+            result.code = "BLOCKED_PROGRESS_GATE"
+            result.summary = (
+                "Two consecutive try-outs repeated the same target call-chain "
+                "failure while regressing setup; stop this branch."
             )
         return result
     if current_prefix_len > prior_prefix_len:
