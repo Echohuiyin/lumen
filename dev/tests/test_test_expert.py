@@ -1007,6 +1007,30 @@ def test_progress_gate_stops_repeated_regressions_with_same_target_failure(tmp_p
     assert updated.no_progress_streak == 2
 
 
+def test_progress_gate_stops_identical_initial_failure_on_second_try(tmp_path):
+    contract = _contract(tmp_path)
+    result = TestResultContract(
+        status="failed", code="FAILED_SIGNAL_NOT_FOUND",
+        attempts=2, missing_frames=["target_frame"], plan=_build_plan(contract),
+    )
+    previous = [
+        {
+            "verified_setup": [],
+            "best_call_chain_prefix": [],
+            "missing_frames": ["target_frame"],
+            "progress_kind": "initial",
+            "no_progress_streak": 0,
+            "signal_after_start": False,
+            "target_context_matched": False,
+        }
+    ]
+    updated = _apply_progress_metadata(result, contract, previous)
+    assert updated.status == "blocked"
+    assert updated.code == "BLOCKED_PROGRESS_GATE"
+    assert updated.progress_kind == "no_progress"
+    assert updated.no_progress_streak == 1
+
+
 def test_generic_setup_markers_are_structured(tmp_path):
     ssh_output = tmp_path / "ssh-command.log"
     ssh_output.write_text(

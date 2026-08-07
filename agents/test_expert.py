@@ -1301,12 +1301,29 @@ def _apply_progress_metadata(
         result.progress_kind = "no_progress"
         prior_streak = int(previous_rounds[-1].get("no_progress_streak", 0) or 0)
         result.no_progress_streak = prior_streak + 1
-        if result.no_progress_streak >= 2:
+        # The initial round records a zero streak even when it already
+        # produced no target signal.  If the next try-out repeats the same
+        # missing frames with no setup/prefix/runtime progress, the two
+        # observations are already identical and must stop immediately; a
+        # third try-out would only waste a loop iteration.  Keep the existing
+        # two-transition gate for cases whose first failure was not yet an
+        # identical observation (for example after a setup-progress round).
+        previous_progress = str(previous_rounds[-1].get("progress_kind") or "")
+        same_no_progress_observation = (
+            previous_progress in {"initial", "no_progress"}
+            and set(result.missing_frames)
+            == set(previous_rounds[-1].get("missing_frames") or [])
+            and not result.signal_after_start
+            and not result.target_context_matched
+            and not result.best_call_chain_prefix
+        )
+        if same_no_progress_observation or result.no_progress_streak >= 2:
             result.status = "blocked"
             result.code = "BLOCKED_PROGRESS_GATE"
             result.summary = (
-                "Two consecutive try-outs produced no setup, call-chain-prefix, "
-                "or target-context progress; stop this branch."
+                "Two consecutive try-outs produced the same target failure "
+                "without setup, call-chain-prefix, or target-context progress; "
+                "stop this branch."
             )
     return result
 
