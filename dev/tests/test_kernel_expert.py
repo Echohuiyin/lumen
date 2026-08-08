@@ -784,6 +784,51 @@ def test_codex_blocked_sock_contract_preserves_observed_top_to_bottom_alias():
     ]
 
 
+def test_codex_blocked_technisat_contract_preserves_fault_trace_and_report_signals():
+    data = {
+        "kind": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {
+            "classification": "verified unbounded kernel buffer read",
+        },
+        "original_call_chain": {
+            "fault_trace_ordered": [
+                "technisat_usb2_rc_query+0x5fa/0x660",
+                "dvb_usb_read_remote_control+0xe5/0x1c0",
+                "process_one_work+0x90f/0x1580",
+            ],
+            "allocation_trace_ordered": ["technisat_usb2_probe+0x82/0x2d0"],
+        },
+        "call_chain_oracle": {
+            "strict_ordered_core": [
+                {"required_frame": "technisat_usb2_rc_query",
+                 "required_signature": "technisat_usb2_rc_query+0x5fa/0x660"},
+                {"required_frame": "dvb_usb_read_remote_control",
+                 "required_signature": "dvb_usb_read_remote_control+0xe5/0x1c0"},
+            ],
+            "required_report_signatures": [
+                "KASAN: slab-out-of-bounds", "Read of size 1",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["observer.c"],
+            "flags": ["-std=c11"], "libraries": ["libc"],
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "blocked"
+    assert parsed.original_call_chain == [
+        "technisat_usb2_rc_query+0x5fa/0x660",
+        "dvb_usb_read_remote_control+0xe5/0x1c0",
+        "process_one_work+0x90f/0x1580",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "KASAN: slab-out-of-bounds", "Read of size 1",
+    ]
+    assert parsed.reproducer.entry_source == "observer.c"
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(

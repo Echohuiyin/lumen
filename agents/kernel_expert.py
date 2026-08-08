@@ -2761,6 +2761,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("access_report_order")
             or raw_chain.get("reported_trace_order_leaf_to_outer")
             or raw_chain.get("frames_in_report_order")
+            or raw_chain.get("fault_trace_ordered")
             or raw_chain.get("log_order_top_to_bottom")
         )
         if isinstance(frames, list):
@@ -2909,6 +2910,18 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             oracle["fault_signatures"] = [
                 str(item).strip()
                 for item in oracle["required_log_signatures"]
+                if str(item).strip()
+            ]
+        if isinstance(oracle.get("required_report_signatures"), list) and oracle.get(
+            "required_report_signatures"
+        ):
+            # The versioned contract names exact crash/report markers
+            # separately from the ordered stack core. Prefer those markers
+            # for the signal gate so a frame signature cannot mask a missing
+            # KASAN report.
+            oracle["fault_signatures"] = [
+                str(item).strip()
+                for item in oracle["required_report_signatures"]
                 if str(item).strip()
             ]
         if declared_fault_signatures and "fault_signatures" not in oracle:
