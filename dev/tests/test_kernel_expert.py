@@ -702,6 +702,45 @@ def test_codex_logged_frames_and_fault_signatures_preserve_bcachefs_rca():
     ]
 
 
+def test_codex_required_trace_frames_preserve_bcachefs_handoff():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": "The documented BCH_IOCTL_DATA path is privileged-only.",
+        "original_call_chain": {
+            "required_trace_frames": [
+                "mempool_alloc_noprof+0x1a4/0x510",
+                "bch2_btree_update_start+0x549/0x1480",
+                "bch2_data_thread+0x8f/0x1d0",
+            ],
+        },
+        "call_chain_oracle": {
+            "required_order": [
+                "mempool_alloc_noprof+0x1a4/0x510",
+                "bch2_btree_update_start+0x549/0x1480",
+                "bch2_data_thread+0x8f/0x1d0",
+            ],
+            "required_fault_signatures": ["RIP: 0010:0x0"],
+        },
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "The documented BCH_IOCTL_DATA path is privileged-only."
+    assert parsed.original_call_chain == [
+        "mempool_alloc_noprof+0x1a4/0x510",
+        "bch2_btree_update_start+0x549/0x1480",
+        "bch2_data_thread+0x8f/0x1d0",
+    ]
+    assert parsed.call_chain_oracle.required_frames == [
+        "mempool_alloc_noprof+0x1a4/0x510",
+        "bch2_btree_update_start+0x549/0x1480",
+        "bch2_data_thread+0x8f/0x1d0",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:0x0"]
+
+
 def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
     data = {
         "contract": "KERNEL_CONTRACT",
