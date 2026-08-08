@@ -2997,11 +2997,31 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             "libraries": "link_libraries",
             "arguments": "run_args",
             "timeout_seconds": "runtime_timeout_sec",
-            "entrypoint": "entry_source",
         }
         for source, target in aliases.items():
             if source in reproducer and target not in reproducer:
                 reproducer[target] = reproducer[source]
+        # Older versioned contracts use ``entrypoint`` for the C function
+        # (usually ``main``), while the internal ABI's ``entry_source`` is
+        # the source file copied into the guest.  Never put a function name
+        # into the source-file field: resolve it only against an explicitly
+        # declared source manifest, and retain a warning for auditability.
+        if not reproducer.get("entry_source") and reproducer.get("entrypoint"):
+            entrypoint = str(reproducer.get("entrypoint") or "").strip()
+            declared_sources = reproducer.get("source_files") or []
+            declared_sources = [
+                str(item.get("path") or "").strip()
+                if isinstance(item, dict)
+                else str(item or "").strip()
+                for item in declared_sources
+            ]
+            if entrypoint in declared_sources or entrypoint.endswith((".c", ".h")):
+                reproducer["entry_source"] = entrypoint
+            elif declared_sources:
+                reproducer["entry_source"] = declared_sources[0]
+                warnings.append(
+                    "Normalized function-level entrypoint to the first declared C source."
+                )
         raw_libraries = reproducer.get("link_libraries")
         if isinstance(raw_libraries, list):
             normalized_libraries = []

@@ -260,7 +260,7 @@ def test_versioned_codex_contract_normalizes_entrypoint_and_binary_step(tmp_path
         "KERNEL_CONTRACT:\n```json\n" + json.dumps(raw) + "\n```"
     )
     assert contract.status == "ok"
-    assert contract.reproducer.entry_source == "main"
+    assert contract.reproducer.entry_source == "diag.c"
     assert contract.reproducer.output_binary == "lumen-repro"
     assert contract.call_chain_oracle.fault_signatures == ["BUG: target"]
     assert [step.type for step in contract.execution_steps] == ["run_binary"]
