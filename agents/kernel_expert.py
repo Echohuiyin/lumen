@@ -2758,6 +2758,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
              for key in (
                  "verified_path", "verified_invariant", "verified", "observed_violation",
                  "summary", "source_reasoning", "classification",
+                 "statement",
              )
              if str(raw_root_cause.get(key) or "").strip()),
             "",
@@ -2794,6 +2795,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("log_order_top_to_bottom")
             or raw_chain.get("printed_frames")
             or raw_chain.get("audit_call_chain_user_to_fault")
+            or raw_chain.get("audit_path_root_to_fault")
+            or raw_chain.get("reported_frames")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [

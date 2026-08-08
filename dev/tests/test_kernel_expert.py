@@ -777,6 +777,62 @@ def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
     ]
     assert parsed.blocked_reason == "public ABI cannot corrupt the label"
 
+
+def test_codex_audit_and_reported_frame_aliases_preserve_blocked_rca_contract():
+    variants = [
+        (
+            "audit_path_root_to_fault",
+            ["keyctl_watch_key", "smack_watch_key", "smack_log_callback", "strlen"],
+            "SMACK audit path reaches strlen with an invalid label-derived pointer",
+        ),
+        (
+            "reported_frames",
+            [
+                {"function": "diFree+0x13d/0x2dc0"},
+                {"function": "jfs_evict_inode+0x2c9/0x370"},
+                {"function": "jfs_mount+0x23f/0x3d0"},
+            ],
+            "JFS cleanup reaches diFree after malformed metadata",
+        ),
+    ]
+    for field, frames, summary in variants:
+        data = {
+            "contract": "KERNEL_CONTRACT",
+            "status": "blocked",
+            "root_cause": {"summary": summary},
+            "original_call_chain": {field: frames},
+            "call_chain_oracle": {
+                "fault_signatures": ["RIP: target_fault"],
+            },
+        }
+        parsed = _extract_kernel_contract(json.dumps(data))
+        assert parsed.status == "blocked"
+        assert parsed.root_cause == summary
+        expected = [
+            item.get("function") if isinstance(item, dict) else item
+            for item in frames
+        ]
+        assert parsed.original_call_chain == expected
+        assert parsed.call_chain_oracle.fault_signatures == ["RIP: target_fault"]
+
+
+def test_codex_root_cause_statement_alias_preserves_bcachefs_rca():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {
+            "statement": "The source proves a NULL indirect callback at mempool_alloc_noprof.",
+            "verified_facts": ["RIP is 0x0"],
+        },
+        "original_call_chain": {"required_trace_frames": ["mempool_alloc_noprof", "bch2_data_thread"]},
+        "call_chain_oracle": {"fault_signatures": ["RIP: 0010:0x0"]},
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "The source proves a NULL indirect callback at mempool_alloc_noprof."
+    assert parsed.original_call_chain == ["mempool_alloc_noprof", "bch2_data_thread"]
+    assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:0x0"]
+
 def test_kernel_handoff_requires_an_explicit_guest_run_step():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))
