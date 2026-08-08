@@ -25,7 +25,12 @@ from uuid import uuid4
 
 from agents.contracts import QemuRecipe, TestPlan, TestResultContract, ToolStepResult
 from agents.qemu_tools import _select_qemu_memory
-from agents.test_runner import _check_causal_reproduction, _match_serial_signals
+from agents.test_runner import (
+    _check_causal_reproduction,
+    _match_serial_signals,
+    _match_signal_evidence,
+    _reproduction_start_marker,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -1445,12 +1450,26 @@ def _run_single_persistent_qemu_test_plan(
     # locate LUMEN_REPRO_START themselves, so they remain correct even if
     # QEMU flushes pre-marker bytes after the snapshot used by run_poc().
     content = serial.read_text(encoding="utf-8", errors="replace") if serial.exists() else ""
-    matched = _match_serial_signals(log_content=content, detection=plan.detection_signals, expected_signal=plan.expected_signal)
+    signal_match_evidence = _match_signal_evidence(
+        log_content=content,
+        detection=plan.detection_signals,
+        expected_signal=plan.expected_signal,
+        start_marker=_reproduction_start_marker(plan),
+    )
+    matched = str(signal_match_evidence.get("matched_pattern", ""))
     chain = _check_call_chain_match(content, plan)
     shutdown = manager.shutdown()
     steps.append(shutdown)
     artifacts = {artifact_key: artifact_path for step in steps for artifact_key, artifact_path in step.artifacts.items()}
-    causal = _check_causal_reproduction(content, plan, matched) if matched else {}
+    causal = (
+        _check_causal_reproduction(
+            content,
+            plan,
+            matched,
+            observed_signal=str(signal_match_evidence.get("observed_signal", "")),
+        )
+        if matched else {}
+    )
     consistent = bool(
         matched
         and all(causal.get(field) for field in ("reproducer_started", "signal_after_start", "target_context_matched"))
@@ -1458,10 +1477,10 @@ def _run_single_persistent_qemu_test_plan(
         and chain["frame_order_matched"]
     )
     if consistent:
-        return TestResultContract(status="ok", code="PASSED_CALL_CHAIN_CONSISTENT", test_passed=True, attempts=attempt, summary=f"Original call-chain oracle matched after SSH POC start: {matched}", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, call_chain_consistent=True, **causal, **chain)
+        return TestResultContract(status="ok", code="PASSED_CALL_CHAIN_CONSISTENT", test_passed=True, attempts=attempt, summary=f"Original call-chain oracle matched after SSH POC start: {matched}", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, signal_match_evidence=signal_match_evidence, call_chain_consistent=True, **causal, **chain)
     if matched:
-        return TestResultContract(status="failed", code="FAILED_CALL_CHAIN_MISMATCH", attempts=attempt, summary="A target signal was observed but the post-start call chain did not satisfy the original-log oracle.", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, **causal, **chain)
-    return TestResultContract(status="failed", code="FAILED_SIGNAL_NOT_FOUND", attempts=attempt, summary="No target fault signature was observed after the userspace reproducer started.", plan=plan, steps=steps, artifacts=artifacts, **chain)
+        return TestResultContract(status="failed", code="FAILED_CALL_CHAIN_MISMATCH", attempts=attempt, summary="A target signal was observed but the post-start call chain did not satisfy the original-log oracle.", plan=plan, steps=steps, artifacts=artifacts, target_path_id=plan.target_path_id, signal_match_evidence=signal_match_evidence, **causal, **chain)
+    return TestResultContract(status="failed", code="FAILED_SIGNAL_NOT_FOUND", attempts=attempt, summary="No target fault signature was observed after the userspace reproducer started.", plan=plan, steps=steps, artifacts=artifacts, signal_match_evidence=signal_match_evidence, **chain)
 
 
 def run_persistent_qemu_test_plan(plan: TestPlan, *, attempt: int, runtime_root: Path | None = None) -> TestResultContract:

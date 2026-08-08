@@ -72,6 +72,7 @@ def _failure_result(
     attempts: int,
     steps: list[ToolStepResult],
     status: str = "blocked",
+    signal_match_evidence: dict | None = None,
 ) -> TestResultContract:
     artifacts = {}
     for step in steps:
@@ -85,6 +86,7 @@ def _failure_result(
         plan=plan,
         steps=steps,
         artifacts=artifacts,
+        signal_match_evidence=signal_match_evidence or {},
     )
 
 
@@ -253,14 +255,21 @@ def run_qemu_test_plan(
     # panic_on_warn=1 escalates WARNING → panic → reboot before the script
     # gets a chance to check.
     detection = plan.detection_signals
-    matched_signal = _match_serial_signals(
+    signal_match_evidence = _match_signal_evidence(
         log_content=log_content,
         detection=detection,
         expected_signal=expected_signal,
+        start_marker=_reproduction_start_marker(plan),
     )
+    matched_signal = str(signal_match_evidence.get("matched_pattern", ""))
 
     if matched_signal:
-        causal = _check_causal_reproduction(log_content, plan, matched_signal)
+        causal = _check_causal_reproduction(
+            log_content,
+            plan,
+            matched_signal,
+            observed_signal=str(signal_match_evidence.get("observed_signal", "")),
+        )
         if plan.require_causal_reproduction and not (
             causal["reproducer_started"]
             and causal["signal_after_start"]
@@ -276,6 +285,7 @@ def run_qemu_test_plan(
                 steps=steps,
                 artifacts=artifacts,
                 target_path_id=plan.target_path_id,
+                signal_match_evidence=signal_match_evidence,
                 **causal,
             )
         return TestResultContract(
@@ -288,6 +298,7 @@ def run_qemu_test_plan(
             steps=steps,
             artifacts=artifacts,
             target_path_id=plan.target_path_id,
+            signal_match_evidence=signal_match_evidence,
             **causal,
         )
 
@@ -301,6 +312,7 @@ def run_qemu_test_plan(
             plan=plan,
             steps=steps,
             artifacts=artifacts,
+            signal_match_evidence=signal_match_evidence,
         )
 
     if boot_step.status != "ok":
@@ -312,6 +324,7 @@ def run_qemu_test_plan(
             attempts=attempt,
             steps=steps,
             status="failed",
+            signal_match_evidence=signal_match_evidence,
         )
 
     return _failure_result(
@@ -321,6 +334,7 @@ def run_qemu_test_plan(
         attempts=attempt,
         steps=steps,
         status="failed",
+        signal_match_evidence=signal_match_evidence,
     )
 
 
@@ -345,7 +359,200 @@ def _frame_symbol_seen(line: str, symbol: str) -> bool:
     return re.search(pattern, line, flags=re.IGNORECASE) is not None
 
 
-def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal: str) -> dict:
+def _reproduction_start_marker(plan: TestPlan) -> str:
+    """Return the causal marker used to scope serial evidence to the POC."""
+    if not plan.require_causal_reproduction:
+        return ""
+    return f"LUMEN_REPRO_START:{plan.reproduction_case_id}:{plan.target_path_id}"
+
+
+_DYNAMIC_SIGNAL_TOKEN_RE = re.compile(
+    r"\+0x[0-9a-fA-F]+(?:/0x[0-9a-fA-F]+)?|0x[0-9a-fA-F]{8,}"
+)
+
+
+def _compile_normalized_signal(pattern: str) -> tuple[re.Pattern[str] | None, list[str]]:
+    """Compile a literal signal with address/offset values normalized.
+
+    Contracts remain literal strings.  Only hexadecimal address tokens and
+    symbol offsets are made dynamic; punctuation and all other text stays
+    escaped, so this cannot accidentally turn a normal signal into regex.
+    """
+    value = str(pattern or "")
+    if not value:
+        return None, []
+
+    chunks: list[str] = []
+    applied: list[str] = []
+    cursor = 0
+    for token in _DYNAMIC_SIGNAL_TOKEN_RE.finditer(value):
+        chunks.append(re.escape(value[cursor:token.start()]))
+        if token.group(0).startswith("+"):
+            offset_pattern = r"\+0x[0-9a-fA-F]+"
+            if "/0x" in token.group(0).lower():
+                offset_pattern += r"/0x[0-9a-fA-F]+"
+            chunks.append(offset_pattern + r"(?![0-9a-fA-F])")
+            applied.append("symbol_offset")
+        else:
+            chunks.append(r"0x[0-9a-fA-F]{8,}(?![0-9a-fA-F])")
+            applied.append("dynamic_address")
+        cursor = token.end()
+    if not applied:
+        return None, []
+    chunks.append(re.escape(value[cursor:]))
+    return re.compile("".join(chunks), flags=re.IGNORECASE), sorted(set(applied))
+
+
+def _signal_pattern_matches_text(text: str, pattern: str) -> bool:
+    value = str(pattern or "").strip()
+    if not value:
+        return False
+    if value.lower() in text.lower():
+        return True
+    normalized, _ = _compile_normalized_signal(value)
+    return bool(normalized and normalized.search(text))
+
+
+def _no_signal_evidence(*, marker_required: bool, marker_found: bool) -> dict:
+    return {
+        "matched": False,
+        "matched_pattern": "",
+        "observed_signal": "",
+        "match_mode": "",
+        "match_index": -1,
+        "matched_after_marker": False,
+        "marker_required": marker_required,
+        "marker_found": marker_found,
+        "normalization_applied": [],
+    }
+
+
+def _match_signal_evidence(
+    *,
+    log_content: str,
+    detection: "DetectionSignals",
+    expected_signal: str,
+    start_marker: str = "",
+) -> dict:
+    """Match a serial signal and retain auditable raw/normalized evidence.
+
+    If start_marker is supplied, pre-marker boot noise is never considered a
+    match. Legacy callers omit it and retain the historical full-log scan.
+    """
+    lines = log_content.splitlines()
+    if not lines and log_content:
+        lines = [log_content]
+
+    marker_required = bool(start_marker)
+    marker_index = 0
+    marker_found = not marker_required
+    if start_marker:
+        marker_index = next((i for i, line in enumerate(lines) if start_marker in line), -1)
+        marker_found = marker_index >= 0
+        if not marker_found:
+            return _no_signal_evidence(marker_required=True, marker_found=False)
+
+    scoped_lines = lines[marker_index:] if marker_required else lines
+    scoped_text = "\n".join(scoped_lines)
+    if not scoped_text:
+        return _no_signal_evidence(
+            marker_required=marker_required,
+            marker_found=marker_found,
+        )
+
+    def matched(
+        pattern: str,
+        *,
+        mode: str,
+        relative_index: int,
+        normalization: list[str] | None = None,
+    ) -> dict:
+        absolute_index = marker_index + relative_index
+        return {
+            "matched": True,
+            "matched_pattern": pattern,
+            "observed_signal": scoped_lines[relative_index],
+            "match_mode": mode,
+            "match_index": absolute_index,
+            "matched_after_marker": (
+                not marker_required or absolute_index > marker_index
+            ),
+            "marker_required": marker_required,
+            "marker_found": marker_found,
+            "normalization_applied": list(normalization or []),
+        }
+
+    # Keep the legacy first-pattern-wins ordering.
+    for sig in detection.serial_signals:
+        sig = sig.strip()
+        if not sig:
+            continue
+        lower = sig.lower()
+        for index, line in enumerate(scoped_lines):
+            if lower in line.lower():
+                return matched(sig, mode="exact", relative_index=index)
+        normalized, applied = _compile_normalized_signal(sig)
+        if normalized:
+            match = normalized.search(scoped_text)
+            if match:
+                index = scoped_text[:match.start()].count("\n")
+                return matched(
+                    sig,
+                    mode="normalized",
+                    relative_index=index,
+                    normalization=applied,
+                )
+
+    expected = (expected_signal or "").strip()
+    if expected:
+        lower = expected.lower()
+        for index, line in enumerate(scoped_lines):
+            if lower in line.lower():
+                return matched(expected, mode="exact", relative_index=index)
+        normalized, applied = _compile_normalized_signal(expected)
+        if normalized:
+            match = normalized.search(scoped_text)
+            if match:
+                index = scoped_text[:match.start()].count("\n")
+                return matched(
+                    expected,
+                    mode="normalized",
+                    relative_index=index,
+                    normalization=applied,
+                )
+
+    scoped_lower = scoped_text.lower()
+    if detection.panic_on_warn and "kernel panic" in scoped_lower:
+        panic_index = next(
+            i for i, line in enumerate(scoped_lines)
+            if "kernel panic" in line.lower()
+        )
+        if detection.panic_is_pass:
+            return matched(
+                "Kernel panic (panic_on_warn=1, panic_is_pass=True)",
+                mode="panic",
+                relative_index=panic_index,
+            )
+        if _warning_precedes_panic(scoped_text):
+            return matched(
+                "Kernel panic (panic_on_warn=1, preceded by WARNING)",
+                mode="panic",
+                relative_index=panic_index,
+            )
+
+    return _no_signal_evidence(
+        marker_required=marker_required,
+        marker_found=marker_found,
+    )
+
+
+def _check_causal_reproduction(
+    log_content: str,
+    plan: TestPlan,
+    matched_signal: str,
+    *,
+    observed_signal: str = "",
+) -> dict:
     """Verify the signal belongs to the selected reproducer, not boot noise."""
     result = {
         "reproducer_started": False,
@@ -357,7 +564,7 @@ def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal:
     if not plan.require_causal_reproduction:
         return result
 
-    start_marker = f"LUMEN_REPRO_START:{plan.reproduction_case_id}:{plan.target_path_id}"
+    start_marker = _reproduction_start_marker(plan)
     lines = log_content.splitlines()
     start_index = next((i for i, line in enumerate(lines) if start_marker in line), -1)
     if start_index < 0:
@@ -365,12 +572,19 @@ def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal:
         return result
     result["reproducer_started"] = True
 
-    patterns = [pattern for pattern in (
-        list(plan.detection_signals.serial_signals) + [plan.expected_signal, matched_signal]
-    ) if pattern]
+    patterns = [
+        pattern for pattern in (
+            list(plan.detection_signals.serial_signals)
+            + [plan.expected_signal, matched_signal, observed_signal]
+        ) if pattern
+    ]
+    if matched_signal.lower().startswith("kernel panic"):
+        patterns.append("kernel panic")
     signal_index = next(
-        (i for i in range(start_index + 1, len(lines))
-         if any(pattern.lower() in lines[i].lower() for pattern in patterns)),
+        (
+            i for i in range(start_index + 1, len(lines))
+            if any(_signal_pattern_matches_text(lines[i], pattern) for pattern in patterns)
+        ),
         -1,
     )
     if signal_index < 0:
@@ -384,9 +598,9 @@ def _check_causal_reproduction(log_content: str, plan: TestPlan, matched_signal:
         if matches:
             result["matched_stack_frames"].extend(matches[:3])
     # Subsystem/object labels are useful annotations but often do not appear
-    # verbatim in a kernel stack (for example ``security/smack`` is rendered
-    # only as the individual SMACK symbols).  The deterministic call-chain
-    # oracle is the stronger evidence: if a required frame is present in the
+    # verbatim in a kernel stack (for example security/smack is rendered only
+    # as the individual SMACK symbols). The deterministic call-chain oracle
+    # is the stronger evidence: if a required frame is present in the
     # post-signal window, use that frame as the causal context rather than
     # rejecting an otherwise exact userspace reproduction on a display-name
     # mismatch.
@@ -413,46 +627,16 @@ def _match_serial_signals(
     log_content: str,
     detection: "DetectionSignals",
     expected_signal: str,
+    start_marker: str = "",
 ) -> str:
-    """Return the first matching signal pattern, or empty string if none match.
-
-    Detection order (first match wins):
-      1. detection.serial_signals — structured patterns declared by kernel_expert.
-         Searched in order; most-specific first.
-      2. expected_signal — legacy single-pattern field (substring match).
-      3. panic_on_warn fallback — if kernel was booted with panic_on_warn=1
-         and a `Kernel panic` line appears in the log, treat as PASS *only if*
-         a WARNING/Oops/BUG line appears within the preceding ~100 lines
-         (i.e. the panic is the escalation of a real warning, not a boot crash).
-         If panic_is_pass is True, treat any `Kernel panic` as PASS without
-         the WARNING proximity requirement.
-
-    All matching is case-insensitive substring (NOT regex) — the `.*` in
-    pattern literals will be treated as characters. kernel_expert should
-    emit short literal substrings (e.g. "pvqspinlock: lock" not
-    "pvqspinlock: lock.*corrupted value") for reliable matching.
-    """
-    log_lower = log_content.lower()
-    if not log_lower:
-        return ""
-
-    for sig in detection.serial_signals:
-        sig = sig.strip()
-        if sig and sig.lower() in log_lower:
-            return sig
-
-    if expected_signal and expected_signal.lower() in log_lower:
-        return expected_signal
-
-    if detection.panic_on_warn and "kernel panic" in log_lower:
-        if detection.panic_is_pass:
-            return "Kernel panic (panic_on_warn=1, panic_is_pass=True)"
-        # Check if a WARNING/Oops/BUG precedes the panic within ~100 lines.
-        if _warning_precedes_panic(log_content):
-            return "Kernel panic (panic_on_warn=1, preceded by WARNING)"
-
-    return ""
-
+    """Return the first matching contract signal (legacy compatibility wrapper)."""
+    evidence = _match_signal_evidence(
+        log_content=log_content,
+        detection=detection,
+        expected_signal=expected_signal,
+        start_marker=start_marker,
+    )
+    return str(evidence.get("matched_pattern", ""))
 
 def _warning_precedes_panic(log_content: str) -> bool:
     """True if a WARNING/Oops/BUG line appears within 100 lines before a panic.

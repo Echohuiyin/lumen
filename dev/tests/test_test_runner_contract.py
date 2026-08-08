@@ -13,7 +13,12 @@ project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from agents.contracts import DetectionSignals, QemuRecipe, TestPlan as QemuTestPlan, model_to_dict
-from agents.test_runner import _match_serial_signals, _warning_precedes_panic, run_qemu_test_plan
+from agents.test_runner import (
+    _match_serial_signals,
+    _match_signal_evidence,
+    _warning_precedes_panic,
+    run_qemu_test_plan,
+)
 from llm_config import load_config
 
 
@@ -126,6 +131,67 @@ def test_detection_panic_is_pass_short_circuits_warning_check():
         log_content=log, detection=detection, expected_signal="",
     )
     assert matched != ""
+
+
+def test_dynamic_address_signal_is_normalized_with_raw_evidence():
+    contract_signal = "BUG: unable to handle kernel paging request at 0xffff888012345678 in foo+0x1a/0x40"
+    observed = "BUG: unable to handle kernel paging request at 0xffffc90000abcdef in foo+0x2e/0x40"
+    evidence = _match_signal_evidence(
+        log_content=observed,
+        detection=DetectionSignals(serial_signals=[contract_signal]),
+        expected_signal="",
+    )
+    assert evidence["matched"] is True
+    assert evidence["matched_pattern"] == contract_signal
+    assert evidence["observed_signal"] == observed
+    assert evidence["match_mode"] == "normalized"
+    assert evidence["normalization_applied"] == ["dynamic_address", "symbol_offset"]
+
+
+def test_small_hex_constants_are_not_normalized():
+    contract_signal = "pvqspinlock: corrupted value 0x0"
+    observed = "pvqspinlock: corrupted value 0x1"
+    evidence = _match_signal_evidence(
+        log_content=observed,
+        detection=DetectionSignals(serial_signals=[contract_signal]),
+        expected_signal="",
+    )
+    assert evidence["matched"] is False
+
+
+def test_marker_scoping_rejects_boot_noise_before_poc():
+    marker = "LUMEN_REPRO_START:case-a:path-1"
+    detection = DetectionSignals(serial_signals=["BUG: KASAN: slab-use-after-free at 0xffff888012345678"])
+    log = "\n".join([
+        "boot: BUG: KASAN: slab-use-after-free at 0xffff888099999999",
+        marker,
+        "poc: no fault",
+    ])
+    evidence = _match_signal_evidence(
+        log_content=log,
+        detection=detection,
+        expected_signal="",
+        start_marker=marker,
+    )
+    assert evidence["matched"] is False
+    assert evidence["marker_found"] is True
+    assert evidence["matched_after_marker"] is False
+
+
+def test_marker_scoping_keeps_dynamic_signal_after_poc_start():
+    marker = "LUMEN_REPRO_START:case-a:path-1"
+    contract_signal = "BUG: KASAN: slab-use-after-free at 0xffff888012345678"
+    observed = "BUG: KASAN: slab-use-after-free at 0xffffc90000abcdef"
+    evidence = _match_signal_evidence(
+        log_content=f"boot noise\n{marker}\n{observed}",
+        detection=DetectionSignals(serial_signals=[contract_signal]),
+        expected_signal="",
+        start_marker=marker,
+    )
+    assert evidence["matched"] is True
+    assert evidence["matched_after_marker"] is True
+    assert evidence["match_index"] == 2
+    assert evidence["observed_signal"] == observed
 
 
 def test_detection_pvqspinlock_pattern_matches_actual_serial_output():
@@ -261,6 +327,10 @@ if __name__ == "__main__":
         test_detection_panic_on_warn_with_warning_prefix_passes,
         test_detection_panic_on_warn_without_warning_does_not_pass,
         test_detection_panic_is_pass_short_circuits_warning_check,
+        test_dynamic_address_signal_is_normalized_with_raw_evidence,
+        test_small_hex_constants_are_not_normalized,
+        test_marker_scoping_rejects_boot_noise_before_poc,
+        test_marker_scoping_keeps_dynamic_signal_after_poc_start,
         test_detection_pvqspinlock_pattern_matches_actual_serial_output,
         test_warning_precedes_panic_detects_within_100_lines,
         test_warning_precedes_panic_rejects_when_too_far,

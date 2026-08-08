@@ -36,10 +36,14 @@ class DetectionSignals(BaseModel):
     against the serial log file written by QEMU's -serial file: option.
 
     Fields:
-      serial_signals: Ordered list of patterns to search (substring match, case-
-        insensitive). First match wins — order from most-specific (e.g.
-        "pvqspinlock: lock.*corrupted value") to most-generic ("Kernel panic").
-        Listed *together* because matching any one is sufficient evidence.
+      serial_signals: Ordered list of literal patterns to search (case-
+        insensitive). First match wins. Long hexadecimal addresses (8+ hex
+        digits after 0x) and explicit symbol offsets (+0x...[/0x...]) are
+        normalized at match time, while small hexadecimal constants remain
+        exact to avoid weakening semantic fault signatures. Listed *together*
+        because matching any one is sufficient evidence. When causal
+        reproduction is required, only lines after the LUMEN_REPRO_START marker
+        are eligible.
       panic_on_warn: True if the kernel was booted with panic_on_warn=1 (or the
         equivalent is embedded in CONFIG_CMDLINE). When True, a `Kernel panic`
         line preceded by a WARNING within ~100 lines is itself a PASS signal —
@@ -239,6 +243,10 @@ class TestResultContract(BaseModel):
     target_context_matched: bool = False
     matched_stack_frames: list[str] = Field(default_factory=list)
     false_positive_checks: list[str] = Field(default_factory=list)
+    # Auditable serial-signal evidence.  The legacy signal contract remains
+    # string-based; this field records how a signal was matched without
+    # changing the pass/fail API consumed by existing callers.
+    signal_match_evidence: dict[str, Any] = Field(default_factory=dict)
     required_frames_found: list[str] = Field(default_factory=list)
     missing_frames: list[str] = Field(default_factory=list)
     frame_order_matched: bool = False
