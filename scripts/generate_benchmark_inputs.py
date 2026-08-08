@@ -119,20 +119,22 @@ def _manifest_artifact(issue: dict[str, Any], kinds: tuple[str, ...]) -> dict[st
 
 
 def _description(issue: dict[str, Any]) -> str:
-    report = {
-        "issue_id": issue.get("issue_id", ""),
-        "title": issue.get("title", ""),
-        "subsystem": issue.get("subsystem", ""),
-        "report_date": issue.get("report_date", ""),
-        "bug_type": issue.get("bug_type", ""),
-        "sanitizer": issue.get("sanitizer", ""),
-        "execution_context": (issue.get("notes") or []),
-    }
-    return (
-        "Linux kernel maintenance benchmark case (not vulnerability research); "
-        "fresh userspace-C reproduction required; kernel modules are forbidden. "
-        + json.dumps(report, ensure_ascii=False, separators=(",", ":"))
-    )
+    """Return only the human-facing kernel fault description.
+
+    ``Bug Promote`` is the problem statement, not a transport for benchmark
+    metadata or workflow policy.  Keep source paths, commit, architecture,
+    and maintenance constraints in their dedicated input fields below so the
+    Kernel Expert receives a concise, non-leaky problem prompt.
+    """
+    title = str(issue.get("title") or "").strip()
+    if title:
+        return title
+    evidence = issue.get("report_evidence")
+    if isinstance(evidence, dict):
+        summary = str(evidence.get("crash_summary") or "").strip()
+        if summary:
+            return summary
+    return "Linux kernel fault report"
 
 
 def _build_case(
@@ -175,7 +177,7 @@ def _build_case(
     _require_file(rootfs_ref, f"{issue_id} rootfs")
 
     lines = [
-        f"Bug Promote: {_description(issue)} target_arch: {arch}",
+        f"Bug Promote: {_description(issue)}",
         f"log: {log_ref}",
         f"vmlinux: {vmlinux_ref}",
         f"boot_kernel: {boot_ref}",

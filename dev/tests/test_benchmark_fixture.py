@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts.generate_benchmark_inputs import _description
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE = PROJECT_ROOT / "test_assets" / "benchmark_v0.2" / "benchmark_inputs_v0.2.jsonl"
@@ -122,6 +124,15 @@ def test_benchmark_fixture_is_report_time_only():
             "requires_timing_control",
             "requires_reset_between_trials",
         }
+
+
+def test_generated_bug_prompt_is_description_only():
+    for record in _records():
+        description = _description(record)
+        assert description == record["title"]
+        assert "{" not in description
+        assert "not vulnerability research" not in description
+        assert "target_arch" not in description
 
 
 if __name__ == "__main__":
