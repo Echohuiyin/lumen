@@ -2760,6 +2760,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("access_report_order")
             or raw_chain.get("reported_trace_order_leaf_to_outer")
             or raw_chain.get("frames_in_report_order")
+            or raw_chain.get("log_order_top_to_bottom")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
@@ -2895,8 +2896,17 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 oracle["fault_signatures"] = [raw_signatures[0]]
             elif "fault_signatures" not in oracle:
                 oracle["fault_signatures"] = raw_signatures[:1] if raw_signatures else []
-        if "required_log_signatures" in oracle and "fault_signatures" not in oracle:
-            oracle["fault_signatures"] = oracle.get("required_log_signatures") or []
+        if isinstance(oracle.get("required_log_signatures"), list) and oracle.get(
+            "required_log_signatures"
+        ):
+            # This field is explicitly the serial/log signal contract and is
+            # more authoritative than a descriptive first entry in a strict
+            # core list.
+            oracle["fault_signatures"] = [
+                str(item).strip()
+                for item in oracle["required_log_signatures"]
+                if str(item).strip()
+            ]
         if declared_fault_signatures and "fault_signatures" not in oracle:
             oracle["fault_signatures"] = declared_fault_signatures
         normalized["call_chain_oracle"] = oracle

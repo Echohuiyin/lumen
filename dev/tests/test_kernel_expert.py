@@ -716,6 +716,38 @@ def test_codex_kind_marker_preserves_blocked_source_evidence_contract():
     ]
 
 
+def test_codex_blocked_lock_contract_preserves_log_order_and_signals():
+    data = {
+        "kind": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {"verified_invariant": "lock graph contains a cycle"},
+        "original_call_chain": {
+            "log_order_top_to_bottom": ["dump_stack_lvl", "sco_conn_del"],
+        },
+        "call_chain_oracle": {
+            "strict_ordered_core": [
+                "sco_conn_del [lock held]", "lock_sock_nested",
+            ],
+            "required_log_signatures": [
+                "WARNING: possible circular locking dependency detected",
+                "sco_conn_del",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["probe.c"],
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.original_call_chain == ["dump_stack_lvl", "sco_conn_del"]
+    assert parsed.call_chain_oracle.required_frames == [
+        "sco_conn_del", "lock_sock_nested",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "WARNING: possible circular locking dependency detected", "sco_conn_del",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
