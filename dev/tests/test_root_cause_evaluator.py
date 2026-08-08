@@ -98,6 +98,26 @@ def test_bug_promote_title_is_used_as_declared_fault_entry():
     assert observed["entry_point"] == "smack_log_callback"
 
 
+def test_oob_title_extracts_entry_and_mechanism_signal():
+    observed = evaluator._observed_facts(
+        user_input=(
+            "Bug Promote: KASAN: slab-out-of-bounds Read in "
+            "technisat_usb2_rc_query"
+        ),
+        report_text=(
+            "BUG: KASAN: slab-out-of-bounds in technisat_usb2_rc_query\n"
+            "Read of size 1"
+        ),
+        contract={"original_call_chain": ["technisat_usb2_rc_query"]},
+        oracle={
+            "required_frames": ["technisat_usb2_rc_query"],
+            "fault_signatures": ["KASAN: slab-out-of-bounds"],
+        },
+    )
+    assert observed["entry_point"] == "technisat_usb2_rc_query"
+    assert observed["oob_signal"] is True
+
+
 def test_source_audit_excludes_runtime_artifacts_and_accepts_struct_or_docs():
     source = Path("/tmp/source-audit-test")
     checks = evaluator._audit_source_evidence(
@@ -110,6 +130,24 @@ def test_source_audit_excludes_runtime_artifacts_and_accepts_struct_or_docs():
         "",
     )
     assert checks["evidence_total"] == 1
+
+
+def test_source_audit_accepts_absolute_path_inside_verified_tree(tmp_path):
+    source = tmp_path / "linux"
+    source_file = source / "drivers" / "demo.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text("void demo_open(void) {}\n", encoding="utf-8")
+    checks = evaluator._audit_source_evidence(
+        source,
+        [{
+            "source_domain": "kernel", "function": "demo_open",
+            "file": str(source_file), "line": 1,
+        }],
+        "",
+    )
+    assert checks["evidence_total"] == 1
+    assert checks["evidence_verified"] == 1
+    assert checks["checks"][0]["verified"] is True
 
 
 def test_kasan_wild_pointer_is_not_scored_as_uaf(tmp_path):

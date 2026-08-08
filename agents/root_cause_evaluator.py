@@ -239,6 +239,13 @@ def _observed_facts(
             user_input,
         )
         entry = match.group(1) if match else ""
+    if not entry:
+        match = re.search(
+            r"(?i)\b(?:read|write|access)\s+(?:in|at)\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)",
+            user_input,
+        )
+        entry = match.group(1) if match else ""
     top_frames = [
         str(item) for item in (
             oracle.get("required_top_frames")
@@ -305,6 +312,9 @@ def _observed_facts(
         "pointer_signal": bool(re.search(
             r"general protection|paging request|null pointer|invalid address", lowered,
         )),
+        "oob_signal": bool(re.search(
+            r"out[- ]of[- ]bounds|slab[- ]out[- ]of[- ]bounds", lowered,
+        )),
     }
 
 
@@ -343,8 +353,17 @@ def _audit_source_evidence(
         check: dict[str, Any] = {
             "function": function, "file": rel, "line": line, "verified": False,
         }
-        if source_root is not None and rel and not Path(rel).is_absolute():
-            candidate = (source_root / rel).resolve()
+        if source_root is not None and rel:
+            declared_path = Path(rel).expanduser()
+            # External attested snapshots may record absolute source paths.
+            # Accept them only when they resolve inside the already selected
+            # verified source tree; tree-external paths remain unscored.
+            candidate = (
+                declared_path.resolve()
+                if declared_path.is_absolute()
+                else (source_root / declared_path).resolve()
+            )
+            source_root = source_root.resolve()
             try:
                 inside_tree = candidate.is_relative_to(source_root)
             except AttributeError:
@@ -518,6 +537,11 @@ def _score_dimensions(
         terms = [
             "free", "release", "ref", "lifetime", "race", "lock", "kfree",
             "uaf", "stale", "ownership",
+        ]
+    elif observed.get("oob_signal"):
+        terms = [
+            "buffer", "bounds", "length", "size", "index", "sentinel",
+            "terminator", "read", "write", "response",
         ]
     elif observed.get("warning_signal"):
         terms = ["warning", "assert", "condition", "lock", "invariant", "check", "race"]
