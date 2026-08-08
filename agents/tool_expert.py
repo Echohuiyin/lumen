@@ -5,6 +5,7 @@
 使用静默模式执行，输出写入独立文件，避免并行输出交错。
 """
 
+import json
 import os
 import re
 import shutil
@@ -16,6 +17,7 @@ from agents.contracts import ToolExpertOutput, model_to_dict
 from agents.llm_display import call_llm_with_display, set_session_dir, get_expert_output_file, ensure_output_dir, _format_agent_header_text, _format_agent_footer_text
 from agents.rag_integration import get_rag_context_for_query
 from agents.semcode_path_analysis import create_semcode_tools, resolve_kernel_source_for_commit
+from agents.crash_command_audit import CrashCommandLedger
 from llm_config import get_llm_with_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState, ToolExpertResult
 
@@ -335,8 +337,20 @@ def _result_output(result) -> str:
     return str(getattr(result, "output", "") or "")
 
 
-def _run_crash_command_for_evidence(session, command: str) -> dict:
+def _run_crash_command_for_evidence(
+    session, command: str, *, ledger: CrashCommandLedger | None = None,
+    expert_type: str = "crash_analysis",
+) -> dict:
     """Run one crash command and normalize the result for structured evidence."""
+    if ledger is not None:
+        output, success, audit = ledger.run(session, command, expert=expert_type)
+        return {
+            "command": command,
+            "success": success,
+            "output": output if success else "",
+            "error": "" if success else output,
+            "audit": audit,
+        }
     try:
         result = session.run_command(command)
         return {
@@ -353,13 +367,20 @@ def _run_crash_command_for_evidence(session, command: str) -> dict:
         }
 
 
-def _collect_crash_evidence(session, expert_type: str) -> tuple[list[dict], dict, list[str], str]:
+def _collect_crash_evidence(
+    session, expert_type: str, *, ledger: CrashCommandLedger | None = None,
+) -> tuple[list[dict], dict, list[str], str]:
     """Collect a deterministic crash baseline before LLM interpretation."""
     commands = ["sys", "ps", "bt -a", "log | tail -n 200"]
     if expert_type == "lock_analysis":
         commands.extend(["waitq", "foreach bt"])
 
-    command_results = [_run_crash_command_for_evidence(session, command) for command in commands]
+    command_results = [
+        _run_crash_command_for_evidence(
+            session, command, ledger=ledger, expert_type=expert_type,
+        )
+        for command in commands
+    ]
     evidence = [_command_evidence(item) for item in command_results]
     evidence.extend(_parse_ps_evidence(_output_for(command_results, "ps")))
     evidence.extend(_parse_bt_evidence(_output_for(command_results, "bt -a")))
@@ -367,7 +388,32 @@ def _collect_crash_evidence(session, expert_type: str) -> tuple[list[dict], dict
 
     artifacts = {
         "crash_commands": ",".join(commands),
+        "required_commands": ",".join(("sys", "bt -a", "log | tail -n 200")),
+        "required_success_count": str(sum(
+            bool(item.get("success"))
+            for item in command_results
+            if item.get("command") in {"sys", "bt -a", "log | tail -n 200"}
+        )),
+        "required_failed_count": str(sum(
+            not bool(item.get("success"))
+            for item in command_results
+            if item.get("command") in {"sys", "bt -a", "log | tail -n 200"}
+        )),
+        "required_command_count": "3",
     }
+    if ledger is not None:
+        artifacts.update({
+            "crash_command_log": str(ledger.ledger_path),
+            "crash_output_dir": str(ledger.output_dir),
+            "crash_evidence_ids": json.dumps(
+                [
+                    str(item.get("audit", {}).get("evidence_id", ""))
+                    for item in command_results
+                    if item.get("audit", {}).get("evidence_id")
+                ],
+                ensure_ascii=False,
+            ),
+        })
     errors = [
         f"{item['command']}: {item.get('error') or item.get('output', '')[:200]}"
         for item in command_results
@@ -385,12 +431,16 @@ def _command_evidence(command_result: dict) -> dict:
     the compact structured evidence via _format_evidence_context and can pull
     raw details on demand through run_crash_command.
     """
+    audit = command_result.get("audit") or {}
     return {
         "kind": "crash_command",
         "command": command_result["command"],
         "success": command_result.get("success", False),
         "output_full": command_result.get("output", ""),
         "error": command_result.get("error", ""),
+        "evidence_id": str(audit.get("evidence_id", "")),
+        "output_file": str(audit.get("output_file", "")),
+        "output_sha256": str(audit.get("output_sha256", "")),
     }
 
 
@@ -581,11 +631,14 @@ def _run_tool_calling_analysis(
         # Create or reuse shared crash session (prevents concurrent
         # crash processes competing for the same vmcore binary)
         session = get_or_create_crash_session(vmcore_path, vmlinux_path)
+        ledger = CrashCommandLedger(output_file)
 
-        evidence, artifacts, evidence_errors, evidence_context = _collect_crash_evidence(session, expert_type=expert_type)
+        evidence, artifacts, evidence_errors, evidence_context = _collect_crash_evidence(
+            session, expert_type=expert_type, ledger=ledger,
+        )
 
         # Create session-bound tools plus bounded Semcode source lookups.
-        crash_tools = create_crash_tools(session)
+        crash_tools = create_crash_tools(session, ledger=ledger, expert=expert_type)
         source_path = kernel_source_path
         semcode_cfg = semcode_config or {}
         if source_path and semcode_cfg.get("command"):
@@ -940,12 +993,27 @@ vmlinux 文件: {vmlinux_path_raw} → {vmlinux_path} ({'✓ 存在' if vmlinux_
         )
         evidence_errors = [*preflight_errors, *evidence_errors]
 
+        # O-002: command execution state is authoritative.  A failed
+        # required baseline cannot be presented as an ``ok`` analysis merely
+        # because the model returned a plausible summary.
+        try:
+            required_failed = int(evidence_artifacts.get("required_failed_count", "0") or 0)
+            required_count = int(evidence_artifacts.get("required_command_count", "3") or 3)
+        except (TypeError, ValueError):
+            required_failed, required_count = 0, 3
+        if required_failed >= required_count:
+            evidence_status = "blocked"
+        elif evidence_errors:
+            evidence_status = "degraded"
+        else:
+            evidence_status = "ok"
+
         return {
             "expert_results": [_make_tool_result(
                 expert_type=expert_type,
                 expert_name=expert_name,
                 analysis_output=response.content.strip(),
-                status="ok",
+                status=evidence_status,
                 evidence=evidence,
                 artifacts={
                     "vmcore_path": vmcore_path or "",

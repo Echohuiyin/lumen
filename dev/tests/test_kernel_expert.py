@@ -311,6 +311,26 @@ def test_semcode_evidence_covers_report_frames_without_all_body_helpers():
     assert _semcode_evidence_covers_report_frames(payload, report)
 
 
+def test_semcode_evidence_uses_same_capped_frame_prefix_as_adapter():
+    names = [f"frame_{index}" for index in range(40)]
+    payload = {
+        "status": "ok",
+        "entries": [
+            {
+                "function": "frame_0",
+                "result": "Function: frame_0\nBody:\nframe_1();\n",
+            },
+            *[
+                {"function": name, "result": f"Function: {name}"}
+                for name in names[1:32]
+            ],
+        ],
+    }
+    report = "\n".join(f"{name}+0x1/0x2" for name in names)
+
+    assert _semcode_evidence_covers_report_frames(payload, report)
+
+
 def test_structured_kernel_contract_round_trips_without_module_build():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))
@@ -444,6 +464,23 @@ def test_codex_evidence_extract_keeps_call_chain_and_drops_operational_noise(tmp
     assert "ioctl" not in (tmp_path / "workdir" / "evidence" / "tool_expert_1.txt").read_text().lower()
 
 
+def test_codex_evidence_uses_declared_log_without_report_sibling(tmp_path):
+    log = tmp_path / "original-crash.log"
+    log.write_text(
+        "BUG: kernel NULL pointer dereference\n"
+        "Call Trace:\n"
+        " target_fault+0x1/0x2\n"
+        " target_caller+0x3/0x4\n"
+        "---[ end trace 000 ]---\n",
+        encoding="utf-8",
+    )
+
+    _stage_codex_evidence(tmp_path / "workdir", [("original.log", str(log))])
+
+    staged = tmp_path / "workdir" / "evidence" / "original.log"
+    assert "target_fault" in staged.read_text(encoding="utf-8")
+
+
 def test_codex_evidence_preserves_semcode_json(tmp_path):
     source = tmp_path / "semcode-evidence.json"
     payload = {
@@ -476,7 +513,6 @@ def test_contract_rejects_module_metadata_in_c_source_set():
 
 if __name__ == "__main__":
     for test in (
-        test_prompt_states_maintenance_and_c_only_boundaries,
         test_structured_kernel_contract_round_trips_without_module_build,
         test_contract_rejects_module_metadata_in_c_source_set,
     ):

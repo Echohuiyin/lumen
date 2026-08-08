@@ -24,6 +24,11 @@ from pydantic import BaseModel, field_validator
 
 from paths import PROJECT_ROOT
 from agents.error_handling import retry_transient
+from agents.crash_command_audit import (
+    CrashCommandLedger,
+    format_admission_error,
+    validate_crash_command,
+)
 
 # ---------------------------------------------------------------------------
 # Shared session registry — prevents multiple concurrent crash processes
@@ -206,24 +211,18 @@ def sanitize_crash_command(command: str) -> tuple[str, list[str]]:
     Returns:
         (sanitized_command, list_of_warning_strings)
     """
-    warnings = []
-    sanitized = command.strip()
-
-    for pattern, warning in _UNSAFE_SHELL_PATTERNS:
-        if re.search(pattern, sanitized):
-            warnings.append(warning)
-
-    return sanitized, warnings
+    admission = validate_crash_command(command)
+    return admission.command, list(admission.errors)
 
 
 def build_sanitized_description(warnings: list[str]) -> str:
     """Build a warning suffix to prepend to tool output if needed."""
     if not warnings:
         return ""
-    lines = ["[WARNING: potential shell syntax issues detected]"]
+    lines = ["[BLOCKED: crash command admission failed]"]
     for w in warnings:
         lines.append(f"  - {w}")
-    lines.append("  If the command produced no output, try without these shell features.")
+    lines.append("  The command was not sent to crash; use a read-only allowlisted command.")
     return "\n".join(lines) + "\n\n"
 
 
@@ -277,7 +276,9 @@ class GetHistoryInput(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def create_session_bound_tools(session: Any) -> dict:
+def create_session_bound_tools(
+    session: Any, *, ledger: CrashCommandLedger | None = None, expert: str = "",
+) -> dict:
     """Create session-bound tool functions.
 
     Each function is bound to the provided CrashSessionManager instance.
@@ -312,14 +313,26 @@ def create_session_bound_tools(session: Any) -> dict:
 
     def run_crash_command(command: str) -> str:
         """Execute a single crash command and return output."""
-        sanitized, warnings = sanitize_crash_command(command)
+        sanitized, errors = sanitize_crash_command(command)
+        if errors:
+            message = build_sanitized_description(errors)
+            if ledger is not None:
+                ledger.record(
+                    expert=expert or "crash_analysis", command=command,
+                    success=False, error=format_admission_error(
+                        validate_crash_command(command)
+                    ),
+                )
+            return message + format_admission_error(validate_crash_command(command))
         try:
+            if ledger is not None:
+                output, success, _ = ledger.run(session, sanitized, expert=expert or "crash_analysis")
+                return output if success else f"Error: {output}"
             output, success = _cached_run(sanitized)
-            prefix = build_sanitized_description(warnings)
             if success:
-                return prefix + output
+                return output
             else:
-                return prefix + f"Error: {output}"
+                return f"Error: {output}"
         except Exception as e:
             return f"Error executing '{command}': {str(e)}"
 
@@ -328,9 +341,26 @@ def create_session_bound_tools(session: Any) -> dict:
         try:
             output_parts = []
             for cmd in commands:
-                sanitized, _ = sanitize_crash_command(cmd)
+                sanitized, errors = sanitize_crash_command(cmd)
+                if errors:
+                    output_parts.append(
+                        f"[{sanitized}] {format_admission_error(validate_crash_command(cmd))}"
+                    )
+                    if ledger is not None:
+                        ledger.record(
+                            expert=expert or "crash_analysis", command=cmd,
+                            success=False, error=format_admission_error(
+                                validate_crash_command(cmd)
+                            ),
+                        )
+                    continue
                 try:
-                    output, success = _cached_run(sanitized)
+                    if ledger is not None:
+                        output, success, _ = ledger.run(
+                            session, sanitized, expert=expert or "crash_analysis",
+                        )
+                    else:
+                        output, success = _cached_run(sanitized)
                     if success:
                         output_parts.append(f"[{sanitized}]\n{output}")
                     else:
@@ -344,6 +374,16 @@ def create_session_bound_tools(session: Any) -> dict:
     def collect_baseline() -> str:
         """Collect baseline diagnostics (sys, bt, log)."""
         try:
+            if ledger is not None:
+                baseline = []
+                for command in ("sys", "bt", "log"):
+                    output, success, _ = ledger.run(
+                        session, command, expert=expert or "crash_analysis",
+                    )
+                    baseline.append(
+                        f"[{command}]\n{output if success else 'Error: ' + output}"
+                    )
+                return "\n\n".join(baseline)
             results = session.collect_baseline()
             output_parts = []
             for r in results:
@@ -377,7 +417,9 @@ def create_session_bound_tools(session: Any) -> dict:
     }
 
 
-def create_crash_tools(session: Any) -> List[StructuredTool]:
+def create_crash_tools(
+    session: Any, *, ledger: CrashCommandLedger | None = None, expert: str = "",
+) -> List[StructuredTool]:
     """Create LangChain StructuredTool instances bound to session.
 
     Args:
@@ -386,7 +428,7 @@ def create_crash_tools(session: Any) -> List[StructuredTool]:
     Returns:
         List of StructuredTool instances for bind_tools()
     """
-    tool_funcs = create_session_bound_tools(session)
+    tool_funcs = create_session_bound_tools(session, ledger=ledger, expert=expert)
 
     tools = [
         StructuredTool(

@@ -33,6 +33,7 @@ def execute_tool_calling_loop(
     tools: List[StructuredTool],
     max_iterations: int = 10,
     on_tool_call: Optional[Callable[[str, dict], None]] = None,
+    on_tool_result: Optional[Callable[[str, dict, Any], None]] = None,
     verbose: bool = False,
 ) -> AIMessage:
     """Execute tool-calling loop until LLM returns final response.
@@ -125,6 +126,9 @@ def execute_tool_calling_loop(
                     tool_output = f"Error executing {tool_name}: {str(e)}"
                     if verbose:
                         print(f"  [Error] {e}")
+
+                if on_tool_result:
+                    on_tool_result(tool_name, tool_args, tool_output)
 
             # Create ToolMessage with result
             tool_message = ToolMessage(

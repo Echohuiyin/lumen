@@ -58,7 +58,26 @@ def test_elf_vmlinux_rejected_before_qemu():
 
 
 def test_legacy_config_name_falls_back_to_config_json():
-    config = load_config("config.json")
+    # The repository config intentionally references provider credentials via
+    # environment variables.  This contract test only checks config shape;
+    # use a non-secret placeholder so the standalone static runner is
+    # independent of a developer's shell environment.
+    names = {
+        "ANTHROPIC_API_KEY": "static-contract-test-placeholder",
+        "ANTHROPIC_BASE_URL": "https://static.invalid",
+        "ANTHROPIC_MODEL": "static-contract-test-model",
+    }
+    previous = {name: os.environ.get(name) for name in names}
+    for name, value in names.items():
+        os.environ.setdefault(name, value)
+    try:
+        config = load_config("config.json")
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     assert "default" in config
     assert "backend" in config["default"]
 

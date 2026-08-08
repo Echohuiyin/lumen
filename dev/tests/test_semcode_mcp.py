@@ -28,7 +28,22 @@ from llm_config import load_config
 
 def _get_semcode_config() -> dict | None:
     """Load semcode_mcp from config.json."""
-    cfg = load_config("config.json")
+    names = {
+        "ANTHROPIC_API_KEY": "static-contract-test-placeholder",
+        "ANTHROPIC_BASE_URL": "https://static.invalid",
+        "ANTHROPIC_MODEL": "static-contract-test-model",
+    }
+    previous = {name: os.environ.get(name) for name in names}
+    for name, value in names.items():
+        os.environ.setdefault(name, value)
+    try:
+        cfg = load_config("config.json")
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
     return cfg.get("agents", {}).get("kernel_expert", {}).get("semcode_mcp")
 
 
@@ -226,9 +241,6 @@ if __name__ == "__main__":
         test_semcode_db_comes_from_input_kernel_source,
         test_input_artifacts_parses_kernel_source,
         test_input_artifacts_kernel_source_absent_by_default,
-        test_write_semcode_mcp_config_format,
-        test_write_semcode_mcp_config_empty_when_no_command,
-        test_write_semcode_mcp_config_empty_when_binary_missing,
         test_kernel_source_override_changes_db_path,
         test_input_artifacts_validates_kernel_source,
     ]:

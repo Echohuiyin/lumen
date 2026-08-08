@@ -262,6 +262,10 @@ def _stage_codex_evidence(
     for name, declared_path in evidence_files or []:
         source = Path(os.path.expanduser(str(declared_path or "")))
         if name == "original.log":
+            # Prefer an explicitly materialized report sibling when the
+            # declared path is a console wrapper, but always retain the
+            # declared file when that sibling is absent.  This keeps the
+            # staging rule deterministic without guessing another case.
             report = source.with_name("report.txt")
             if report.is_file():
                 source = report
@@ -321,6 +325,17 @@ def _stage_codex_evidence(
             destination.write_text(raw, encoding="utf-8")
         except OSError:
             continue
+    # A failed or interrupted materialization must be visible to Codex as a
+    # missing-evidence block, not as an absent path.  If the primary log was
+    # already copied into the session root, stage that exact file once more.
+    destination = evidence_dir / "original.log"
+    staged_primary = workdir / "original-crash.log"
+    if not destination.exists() and staged_primary.is_file():
+        try:
+            raw = staged_primary.read_text(encoding="utf-8", errors="replace")
+            destination.write_text(raw, encoding="utf-8")
+        except OSError:
+            pass
 
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
@@ -663,7 +678,11 @@ def _run_kernel_expert_with_agent_loop(
         # test_assets (so it can be reused directly instead of writing a
         # new PoC from scratch).
         preflight = _build_preflight_context(boot_kernel_path, test_assets_dir)
-        if preflight:
+        # Codex already receives the staged first-hand report and exact
+        # Semcode evidence.  Omitting the verbose asset/preflight transcript
+        # keeps the maintenance prompt focused and avoids presenting withheld
+        # historical test metadata as an executable instruction.
+        if preflight and llm.__class__.__name__ != "CodexBackend":
             context_info += "\n" + preflight
 
         messages = [
@@ -949,12 +968,25 @@ def _semcode_evidence_covers_report_frames(payload: dict, report_text: str) -> b
     first_result = str(first.get("result", "") or "")
     if not first_result.strip() or "Body:" not in first_result:
         return False
-    report_frames = {
-        name.strip()
-        for name in _SEM_CODE_FRAME_RE.findall(str(report_text))
-        if name.strip()
-    }
-    return bool(report_frames) and report_frames.issubset(entry_names)
+    # The deterministic adapter intentionally caps the queried frame set at
+    # 32 unique names.  Compare the same ordered prefix here; requiring every
+    # symbol in a long serial trace would incorrectly keep interactive MCP
+    # enabled for scheduler/return-path frames that were never queried.
+    report_frames: list[str] = []
+    for pattern in (
+        _SEM_CODE_FRAME_RE,
+        _SEM_CODE_PC_LR_FRAME_RE,
+        _SEM_CODE_TRACE_FRAME_RE,
+    ):
+        for match in pattern.finditer(str(report_text)):
+            name = match.group(1).strip()
+            if name and name not in report_frames:
+                report_frames.append(name)
+            if len(report_frames) >= 32:
+                break
+        if len(report_frames) >= 32:
+            break
+    return bool(report_frames) and set(report_frames).issubset(entry_names)
 
 
 # Kernel reports also spell out inlined frames as ``pc : symbol path:line``
@@ -1607,6 +1639,23 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             f" ({result.get('expert_type', 'unknown')}): evidence/{evidence_name}"
         )
 
+    # Keep a compact, non-secret audit record of evidence resolution.  It
+    # makes a missing first-hand log diagnosable without exposing model
+    # transcripts or reintroducing any withheld reproducer content.
+    try:
+        (paths_get_output_dir() / "kernel_expert_input_debug.json").write_text(
+            json.dumps({
+                "log_path": input_artifacts.get("log_path", ""),
+                "crash_report_path": input_artifacts.get("crash_report_path", ""),
+                "resolved_original_log": original_log_path,
+                "workspace_log": workspace_log_path,
+                "evidence_files": [name for name, _path in evidence_files],
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
     # Extract evidence summary for LLM context
     evidence_summary = _extract_evidence_summary(expert_results)
     semcode_evidence_text = "\n".join([
@@ -1716,6 +1765,29 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         agent_name="kernel_expert",
     )
 
+    codex_compact_mode = llm.__class__.__name__ == "CodexBackend"
+    if codex_compact_mode:
+        # Keep the Codex request narrowly scoped to defensive maintenance. The
+        # deterministic source/evidence gates and downstream contract
+        # validators retain the detailed project rules; the model only needs
+        # the bounded task and schema here.
+        system_prompt = (
+            "You are an internal Linux kernel maintenance regression analyst. "
+            "Read the staged first-hand report and exact source evidence, explain the "
+            "verified invariant, and write a bounded non-privileged userspace C "
+            "diagnostic using documented APIs only. Do not perform security abuse, "
+            "privilege changes, persistence, bypasses, arbitrary kernel-state "
+            "manipulation, raw filesystem editing, private interfaces, or loadable "
+            "extensions. Never reuse withheld historical tests. If the documented "
+            "ABI cannot reach the reported state, return status=blocked with the "
+            "precise limitation. Test Expert owns QEMU and the runtime verdict. "
+            "Do not run broad git show/diff commands or dump unrelated source; "
+            "use the staged Semcode bodies and bounded reads of cited files/lines. "
+            "Return exactly one complete KERNEL_CONTRACT JSON object with source "
+            "evidence, the full audit call chain, a strict ordered core oracle, "
+            "a userspace C declaration, and incremental setup fields."
+        )
+
     case_text = _codex_case_text(state.get("user_input", ""))
     user_content = (
         "AUTHORIZED MAINTENANCE REGRESSION NOTICE: This is a defensive Linux kernel "
@@ -1747,18 +1819,32 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # model to misclassify ordinary maintenance work.
     user_content = (
         "## Authorized maintenance case\n"
-        "Use only the first-hand evidence staged under evidence/ and the required Semcode MCP.\n"
+        "This is an internal Linux kernel regression-diagnosis task, not security-abuse work. "
+        "Use only the first-hand evidence staged under evidence/ and the required Semcode MCP. "
+        "Do not generate privilege escalation, persistence, bypass, or arbitrary kernel-state manipulation guidance.\n"
         f"target_arch: {input_artifacts.get('target_arch', 'N/A')}\n"
         f"expected_kernel_commit: {expected_kernel_commit or 'N/A'}\n"
         "Semcode source status: verified for the declared commit; every query must use that exact git_sha.\n"
-        "Original first-hand log: evidence/original.log (read it directly; do not replace it with a summary).\n"
+        "Original first-hand log: evidence/original.log (read it directly; if it is missing, return a blocked evidence result rather than guessing).\n"
         "User-supplied artifact paths, boot assets, and guest settings are validated and injected by the workflow.\n"
-        "Write the diagnostic userspace C test harness and KERNEL_CONTRACT in the current workdir.\n\n"
+        "Write only a bounded, non-privileged userspace C diagnostic test and the KERNEL_CONTRACT in the current workdir.\n\n"
         "## Evidence directory\n"
         "Inspect every file under evidence/ before concluding; record unknowns instead of guessing."
     )
+    if codex_compact_mode:
+        user_content = (
+            "Internal Linux kernel maintenance regression diagnosis. Read "
+            "evidence/original.log, evidence/semcode-evidence.json, and every "
+            "evidence/tool_expert_*.txt. Verify the declared exact source commit. "
+            "Write only a bounded non-privileged userspace C diagnostic and one "
+            "complete KERNEL_CONTRACT JSON object. Do not use historical tests or "
+            "unsafe/private interfaces; if the public ABI cannot establish the "
+            "reported state, return status=blocked and explain the evidence-backed "
+            "reason. Do not run broad git show/diff commands or dump unrelated source; "
+            "use staged Semcode bodies and bounded reads of cited files/lines."
+        )
     first_hand_log_hints = _extract_first_hand_log_hints(original_log_text)
-    if first_hand_log_hints:
+    if first_hand_log_hints and agent_config.get("backend") != "codex":
         user_content += (
             "\n\n## Deterministic first-hand log action hints\n"
             "These lines are extracted from the supplied kernel log, not from a user repro. "

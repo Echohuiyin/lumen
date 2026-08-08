@@ -1701,6 +1701,13 @@ class CodexBackend:
 
         if process.returncode != 0:
             detail = (stderr or stdout or "").strip()[:1000]
+            try:
+                (workdir_path / "codex_cli_failure.log").write_text(
+                    (stdout or "") + ("\n--- stderr ---\n" if stderr else "") + (stderr or ""),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
             prefix = "[cli_startup_failure] " if "mcp" in detail.lower() else ""
             raise RuntimeError(f"{prefix}Codex failed (exit {process.returncode}): {detail}")
         content = self._parse_jsonl(stdout)

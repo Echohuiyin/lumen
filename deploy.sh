@@ -288,6 +288,12 @@ export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-}"
 export ANTHROPIC_BASE_URL="${ANTHROPIC_BASE_URL:-}"
 export ANTHROPIC_MODEL="${ANTHROPIC_MODEL:-}"
 
+# Codex Kernel Expert runtime selection. Keep these as environment inputs so
+# `source .env` and one-shot deployment runs use the same effective settings.
+export LUMEN_CODEX_MODEL="${LUMEN_CODEX_MODEL:-}"
+export LUMEN_CODEX_REASONING_EFFORT="${LUMEN_CODEX_REASONING_EFFORT:-xhigh}"
+export LUMEN_CODEX_SERVICE_TIER="${LUMEN_CODEX_SERVICE_TIER:-}"
+
 # ── RAG Embedding API ────────────────────────────────────────────────────────
 # Required by knowledge_search and knowledge_base Chroma import.
 # Any OpenAI-compatible /v1/embeddings endpoint can be used.
