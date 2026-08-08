@@ -2692,6 +2692,12 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # empty fallback envelope.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
+        elif data.get("schema") == "KERNEL_CONTRACT":
+            # The persisted artifact contract uses ``schema`` as its explicit
+            # marker.  This is still a marker-only alias: all source, static,
+            # and guest gates remain authoritative after normalization.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
         elif (
             data.get("status") in {"ok", "ready", "blocked"}
             and isinstance(data.get("root_cause"), dict)

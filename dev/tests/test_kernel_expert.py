@@ -236,7 +236,7 @@ def test_versioned_codex_contract_normalizes_entrypoint_and_binary_step(tmp_path
     source = tmp_path / "diag.c"
     source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
     raw = {
-        "contract": "KERNEL_CONTRACT",
+        "schema": "KERNEL_CONTRACT",
         "status": "ready",
         "root_cause": {"verified_invariant": "the documented ABI reaches the target"},
         "original_call_chain": {"printed_frames": [{"function": "fault"}, {"function": "caller"}]},
