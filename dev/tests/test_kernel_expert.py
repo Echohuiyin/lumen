@@ -550,6 +550,38 @@ def test_j1939_contract_maps_mixed_required_signatures_and_default_args():
     assert parsed.reproducer.run_args == ["./j1939_uaf_diag", "vcan0", "64"]
 
 
+def test_j1939_contract_accepts_fault_report_trace_alias():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": "J1939 abort cleanup reaches the freed socket bookkeeping",
+        "original_call_chain": {
+            "fault_report_trace": [
+                {"frame": "j1939_sock_pending_del+0x20"},
+                {"frame": "j1939_session_put+0xd2"},
+            ],
+        },
+        "call_chain_oracle": {
+            "required_signatures": [
+                "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+                "j1939_sock_pending_del", "j1939_session_put",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/j1939", "source_files": ["probe.c"],
+            "compiler": "cc",
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.original_call_chain == [
+        "j1939_sock_pending_del+0x20", "j1939_session_put+0xd2",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
