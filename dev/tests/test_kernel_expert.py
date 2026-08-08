@@ -248,7 +248,7 @@ def test_versioned_codex_contract_normalizes_entrypoint_and_binary_step(tmp_path
             "language": "c",
             "artifact_type": "userspace",
             "source_dir": str(tmp_path),
-            "source_files": ["diag.c"],
+            "source_files": [str(source)],
             "entrypoint": "main",
             "compiler": "cc",
             "flags": ["-std=c11"],

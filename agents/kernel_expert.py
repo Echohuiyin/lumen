@@ -3071,6 +3071,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 normalized_files.append(value)
             reproducer["source_files"] = normalized_files
             source_files = reproducer["source_files"]
+            entry_source = str(reproducer.get("entry_source") or "").strip()
+            if source_dir and entry_source.startswith(source_dir + "/"):
+                reproducer["entry_source"] = entry_source[len(source_dir) + 1:]
         raw_run_args = reproducer.get("run_args")
         if isinstance(raw_run_args, dict):
             default_args = raw_run_args.get("default")
