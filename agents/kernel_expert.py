@@ -2661,7 +2661,14 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     decide whether the result can reach Test Expert.
     """
     if data.get("contract") != "KERNEL_CONTRACT":
-        return data
+        if data.get("contract_type") == "KERNEL_CONTRACT":
+            # Some Codex skill revisions use ``contract_type`` as the explicit
+            # marker.  Treat that exact value as the same versioned handoff;
+            # arbitrary prose is still rejected by the extractor.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
+        else:
+            return data
     normalized = dict(data)
     warnings = list(normalized.get("warnings") or [])
 
@@ -2698,7 +2705,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             (str(raw_root_cause.get(key) or "").strip()
              for key in (
                  "verified_path", "verified_invariant", "verified", "observed_violation",
-                 "summary", "source_reasoning",
+                 "summary", "source_reasoning", "classification",
              )
              if str(raw_root_cause.get(key) or "").strip()),
             "",
@@ -2732,12 +2739,20 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     raw_oracle = normalized.get("call_chain_oracle")
     if isinstance(raw_oracle, dict):
         oracle = dict(raw_oracle)
-        core_frames = oracle.get("required_order_top_to_bottom")
+        core_source = "required_order_top_to_bottom"
+        core_frames = oracle.get(core_source)
+        if not isinstance(core_frames, list) or not core_frames:
+            core_source = "required_core"
+            core_frames = oracle.get(core_source)
         if isinstance(core_frames, list):
             core_frames = [
                 value for item in core_frames
                 if (value := _runtime_frame_text(item))
             ]
+            if core_source == "required_core" and "entry_to_fault" in str(
+                oracle.get("direction") or ""
+            ).lower():
+                core_frames.reverse()
         if not isinstance(core_frames, list) or not core_frames:
             strict_core = oracle.get("strict_ordered_core")
             if isinstance(strict_core, list):

@@ -445,6 +445,42 @@ def test_codex_structured_frame_records_preserve_jfs_handoff_fields():
     ]
 
 
+def test_codex_contract_type_preserves_precise_blocked_reason_and_oracle():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {"classification": "JFS cleanup reaches diFree"},
+        "original_call_chain": {
+            "direction": "fault_to_syscall_entry_as_printed",
+            "frames": [{"symbol": "diFree+0x13d"}, {"symbol": "jfs_mount+0x23f"}],
+        },
+        "call_chain_oracle": {
+            "direction": "syscall_entry_to_fault",
+            "required_core": ["entry_SYSCALL_64_after_hwframe", "diFree+0x13d"],
+            "required_signatures": ["RIP: 0010:diFree+0x13d/0x2dc0"],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/jfs-session",
+            "source_files": [{"path": "jfs_mount_abi_probe.c", "purpose": "probe"}],
+            "flags": ["-Wall"], "arguments": [], "timeout_seconds": 5,
+        },
+        "blocked_reason": {
+            "code": "NONPRIVILEGED_ABI_CANNOT_REACH_MOUNT",
+            "precise_limitation": "CAP_SYS_ADMIN is required before do_new_mount().",
+            "test_expert_action": "Report blocked.",
+        },
+    }
+    parsed = _extract_kernel_contract("KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```")
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "JFS cleanup reaches diFree"
+    assert parsed.reproducer.source_dir == "/tmp/jfs-session"
+    assert parsed.reproducer.entry_source == "jfs_mount_abi_probe.c"
+    assert parsed.call_chain_oracle.required_frames == ["diFree+0x13d", "entry_SYSCALL_64_after_hwframe"]
+    assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:diFree+0x13d/0x2dc0"]
+    assert "CAP_SYS_ADMIN" in parsed.blocked_reason
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(

@@ -45,3 +45,13 @@ only explicit `frame`/`required_signature` fields to the internal string ABI,
 preserves `reproducer.source_dir` and `entry_source`, and derives the first
 fault signal from the first explicit strict signature. It does not infer the
 missing xtree-corruption precursor or add any fixture action.
+
+The next JFS turn used the same explicit versioned contract under the alias
+`contract_type=KERNEL_CONTRACT`, and correctly declared `status=blocked` because
+the only source-backed mount path needs `CAP_SYS_ADMIN` and a pre-existing
+approved corrupted JFS image. The alias was initially not recognized, which
+again hid the precise limitation behind an empty envelope. The follow-up
+normalization accepts only that exact marker, reverses an explicitly declared
+`syscall_entry_to_fault` core into the runtime fault-to-entry order, and keeps
+the blocked contract terminal. It still does not turn an ABI reachability probe
+into a reproduction attempt.
