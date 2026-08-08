@@ -582,6 +582,82 @@ def test_codex_stack_order_alias_preserves_blocked_rca_contract():
     ]
 
 
+def test_codex_required_order_and_leaf_frames_preserve_blocked_rca():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {
+            "classification": "JFS cleanup reaches diFree without a state guard.",
+        },
+        "original_call_chain": {
+            "raw_frames_leaf_to_user": [
+                "diFree+0x13d/0x2dc0",
+                "jfs_evict_inode+0x2c9/0x370",
+                "jfs_mount+0x23f/0x3d0",
+            ],
+        },
+        "call_chain_oracle": {
+            "required_order": [
+                "RIP: 0010:diFree+0x13d/0x2dc0",
+                "jfs_evict_inode+0x2c9/0x370",
+                "jfs_mount+0x23f/0x3d0",
+            ],
+            "required_signatures": ["#PF: supervisor read access in kernel mode"],
+        },
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "JFS cleanup reaches diFree without a state guard."
+    assert parsed.original_call_chain == [
+        "diFree+0x13d/0x2dc0",
+        "jfs_evict_inode+0x2c9/0x370",
+        "jfs_mount+0x23f/0x3d0",
+    ]
+    assert parsed.call_chain_oracle.required_top_frames == [
+        "diFree+0x13d/0x2dc0",
+        "jfs_evict_inode+0x2c9/0x370",
+        "jfs_mount+0x23f/0x3d0",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "#PF: supervisor read access in kernel mode",
+    ]
+
+
+def test_codex_ordered_required_frames_preserve_ready_smack_handoff():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": {
+            "verified_invariant": "audit_log_untrustedstring requires a readable NUL-terminated string.",
+        },
+        "call_chain_oracle": {
+            "ordered_required_frames": [
+                {"order": 1, "frame": "keyctl_watch_key", "signature": "keyctl_watch_key"},
+                {"order": 2, "frame": "smack_watch_key", "signature": "smack_watch_key"},
+                {"order": 3, "frame": "strlen", "signature": "strlen"},
+            ],
+            "concrete_log_signatures": ["RIP: 0010:strlen+0x2c/0x70"],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diag.c"],
+        },
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "ok"
+    assert parsed.root_cause.startswith("audit_log_untrustedstring")
+    assert parsed.call_chain_oracle.required_frames == [
+        "keyctl_watch_key", "smack_watch_key", "strlen",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "RIP: 0010:strlen+0x2c/0x70",
+    ]
+
+
 def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
     data = {
         "contract": "KERNEL_CONTRACT",
