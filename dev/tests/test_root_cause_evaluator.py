@@ -77,6 +77,41 @@ def test_evaluator_scores_source_grounded_root_cause_and_ignores_repro(tmp_path)
     assert "this text must never be read" not in str(result)
 
 
+def test_function_field_is_used_as_declared_fault_entry():
+    observed = evaluator._observed_facts(
+        user_input="function: smack_log_callback\n",
+        report_text="RIP: strlen\nsmack_log_callback\n",
+        contract={"original_call_chain": ["strlen", "smack_log_callback"]},
+        oracle={"required_frames": ["strlen", "smack_log_callback"]},
+    )
+    assert observed["entry_point"] == "smack_log_callback"
+    assert observed["function_hits_in_report"]["smack_log_callback"] is True
+
+
+def test_bug_promote_title_is_used_as_declared_fault_entry():
+    observed = evaluator._observed_facts(
+        user_input="Bug Promote: general protection fault in smack_log_callback",
+        report_text="RIP: smack_log_callback\n",
+        contract={"original_call_chain": ["smack_log_callback"]},
+        oracle={},
+    )
+    assert observed["entry_point"] == "smack_log_callback"
+
+
+def test_source_audit_excludes_runtime_artifacts_and_accepts_struct_or_docs():
+    source = Path("/tmp/source-audit-test")
+    checks = evaluator._audit_source_evidence(
+        source,
+        [
+            {"source_domain": "kernel", "function": "demo_open", "file": "drivers/demo.c", "line": 1},
+            {"source_domain": "kernel", "function": "reported_fault", "file": "evidence/original.log", "line": "1-2"},
+            {"source_domain": "kernel", "function": "demo_struct", "file": "tryouts/tryout-01/log", "line": 1},
+        ],
+        "",
+    )
+    assert checks["evidence_total"] == 1
+
+
 def test_kasan_wild_pointer_is_not_scored_as_uaf(tmp_path):
     state = _state(tmp_path)
     log = Path(state["input_artifacts_contract"]["log_path"])

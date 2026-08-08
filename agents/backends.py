@@ -7,7 +7,7 @@ import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from threading import Lock
+from threading import Event, Lock, Thread
 import time
 import uuid
 from pathlib import Path
@@ -27,6 +27,99 @@ _DEBUG_CLI = os.environ.get("LUMEN_DEBUG_CLAUDE_CLI", "").strip() in {"1", "true
 # agent loop stalls.
 _STREAM_JSON = os.environ.get("LUMEN_CLAUDE_STREAM_JSON", "").strip() in {"1", "true", "yes"}
 _DUMP_DIR = Path("/tmp/lumen_outputs")
+
+
+def _codex_artifact_signature(workdir: Path) -> tuple[tuple[str, int, int], ...] | None:
+    """Return a stable signature once this invocation wrote a valid handoff.
+
+    The Codex CLI can finish the contract and C source, then stall while
+    producing its cosmetic final agent message.  This helper only observes
+    the unique current workdir and accepts the handoff shape; the normal
+    Kernel Expert contract/static gates remain authoritative after sync.
+    """
+    contract_path = workdir / "KERNEL_CONTRACT.json"
+    try:
+        payload = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("contract") not in {None, "KERNEL_CONTRACT"}:
+        return None
+    status = str(payload.get("status") or "")
+    raw_reason = payload.get("blocked_reason")
+    if status == "blocked":
+        if isinstance(raw_reason, dict):
+            raw_reason = raw_reason.get("precise_limitation") or raw_reason.get("consequence")
+        if not str(raw_reason or "").strip():
+            return None
+    elif status not in {"ok", "ready"}:
+        return None
+    raw_root_cause = payload.get("root_cause")
+    if isinstance(raw_root_cause, dict):
+        raw_root_cause = (
+            raw_root_cause.get("verified_path")
+            or raw_root_cause.get("verified_invariant")
+            or raw_root_cause.get("verified")
+            or raw_root_cause.get("observed_violation")
+            or raw_root_cause.get("summary")
+            or raw_root_cause.get("source_reasoning")
+        )
+    if status in {"ok", "ready"} and not str(raw_root_cause or "").strip():
+        return None
+    oracle = payload.get("call_chain_oracle") or {}
+    if not isinstance(oracle, dict):
+        return None
+    if status in {"ok", "ready"} and not (
+        oracle.get("required_top_frames")
+        or oracle.get("required_frames")
+        or oracle.get("required_order_top_to_bottom")
+        or oracle.get("strict_ordered_core")
+    ):
+        return None
+    reproducer = payload.get("reproducer") or {}
+    if not isinstance(reproducer, dict):
+        return None
+    source_files = reproducer.get("source_files") or []
+    if isinstance(source_files, list):
+        source_files = [
+            item.get("path") if isinstance(item, dict) and item.get("path") else item
+            for item in source_files
+        ]
+    entry_source = str(reproducer.get("entry_source") or "").strip()
+    if status == "ready" and not entry_source and isinstance(source_files, list) and source_files:
+        entry_source = str(source_files[0])
+    if status in {"ok", "ready"} and (
+        reproducer.get("language") != "c"
+        or reproducer.get("artifact_type") != "userspace"
+        or not isinstance(source_files, list)
+        or not source_files
+        or not entry_source
+        or entry_source not in {str(item) for item in source_files}
+    ):
+        return None
+    try:
+        workdir_root = workdir.resolve()
+        paths = [contract_path.resolve()]
+        for raw_name in source_files:
+            name = str(raw_name or "")
+            source = (workdir / name).resolve()
+            source.relative_to(workdir_root)
+            if source.suffix.lower() not in {".c", ".h"} or not source.is_file():
+                return None
+            paths.append(source)
+        return tuple(
+            (str(path.relative_to(workdir_root)), path.stat().st_size, path.stat().st_mtime_ns)
+            for path in paths
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return None
+
+
+def _codex_artifact_grace_seconds() -> float:
+    try:
+        value = float(os.environ.get("LUMEN_CODEX_ARTIFACT_GRACE_SECONDS", "15"))
+    except (TypeError, ValueError):
+        value = 15.0
+    return min(120.0, max(3.0, value))
 
 
 def _format_stream_event(line: str) -> str:
@@ -1681,6 +1774,51 @@ class CodexBackend:
                 text=True,
                 start_new_session=(os.name == "posix"),
             )
+            handoff_ready = Event()
+            stop_watchdog = Event()
+
+            def watch_artifact_handoff() -> None:
+                stable_signature = None
+                stable_since = 0.0
+                grace = _codex_artifact_grace_seconds()
+                while not stop_watchdog.wait(1.0):
+                    if getattr(process, "poll", lambda: None)() is not None:
+                        return
+                    signature = _codex_artifact_signature(workdir_path)
+                    if signature is None:
+                        stable_signature = None
+                        stable_since = 0.0
+                        continue
+                    now = time.monotonic()
+                    if signature != stable_signature:
+                        stable_signature = signature
+                        stable_since = now
+                        continue
+                    if now - stable_since < grace:
+                        continue
+                    # The same invocation has a complete, stable C-only handoff;
+                    # stop only the stalled tail turn and let the normal sync and
+                    # contract validators consume it.
+                    handoff_ready.set()
+                    try:
+                        if os.name == "posix":
+                            os.killpg(process.pid, signal.SIGTERM)
+                        else:
+                            process.terminate()
+                    except (OSError, ProcessLookupError):
+                        pass
+                    if not stop_watchdog.wait(2.0):
+                        try:
+                            if os.name == "posix":
+                                os.killpg(process.pid, signal.SIGKILL)
+                            else:
+                                process.kill()
+                        except (OSError, ProcessLookupError):
+                            pass
+                    return
+
+            watchdog = Thread(target=watch_artifact_handoff, daemon=True)
+            watchdog.start()
             try:
                 stdout, stderr = process.communicate(
                     input=prompt,
@@ -1696,8 +1834,26 @@ class CodexBackend:
                     process.kill()
                 stdout, stderr = process.communicate()
                 raise RuntimeError(f"Codex timed out after {self._cli_timeout}s") from exc
+            finally:
+                stop_watchdog.set()
+                watchdog.join(timeout=3.0)
         except FileNotFoundError as exc:
             raise RuntimeError(f"Codex CLI not found: {self._cli_command}") from exc
+
+        if handoff_ready.is_set():
+            try:
+                (workdir_path / "codex_artifact_handoff.json").write_text(
+                    json.dumps({
+                        "status": "ready",
+                        "reason": "stable KERNEL_CONTRACT.json and userspace C artifacts; stopped stalled final turn",
+                        "contract": "KERNEL_CONTRACT.json",
+                    }, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+            contract_text = (workdir_path / "KERNEL_CONTRACT.json").read_text(encoding="utf-8")
+            return AIMessage(content=f"KERNEL_CONTRACT:\n```json\n{contract_text}\n```")
 
         if process.returncode != 0:
             detail = (stderr or stdout or "").strip()[:1000]

@@ -2650,6 +2650,146 @@ def _model_validate(model_cls, data: dict):
     return model_cls.parse_obj(data)
 
 
+def _normalise_codex_maintenance_contract(data: dict) -> dict:
+    """Map the explicit Codex maintenance-contract aliases to Lumen fields.
+
+    The project-local Codex skill may emit the versioned ``KERNEL_CONTRACT``
+    shape (nested root-cause/tryout objects and descriptive reproducer keys)
+    instead of the internal Pydantic names.  This adapter is deliberately
+    limited to that explicit marker; it does not infer a diagnosis or create
+    runtime actions.  The normal source, path, static-C, and guest gates still
+    decide whether the result can reach Test Expert.
+    """
+    if data.get("contract") != "KERNEL_CONTRACT":
+        return data
+    normalized = dict(data)
+    warnings = list(normalized.get("warnings") or [])
+
+    raw_tryout = normalized.get("tryout")
+    if isinstance(raw_tryout, dict):
+        number = raw_tryout.get("number")
+        if isinstance(number, int):
+            normalized["tryout"] = number
+
+    raw_root_cause = normalized.get("root_cause")
+    if isinstance(raw_root_cause, dict):
+        root_text = next(
+            (str(raw_root_cause.get(key) or "").strip()
+             for key in (
+                 "verified_path", "verified_invariant", "verified", "observed_violation",
+                 "summary", "source_reasoning",
+             )
+             if str(raw_root_cause.get(key) or "").strip()),
+            "",
+        )
+        normalized["root_cause"] = root_text
+        if not normalized.get("root_cause_evidence") and isinstance(normalized.get("evidence"), list):
+            normalized["root_cause_evidence"] = normalized["evidence"]
+    elif not normalized.get("root_cause_evidence") and isinstance(normalized.get("evidence"), list):
+        # Later turns may already have flattened root_cause while retaining
+        # the same source-backed evidence list.
+        normalized["root_cause_evidence"] = normalized["evidence"]
+
+    raw_chain = normalized.get("original_call_chain")
+    if isinstance(raw_chain, dict):
+        frames = (
+            raw_chain.get("observed_frames")
+            or raw_chain.get("observed_order_top_to_bottom")
+            or raw_chain.get("frames")
+        )
+        if isinstance(frames, list):
+            normalized["original_call_chain"] = [
+                item.get("function") if isinstance(item, dict) and item.get("function")
+                else item
+                for item in frames
+            ]
+
+    raw_oracle = normalized.get("call_chain_oracle")
+    if isinstance(raw_oracle, dict):
+        oracle = dict(raw_oracle)
+        core_frames = oracle.get("required_order_top_to_bottom")
+        if not isinstance(core_frames, list) or not core_frames:
+            strict_core = oracle.get("strict_ordered_core")
+            if isinstance(strict_core, list):
+                # The versioned contract records signatures from user entry to
+                # fault.  The runtime contract remains fault-to-entry, using
+                # the already audited original frame order; no new frame is
+                # inferred from a prose signature.
+                audited_frames = normalized.get("original_call_chain") or []
+                if audited_frames:
+                    core_frames = list(audited_frames)
+        if isinstance(core_frames, list) and core_frames:
+            oracle.setdefault("required_top_frames", core_frames)
+            oracle.setdefault("required_frames", core_frames)
+            oracle.setdefault(
+                "required_frame_order",
+                [[core_frames[index], core_frames[index + 1]]
+                 for index in range(len(core_frames) - 1)],
+            )
+        if "required_signatures" in oracle and "fault_signatures" not in oracle:
+            oracle["fault_signatures"] = oracle.get("required_signatures") or []
+        if "required_log_signatures" in oracle and "fault_signatures" not in oracle:
+            oracle["fault_signatures"] = oracle.get("required_log_signatures") or []
+        normalized["call_chain_oracle"] = oracle
+
+    raw_reproducer = normalized.get("reproducer")
+    if isinstance(raw_reproducer, dict):
+        reproducer = dict(raw_reproducer)
+        aliases = {
+            "flags": "compiler_args",
+            "libraries": "link_libraries",
+            "arguments": "run_args",
+            "timeout_seconds": "runtime_timeout_sec",
+        }
+        for source, target in aliases.items():
+            if source in reproducer and target not in reproducer:
+                reproducer[target] = reproducer[source]
+        source_files = reproducer.get("source_files") or []
+        if isinstance(source_files, list):
+            reproducer["source_files"] = [
+                item.get("path") if isinstance(item, dict) and item.get("path")
+                else item
+                for item in source_files
+            ]
+            source_files = reproducer["source_files"]
+        raw_run_args = reproducer.get("run_args")
+        if isinstance(raw_run_args, list) and any(isinstance(item, list) for item in raw_run_args):
+            variants = [item for item in raw_run_args if isinstance(item, list)]
+            reproducer["run_args"] = variants[0] if variants else []
+            warnings.append(
+                "Codex declared multiple argument vectors; the first bounded vector is the "
+                "deterministic default and remaining vectors remain audit-only."
+            )
+        if not reproducer.get("entry_source") and isinstance(source_files, list) and source_files:
+            reproducer["entry_source"] = str(source_files[0])
+        normalized["reproducer"] = reproducer
+
+    raw_change = normalized.get("change_from_previous_tryout")
+    if isinstance(raw_change, dict):
+        normalized["change_from_previous_tryout"] = str(
+            raw_change.get("change") or raw_change.get("summary") or ""
+        ).strip()
+
+    reason = normalized.get("blocked_reason")
+    if isinstance(reason, dict):
+        parts = [
+            str(reason.get("precise_limitation") or "").strip(),
+            str(reason.get("consequence") or "").strip(),
+        ]
+        normalized["blocked_reason"] = " ".join(part for part in parts if part)
+    elif reason is None:
+        normalized["blocked_reason"] = ""
+
+    if normalized.get("status") == "ready":
+        normalized["status"] = "ok"
+        warnings.append(
+            "Normalized the explicit Codex KERNEL_CONTRACT schema_version=1 status=ready; "
+            "source, static-C, and Test Expert guest gates remain authoritative."
+        )
+    normalized["warnings"] = warnings
+    return normalized
+
+
 def _coerce_contract_json(data: object) -> object:
     """Normalize harmless LLM prose before validating the handoff schema.
 
@@ -2666,7 +2806,7 @@ def _coerce_contract_json(data: object) -> object:
     """
     if not isinstance(data, dict):
         return data
-    normalized = dict(data)
+    normalized = _normalise_codex_maintenance_contract(data)
     warnings = list(normalized.get("warnings") or [])
     # Codex may express the evidence archive as a path manifest (mapping
     # artifact names to paths/lists) instead of the list-shaped contract
@@ -2687,8 +2827,16 @@ def _coerce_contract_json(data: object) -> object:
             raw = [raw]
         structured = []
         for item in raw:
-            if isinstance(item, dict):
+            if isinstance(item, dict) and item.get("type") in {
+                "setup_vcan", "run_binary", "run_pressure", "write_sysctl",
+                "wait", "fault_injection",
+            }:
                 structured.append(item)
+            elif isinstance(item, dict):
+                warnings.append(
+                    f"{field} descriptive object retained as warning: "
+                    f"{json.dumps(item, ensure_ascii=False, sort_keys=True)}"
+                )
             elif isinstance(item, str) and item.strip():
                 warnings.append(f"{field} prose requirement retained as warning: {item.strip()}")
         normalized[field] = structured

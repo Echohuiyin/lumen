@@ -52,6 +52,12 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
             attested_source_commit = str(snapshot["expected_commit"])
     root_cause = str(contract.get("root_cause") or "").strip()
     evidence = _dicts(contract.get("root_cause_evidence"))
+    if not evidence:
+        # Versioned Codex contracts may retain the source-backed list under
+        # the additive ``evidence`` field after the workflow has flattened
+        # ``root_cause``.  Reuse only structured entries; no source claim is
+        # synthesized here.
+        evidence = _dicts(contract.get("evidence"))
     oracle = dict(contract.get("call_chain_oracle") or {})
 
     observed = _observed_facts(
@@ -218,7 +224,21 @@ def _observed_facts(
     *, user_input: str, report_text: str,
     contract: dict[str, Any], oracle: dict[str, Any],
 ) -> dict[str, Any]:
-    entry = _label(user_input, "entry_point") or _label(user_input, "fault_function")
+    entry = next(
+        (
+            _label(user_input, field)
+            for field in ("entry_point", "fault_function", "function", "target_function")
+            if _label(user_input, field)
+        ),
+        "",
+    )
+    if not entry:
+        match = re.search(
+            r"(?i)\b(?:fault|crash|oops|warning)\s+(?:in|at)\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)",
+            user_input,
+        )
+        entry = match.group(1) if match else ""
     top_frames = [
         str(item) for item in (
             oracle.get("required_top_frames")
@@ -310,6 +330,15 @@ def _audit_source_evidence(
     for item in evidence:
         rel = str(item.get("file") or "").strip()
         function = str(item.get("function") or "").strip()
+        # Evidence lists also carry first-hand log references and runtime
+        # artifact paths.  They are audit records, not source claims; counting
+        # them in the denominator made a correct source-grounded diagnosis
+        # look unsupported.  Only declared source-domain files are scored.
+        source_domain = str(item.get("source_domain") or "").strip().lower()
+        if not rel or rel.startswith(("evidence/", "tryouts/")) or (
+            source_domain and source_domain not in {"kernel", "source"}
+        ):
+            continue
         line = item.get("line")
         check: dict[str, Any] = {
             "function": function, "file": rel, "line": line, "verified": False,
@@ -324,9 +353,16 @@ def _audit_source_evidence(
                 try:
                     text = candidate.read_text(encoding="utf-8", errors="replace")
                     line_ok = not isinstance(line, int) or 1 <= line <= len(text.splitlines())
-                    function_ok = not function or bool(re.search(
-                        rf"(?<![A-Za-z0-9_]){re.escape(function)}\s*\(", text,
-                    ))
+                    if not function:
+                        function_ok = True
+                    elif function.startswith("struct "):
+                        function_ok = function in text
+                    elif candidate.suffix.lower() in {".rst", ".md"}:
+                        function_ok = function in text
+                    else:
+                        function_ok = bool(re.search(
+                            rf"(?<![A-Za-z0-9_]){re.escape(function)}\s*\(", text,
+                        ))
                     check.update({
                         "path": str(candidate), "line_in_file": line_ok,
                         "function_in_file": function_ok,
@@ -503,6 +539,16 @@ def _score_dimensions(
         *[str(item) for item in (observed.get("top_frames") or []) if len(str(item)) > 4],
     ])
     phenomenon_hits = _contains_any(lowered, phenomenon_terms)
+    # Contract frames commonly include offsets (``foo+0x10/0x20``), while a
+    # root-cause sentence names the source symbol (``foo()``).  Compare the
+    # normalized symbols as well so the call-chain mapping measures semantic
+    # coverage rather than punctuation.
+    normalized_frame_hits = 0
+    for frame in observed.get("top_frames") or []:
+        match = re.match(r"([A-Za-z_][A-Za-z0-9_]*)", str(frame))
+        if match and match.group(1).lower() in lowered:
+            normalized_frame_hits += 1
+    phenomenon_hits += normalized_frame_hits
     if first_hand_text and any(
         name.lower() in first_hand_text.lower() and name.lower() in lowered
         for name in fault_functions

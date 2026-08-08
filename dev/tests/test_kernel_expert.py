@@ -360,6 +360,55 @@ def test_contract_accepts_evidence_path_manifest_without_dropping_handoff():
         }]
 
 
+def test_codex_versioned_contract_aliases_normalize_without_inventing_runtime_actions():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "schema_version": 1,
+        "status": "blocked",
+        "tryout": {"number": 1, "maximum": 10},
+        "root_cause": {"verified_invariant": "label must remain NUL terminated"},
+        "evidence": [{"source_domain": "kernel", "function": "strlen"}],
+        "original_call_chain": {"observed_frames": ["strlen", "smack_log_callback"]},
+        "call_chain_oracle": {
+            "required_order_top_to_bottom": ["strlen", "smack_log_callback"],
+            "required_signatures": ["RIP in strlen"],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diagnostic_test.c"],
+            "flags": ["-Wall"], "libraries": ["libc"],
+            "arguments": [], "timeout_seconds": 5,
+        },
+        "pressure_requirements": {"iterations": 1, "processes": 1},
+        "fault_injection_requirements": {"required": False},
+        "blocked_reason": {"precise_limitation": "public ABI cannot invalidate label"},
+    }
+    parsed = _extract_kernel_contract("KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```")
+    assert parsed.status == "blocked"
+    assert parsed.tryout == 1
+    assert parsed.root_cause == "label must remain NUL terminated"
+    assert parsed.original_call_chain == ["strlen", "smack_log_callback"]
+    assert parsed.call_chain_oracle.required_frames == ["strlen", "smack_log_callback"]
+    assert parsed.reproducer.compiler_args == ["-Wall"]
+    assert parsed.blocked_reason == "public ABI cannot invalidate label"
+    assert parsed.pressure_requirements == []
+    assert parsed.fault_injection_requirements == []
+
+
+def test_codex_flattened_contract_preserves_evidence_for_root_cause_scoring():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": "smack_watch_key uses the wrong key blob base",
+        "evidence": [{"function": "smack_watch_key", "file": "security/smack/smack_lsm.c", "line": "1-2"}],
+        "call_chain_oracle": {"required_order_top_to_bottom": ["strlen", "smack_watch_key"], "required_signatures": ["RIP in strlen"]},
+        "reproducer": {"language": "c", "artifact_type": "userspace", "source_files": ["diag.c"]},
+    }
+    parsed = _extract_kernel_contract("KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```")
+    assert parsed.status == "ok"
+    assert parsed.root_cause_evidence[0]["function"] == "smack_watch_key"
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
