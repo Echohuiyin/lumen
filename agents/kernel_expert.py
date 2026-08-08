@@ -2777,6 +2777,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             raw_chain.get("observed_frames")
             or raw_chain.get("observed_top_to_bottom")
             or raw_chain.get("observed_order_top_to_bottom")
+            or raw_chain.get("ordered_frames_top_to_bottom")
             or raw_chain.get("frames")
             or raw_chain.get("required_primary_frames")
             or raw_chain.get("report_stack_top_to_bottom")

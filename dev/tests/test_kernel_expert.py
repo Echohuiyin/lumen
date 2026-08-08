@@ -506,6 +506,38 @@ def test_codex_strict_order_alias_preserves_explicit_fault_signature():
     ]
 
 
+def test_codex_ordered_frames_top_to_bottom_preserves_blocked_rca():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {
+            "summary": "A read-only start leaves the btree update pool uninitialized.",
+        },
+        "original_call_chain": {
+            "source": "evidence/original.log",
+            "ordered_frames_top_to_bottom": [
+                "mempool_alloc_noprof+0x1a4/0x510",
+                "bch2_btree_update_start+0x51e/0x1480",
+                "bch2_data_job+0x646/0x910",
+            ],
+        },
+        "call_chain_oracle": {
+            "fault_signatures": ["RIP: 0010:0x0"],
+        },
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "A read-only start leaves the btree update pool uninitialized."
+    assert parsed.original_call_chain == [
+        "mempool_alloc_noprof+0x1a4/0x510",
+        "bch2_btree_update_start+0x51e/0x1480",
+        "bch2_data_job+0x646/0x910",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:0x0"]
+
+
 def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
     data = {
         "contract": "KERNEL_CONTRACT",
