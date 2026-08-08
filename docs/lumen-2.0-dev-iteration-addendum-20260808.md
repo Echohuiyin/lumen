@@ -65,3 +65,11 @@ accepts only relative files under that directory, so the path spelling caused
 an early false block. The minimal adapter fix strips the declared directory
 prefix only when it is an exact in-directory prefix; outside paths remain
 unchanged and continue to fail closed. No source or runtime action is inferred.
+
+The second bcachefs turn used the same complete shape without a top-level
+marker and was therefore also reduced to an empty envelope. The follow-up
+adapter accepts only a materialized multi-field contract (`status`, nested
+root-cause, original chain, oracle, and userspace reproducer), maps its
+explicit primary frames/crash signatures, and normalizes descriptive compiler
+labels. This preserves the source-proven `CAP_SYS_ADMIN` block while keeping
+arbitrary unstructured JSON rejected.

@@ -482,6 +482,38 @@ def test_codex_contract_type_preserves_precise_blocked_reason_and_oracle():
     assert "CAP_SYS_ADMIN" in parsed.blocked_reason
 
 
+def test_materialized_unmarked_contract_shape_is_still_normalized():
+    data = {
+        "status": "blocked",
+        "root_cause": {"classification": "capability boundary"},
+        "original_call_chain": {
+            "required_primary_frames": ["fault_entry+0x10", "worker"],
+            "crash_signatures": ["RIP: 0010:fault_entry+0x10", "CR2: 0"],
+        },
+        "call_chain_oracle": {
+            "required_frames": [
+                {"order": 1, "function": "fault_entry", "signature": "fault_entry+0x10"},
+                {"order": 2, "function": "worker", "signature": "worker+0x20"},
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["probe.c"],
+            "compiler": "cc with C11 support", "arguments": [], "timeout_seconds": 5,
+        },
+        "blocked_reason": "capability gate is source-proven",
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "capability boundary"
+    assert parsed.original_call_chain == ["fault_entry+0x10", "worker"]
+    assert parsed.call_chain_oracle.required_frames == ["fault_entry+0x10", "worker+0x20"]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "RIP: 0010:fault_entry+0x10", "CR2: 0",
+    ]
+    assert parsed.reproducer.compiler == "cc"
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(

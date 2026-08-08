@@ -2667,6 +2667,18 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # arbitrary prose is still rejected by the extractor.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
+        elif (
+            data.get("status") in {"ok", "ready", "blocked"}
+            and isinstance(data.get("root_cause"), dict)
+            and isinstance(data.get("original_call_chain"), dict)
+            and isinstance(data.get("call_chain_oracle"), dict)
+            and isinstance(data.get("reproducer"), dict)
+        ):
+            # A materialized KERNEL_CONTRACT.json may omit the marker while
+            # retaining the complete versioned shape.  Accept only this
+            # explicit multi-field contract, never arbitrary model prose.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
         else:
             return data
     normalized = dict(data)
@@ -2719,16 +2731,24 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         normalized["root_cause_evidence"] = normalized["evidence"]
 
     raw_chain = normalized.get("original_call_chain")
+    declared_fault_signatures: list[str] = []
     if isinstance(raw_chain, dict):
         frames = (
             raw_chain.get("observed_frames")
             or raw_chain.get("observed_order_top_to_bottom")
             or raw_chain.get("frames")
+            or raw_chain.get("required_primary_frames")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
                 value for item in frames
                 if (value := _frame_text(item))
+            ]
+        if isinstance(raw_chain.get("crash_signatures"), list):
+            declared_fault_signatures = [
+                str(item).strip()
+                for item in raw_chain["crash_signatures"]
+                if str(item).strip()
             ]
     elif isinstance(raw_chain, list):
         normalized["original_call_chain"] = [
@@ -2807,6 +2827,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             oracle["fault_signatures"] = oracle.get("required_signatures") or []
         if "required_log_signatures" in oracle and "fault_signatures" not in oracle:
             oracle["fault_signatures"] = oracle.get("required_log_signatures") or []
+        if declared_fault_signatures and "fault_signatures" not in oracle:
+            oracle["fault_signatures"] = declared_fault_signatures
         normalized["call_chain_oracle"] = oracle
 
     raw_reproducer = normalized.get("reproducer")
@@ -2821,6 +2843,11 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         for source, target in aliases.items():
             if source in reproducer and target not in reproducer:
                 reproducer[target] = reproducer[source]
+        compiler = str(reproducer.get("compiler") or "").strip().lower()
+        if compiler.startswith("gcc"):
+            reproducer["compiler"] = "gcc"
+        elif compiler.startswith("cc"):
+            reproducer["compiler"] = "cc"
         source_files = reproducer.get("source_files") or []
         if isinstance(source_files, list):
             source_dir = str(reproducer.get("source_dir") or "").rstrip("/")
