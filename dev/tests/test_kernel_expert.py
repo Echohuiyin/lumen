@@ -390,6 +390,7 @@ def test_codex_versioned_contract_aliases_normalize_without_inventing_runtime_ac
     assert parsed.original_call_chain == ["strlen", "smack_log_callback"]
     assert parsed.call_chain_oracle.required_frames == ["strlen", "smack_log_callback"]
     assert parsed.reproducer.compiler_args == ["-Wall"]
+    assert parsed.reproducer.link_libraries == ["c"]
     assert parsed.blocked_reason == "public ABI cannot invalidate label"
     assert parsed.pressure_requirements == []
     assert parsed.fault_injection_requirements == []
@@ -648,6 +649,23 @@ def test_codex_ready_for_test_and_indexed_tryout_are_normalized():
     assert parsed.call_chain_oracle.fault_signatures == [
         "BUG: KASAN: use-after-free in j1939_sock_pending_del",
     ]
+
+
+def test_codex_descriptive_pthread_library_is_linker_safe():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": "public ABI cannot reach the internal branch",
+        "original_call_chain": ["fault_fn"],
+        "call_chain_oracle": {"fault_signatures": ["BUG: fault_fn"]},
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["probe.c"],
+            "libraries": ["libpthread via -pthread"],
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.reproducer.link_libraries == ["pthread"]
 
 
 

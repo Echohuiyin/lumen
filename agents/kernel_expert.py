@@ -2889,6 +2889,30 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         for source, target in aliases.items():
             if source in reproducer and target not in reproducer:
                 reproducer[target] = reproducer[source]
+        raw_libraries = reproducer.get("link_libraries")
+        if isinstance(raw_libraries, list):
+            normalized_libraries = []
+            for item in raw_libraries:
+                value = str(item or "").strip()
+                if not value:
+                    continue
+                # The versioned Codex contract describes libraries as
+                # ``libpthread via -pthread`` or ``libc``.  The static gate
+                # owns the ``-l`` prefix, so retain only the linker name and
+                # remove a conventional ``lib`` prefix; otherwise ``libc``
+                # would become the invalid ``-llibc``.
+                value = value.split(" via ", 1)[0].strip().split()[0]
+                if value.startswith("-l"):
+                    value = value[2:]
+                if value.startswith("lib") and len(value) > 3:
+                    value = value[3:]
+                if value:
+                    normalized_libraries.append(value)
+            if normalized_libraries != raw_libraries:
+                warnings.append(
+                    "Normalized descriptive link library names for the static ABI gate."
+                )
+            reproducer["link_libraries"] = normalized_libraries
         compiler = str(reproducer.get("compiler") or "").strip().lower()
         if compiler.startswith("gcc"):
             reproducer["compiler"] = "gcc"
