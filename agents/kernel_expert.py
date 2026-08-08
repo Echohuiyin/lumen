@@ -2751,6 +2751,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     if isinstance(raw_chain, dict):
         frames = (
             raw_chain.get("observed_frames")
+            or raw_chain.get("observed_top_to_bottom")
             or raw_chain.get("observed_order_top_to_bottom")
             or raw_chain.get("frames")
             or raw_chain.get("required_primary_frames")
@@ -2774,6 +2775,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     for item in raw_chain[signature_key]
                     if str(item).strip()
                 )
+        singular_signature = str(raw_chain.get("fault_signature") or "").strip()
+        if singular_signature:
+            declared_fault_signatures.append(singular_signature)
     elif isinstance(raw_chain, list):
         normalized["original_call_chain"] = [
             value for item in raw_chain

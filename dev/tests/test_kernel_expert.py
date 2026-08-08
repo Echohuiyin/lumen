@@ -748,6 +748,42 @@ def test_codex_blocked_lock_contract_preserves_log_order_and_signals():
     ]
 
 
+def test_codex_blocked_sock_contract_preserves_observed_top_to_bottom_alias():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {
+            "classification": "unverified socket lifetime inconsistency",
+        },
+        "original_call_chain": {
+            "observed_top_to_bottom": [
+                "sock_close+0xc5/0x260", "? sock_mmap+0x90/0x90",
+                "__fput+0x34f/0x7b0", "task_work_run+0x137/0x1c0",
+            ],
+            "fault_signature": "KASAN: null-ptr-deref in range [0x10-0x17]",
+        },
+        "call_chain_oracle": {
+            "required_signatures": [
+                "KASAN: null-ptr-deref in range [0x10-0x17]",
+                "RIP: sock_close+0xc5/0x260", "__fput",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["probe.c"],
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "blocked"
+    assert parsed.original_call_chain == [
+        "sock_close+0xc5/0x260", "? sock_mmap+0x90/0x90",
+        "__fput+0x34f/0x7b0", "task_work_run+0x137/0x1c0",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "KASAN: null-ptr-deref in range [0x10-0x17]",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
