@@ -12,6 +12,10 @@ from paths import PROJECT_ROOT
 
 
 PATH_PATTERN = r"((?:[~/]|\$)[^\s,?;?]+)"
+_EXPLICIT_REPRODUCER_DECLARATION = re.compile(
+    r"(?im)^\s*(?:reproducer(?:_path)?|syz[_ ]repro(?:ducer)?|"
+    r"test[_ ]script(?:_path)?|repro(?:ducer)?[_ ]artifact)\s*[:=]"
+)
 
 
 def _extract_labeled_path(text: str, labels: list[str]) -> tuple[str, str]:
@@ -284,6 +288,23 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         })
     if log_excerpt:
         evidence.append({"kind": "input_log_excerpt", "field": "log_excerpt", "length": len(log_excerpt)})
+
+    # Lumen receives only the sanitized problem description and declared
+    # first-hand evidence.  Historical C/syz/module/script reproducers are
+    # audit-only artifacts and must be rejected at the input boundary rather
+    # than silently becoming optional expert context.
+    explicit_reproducer = bool(_EXPLICIT_REPRODUCER_DECLARATION.search(text))
+    if reproducer_path or explicit_reproducer:
+        errors.append(
+            "input.txt contains an explicit reproducer artifact; remove it "
+            "before sending the sanitized case to Lumen"
+        )
+        evidence.append({
+            "kind": "input_sanitization_check",
+            "passed": False,
+            "field": "reproducer_path",
+            "explicit_declaration": explicit_reproducer,
+        })
 
     if vmlinux_path and not boot_kernel_path:
         warnings.append("vmlinux_path was provided without a boot_kernel_path; vmlinux is not a QEMU boot image")

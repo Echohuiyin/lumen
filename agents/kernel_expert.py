@@ -1438,7 +1438,6 @@ def _recover_materialized_contract_after_cli_failure(
         'target_arch': contract.target_arch,
         'boot_kernel_path': contract.boot_kernel_path,
         'reproducer_dir': contract.reproducer_dir,
-        'reproducer_module_path': contract.reproducer_module_path,
         'expected_signal': contract.expected_signal,
         'binaries_dir': contract.binaries_dir,
         'semcode_path_analysis': (
@@ -1944,7 +1943,6 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
                         "target_arch": existing_contract.target_arch,
                         "boot_kernel_path": existing_contract.boot_kernel_path,
                         "reproducer_dir": existing_contract.reproducer_dir,
-                        "reproducer_module_path": existing_contract.reproducer_module_path,
                         "expected_signal": existing_contract.expected_signal,
                         "binaries_dir": existing_contract.binaries_dir,
                         "semcode_path_analysis": semcode_path_analysis.as_dict() if semcode_path_analysis else {},
@@ -2485,7 +2483,6 @@ def _parse_kernel_expert_response(
         "target_arch": kernel_contract.target_arch,
         "boot_kernel_path": kernel_contract.boot_kernel_path,
         "reproducer_dir": kernel_contract.reproducer_dir,
-        "reproducer_module_path": kernel_contract.reproducer_module_path,
         "expected_signal": kernel_contract.expected_signal,
         "binaries_dir": kernel_contract.binaries_dir,
     }
@@ -3328,38 +3325,6 @@ def _enrich_kernel_contract_from_runtime(
 
 
 
-def _kernel_contract_from_markers(
-    *, target_arch: str, boot_kernel_path: str, reproducer_dir: str,
-    reproducer_module_path: str, test_script_path: str, expected_signal: str,
-    binaries_dir: str = "",
-) -> KernelExpertOutput:
-    """Legacy parser retained for archived contract fixtures only; never routed."""
-    missing = [name for name, value in {
-        "target_arch": target_arch, "boot_kernel_path": boot_kernel_path,
-        "test_script_path": test_script_path, "expected_signal": expected_signal,
-    }.items() if not value]
-    return KernelExpertOutput(
-        status="ok" if not missing else "blocked",
-        target_arch=target_arch, boot_kernel_path=boot_kernel_path,
-        reproducer_dir=reproducer_dir, reproducer_module_path=reproducer_module_path,
-        expected_signal=expected_signal, binaries_dir=binaries_dir,
-        build_status="unknown", warnings=["legacy test fixture only"],
-        blocked_reason=f"missing legacy fields: {', '.join(missing)}" if missing else "",
-    )
-
-
-def _merge_kernel_contract(primary: KernelExpertOutput, legacy: KernelExpertOutput) -> KernelExpertOutput:
-    """Legacy test-only merge; production parsing never invokes it."""
-    data = model_to_dict(primary)
-    legacy_data = model_to_dict(legacy)
-    for key, value in legacy_data.items():
-        if key in {"warnings", "evidence"}:
-            data[key] = (data.get(key) or []) + (value or [])
-        elif not data.get(key) and value:
-            data[key] = value
-    return _model_validate(KernelExpertOutput, data)
-
-
 def _kernel_contract_has_handoff(contract: KernelExpertOutput) -> bool:
     return bool(
         contract.target_arch
@@ -3705,8 +3670,6 @@ def _validate_kernel_contract_artifacts(
     reproducer = contract.reproducer
     if reproducer.language != "c" or reproducer.artifact_type != "userspace":
         errors.append("reproducer must be a userspace C program")
-    if contract.reproducer_module_path:
-        errors.append("kernel modules are forbidden; reproducer_module_path must be empty")
     if not reproducer.source_dir:
         errors.append("missing reproducer.source_dir")
     else:

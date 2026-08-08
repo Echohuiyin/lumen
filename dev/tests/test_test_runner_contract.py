@@ -281,7 +281,6 @@ def test_qemu_recipe_parses_from_kernel_contract_json():
         "status": "ok",
         "target_arch": "x86_64",
         "boot_kernel_path": "/tmp/bzImage",
-        "test_script_path": "/tmp/test.sh",
         "expected_signal": "pvqspinlock: lock",
         "qemu_recipe": {
             "machine": "q35,accel=kvm:tcg",

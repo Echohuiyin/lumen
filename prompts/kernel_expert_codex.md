@@ -71,6 +71,7 @@ The contract must contain:
 - structured `setup_requirements` for explicit guest preconditions such as a
   vcan interface that the selected rootfs does not guarantee;
 - structured `pressure_requirements` and `fault_injection_requirements` only when justified by the report/source;
+- `producer_frontier` describing the first public userspace ingress to the target path. It must use `status` `verified`, `partial`, `missing`, `blocked`, or `not_applicable`, and carry source/log evidence plus unresolved prerequisites. A missing producer is an analysis limitation, not permission to claim a QEMU pass.
 - `change_from_previous_tryout`, `warnings`, and `blocked_reason`.
 
 `setup_requirements`, `pressure_requirements`, and `fault_injection_requirements` are typed Lumen
@@ -131,6 +132,16 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
     "target_subsystems": ["subsystem"],
     "target_objects": ["object"],
     "allowed_wrapper_frames": []
+  },
+  "producer_frontier": {
+    "status": "verified",
+    "target_function": "fault",
+    "ingress": "documented userspace ABI",
+    "source_evidence": [],
+    "runtime_evidence": [],
+    "required_setup": [],
+    "unresolved_prerequisites": [],
+    "rationale": "source-backed producer boundary"
   },
   "qemu_recipe": {"extra_cmdline": ""},
   "reproducer": {

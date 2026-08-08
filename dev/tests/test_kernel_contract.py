@@ -48,13 +48,16 @@ def test_userspace_contract_is_a_test_expert_handoff():
         assert route_after_kernel({"kernel_contract": validated.model_dump() if hasattr(validated, "model_dump") else validated.dict(), "kernel_ready_for_test": True}) == "test_expert"
 
 
-def test_kernel_module_is_rejected():
+def test_legacy_kernel_module_field_is_rejected_at_contract_boundary():
     with tempfile.TemporaryDirectory() as directory:
-        contract = _contract(Path(directory))
-        contract.reproducer_module_path = "/tmp/repro.ko"
-        validated = _validate_kernel_contract_artifacts(contract)
-        assert validated.status == "blocked"
-        assert "kernel modules are forbidden" in validated.blocked_reason
+        payload = _contract(Path(directory)).model_dump()
+        payload["reproducer_module_path"] = "/tmp/repro.ko"
+        try:
+            KernelExpertOutput.model_validate(payload)
+        except ValueError as exc:
+            assert "reproducer_module_path" in str(exc)
+        else:
+            raise AssertionError("legacy kernel-module field must be rejected")
 
 
 def test_missing_call_chain_oracle_is_rejected():
@@ -92,7 +95,7 @@ def test_router_retries_until_tenth_mismatch_then_ends():
 if __name__ == "__main__":
     for test in (
         test_userspace_contract_is_a_test_expert_handoff,
-        test_kernel_module_is_rejected,
+        test_legacy_kernel_module_field_is_rejected_at_contract_boundary,
         test_missing_call_chain_oracle_is_rejected,
         test_explicit_kernel_block_is_not_routed_to_test_expert,
         test_router_retries_until_tenth_mismatch_then_ends,

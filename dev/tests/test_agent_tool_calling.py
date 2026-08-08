@@ -204,9 +204,10 @@ def test_test_expert():
     # 测试 1: 工具创建
     tools = create_qemu_tools()
     tool_names = [t.name for t in tools]
-    has_required = all(n in tool_names for n in ["check_qemu_available", "create_ext4_rootfs", "boot_kernel"])
+    has_required = all(n in tool_names for n in ["check_qemu_available", "boot_kernel"])
     print_result("QEMU工具创建", has_required, f"tools={tool_names}")
     assert has_required
+    assert "create_ext4_rootfs" not in tool_names
     assert "create_initramfs" not in tool_names
 
     # 测试 2: QEMU 可用性检查

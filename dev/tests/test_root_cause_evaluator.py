@@ -88,6 +88,20 @@ def test_function_field_is_used_as_declared_fault_entry():
     assert observed["function_hits_in_report"]["smack_log_callback"] is True
 
 
+def test_missing_producer_frontier_cannot_promote_root_cause_to_supported(tmp_path):
+    state = _state(tmp_path)
+    state["kernel_contract"]["producer_frontier"] = {
+        "status": "missing",
+        "target_function": "demo_open",
+        "unresolved_prerequisites": ["public ABI producer not identified"],
+    }
+    result = evaluate_root_cause(state)
+    assert result["root_cause"]["status"] == "partially_supported"
+    assert result["diagnosis_status"] == "root_cause_analyzed_producer_unresolved"
+    assert result["case_evidence"]["producer_gate"]["passed"] is False
+    assert result["reproduction"]["test_passed"] is False
+
+
 def test_bug_promote_title_is_used_as_declared_fault_entry():
     observed = evaluator._observed_facts(
         user_input="Bug Promote: general protection fault in smack_log_callback",

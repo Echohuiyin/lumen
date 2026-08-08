@@ -23,7 +23,6 @@ from agents.qemu_tools import (
     analyze_boot_log_result,
     boot_kernel_result,
     check_qemu_available_result,
-    create_ext4_rootfs_result,
 )
 
 
@@ -175,10 +174,6 @@ def run_qemu_test_plan(
             status="skipped",
         )
 
-    modules_dir = plan.reproducer_dir
-    if not modules_dir and plan.reproducer_module_path:
-        modules_dir = str(Path(os.path.expanduser(plan.reproducer_module_path)).parent)
-
     if plan.rootfs_mode != "ext4":
         return _failure_result(
             code="BLOCKED_INITRAMFS_UNSUPPORTED",
@@ -188,36 +183,26 @@ def run_qemu_test_plan(
             steps=steps,
         )
 
-    rootfs_path = ""
-    if plan.rootfs_path:
-        rootfs_path = os.path.expanduser(plan.rootfs_path)
-        if not os.path.exists(rootfs_path):
-            return _failure_result(
-                code="BLOCKED_ROOTFS_MISSING",
-                summary=f"Rootfs image does not exist: {plan.rootfs_path}",
-                plan=plan,
-                attempts=attempt,
-                steps=steps,
-            )
-    else:
-        rootfs_step = create_ext4_rootfs_result(
-            arch=plan.target_arch,
-            test_script_path=None,
-            modules_dir=modules_dir or None,
-            binaries_dir=plan.binaries_dir or None,
-            size_mb=plan.rootfs_size_mb or 128,
+    # The production workflow uses Test Expert's isolated declared base image
+    # and persistent SSH runner.  This compatibility entry point must not
+    # synthesize an initramfs/rootfs or stage legacy modules/scripts.
+    if not plan.rootfs_path:
+        return _failure_result(
+            code="BLOCKED_BASE_IMAGE_MISSING",
+            summary="A declared ext4 rootfs is required; legacy rootfs synthesis is disabled.",
+            plan=plan,
+            attempts=attempt,
+            steps=steps,
         )
-        steps.append(rootfs_step)
-        rootfs_path = rootfs_step.artifacts.get("rootfs_path", "")
-        if rootfs_step.status != "ok" or not rootfs_path:
-            return _failure_result(
-                code="FAILED_EXT4_ROOTFS",
-                summary="Failed to create ext4 rootfs for QEMU test.",
-                plan=plan,
-                attempts=attempt,
-                steps=steps,
-                status="failed",
-            )
+    rootfs_path = os.path.expanduser(plan.rootfs_path)
+    if not os.path.exists(rootfs_path):
+        return _failure_result(
+            code="BLOCKED_ROOTFS_MISSING",
+            summary=f"Rootfs image does not exist: {plan.rootfs_path}",
+            plan=plan,
+            attempts=attempt,
+            steps=steps,
+        )
 
     boot_step = boot_kernel_result(
         kernel_path=kernel_path,

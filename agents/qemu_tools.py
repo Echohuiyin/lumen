@@ -1034,17 +1034,6 @@ def create_qemu_tools() -> list[StructuredTool]:
             args_schema=CheckQemuInput,
         ),
         StructuredTool(
-            name="create_ext4_rootfs",
-            description=(
-                "Create an ext4 root filesystem image for QEMU kernel testing. "
-                "Includes architecture-matched BusyBox, init script, optional "
-                "test script, kernel modules, and userspace binaries. "
-                "Returns path to created rootfs image."
-            ),
-            func=create_ext4_rootfs,
-            args_schema=CreateExt4RootfsInput,
-        ),
-        StructuredTool(
             name="boot_kernel",
             description=(
                 "Boot a kernel in QEMU with a specified ext4/raw disk image. "

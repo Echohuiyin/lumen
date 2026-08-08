@@ -6,7 +6,6 @@
 - create_directory: 创建目录
 - write_file: 写入文件内容
 - read_file: 读取文件内容
-- compile_module: 编译内核模块
 - check_file_exists: 检查文件是否存在
 - list_directory: 列出目录内容
 - search_files: 使用 rg 搜索源码/输出文件
@@ -17,7 +16,6 @@ from pathlib import Path
 from typing import Optional
 import os
 import re
-import shlex
 import subprocess
 
 from langchain_core.tools import StructuredTool
@@ -26,29 +24,6 @@ from paths import PROJECT_ROOT
 
 
 MAX_OUTPUT_CHARS = 20000
-MAX_BASH_TIMEOUT = 300
-PROTECTED_ABSOLUTE_PATHS = ("/etc", "/boot", "/usr", "/bin", "/sbin", "/lib", "/lib64", "/proc", "/sys", "/dev")
-
-BLOCKED_BASH_PATTERNS = [
-    r"\bsudo\b",
-    r"\bsu\s",
-    r"\brm\s+-[^;&|]*r[^;&|]*f\b",
-    r"\bdd\s+.*\bof=",
-    r"\bmkfs(?:\.\w+)?\b",
-    r"\bmount\b",
-    r"\bumount\b",
-    r"\breboot\b",
-    r"\bshutdown\b",
-    r"\bpoweroff\b",
-    r"\bcurl\b.*\|\s*(?:sh|bash)",
-    r"\bwget\b.*\|\s*(?:sh|bash)",
-    r"\b(?:touch|cp|mv|chmod|chown|ln|mkdir|rmdir|install|truncate|tee)\b",
-    r"\b(?:python|python3|perl|ruby|node)\b\s+-[ce]",
-    r">\s*/(?:etc|boot|usr|bin|sbin|lib|lib64|proc|sys|dev)/",
-    r">>\s*/(?:etc|boot|usr|bin|sbin|lib|lib64|proc|sys|dev)/",
-]
-
-
 def _truncate_output(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
     if len(text) <= limit:
         return text
@@ -63,24 +38,6 @@ def _resolve_workdir(workdir: str | None = None) -> Path:
     if not expanded.is_absolute():
         expanded = PROJECT_ROOT / expanded
     return expanded.resolve()
-
-
-def _is_relative_to(path: Path, base: Path) -> bool:
-    try:
-        path.relative_to(base)
-        return True
-    except ValueError:
-        return False
-
-
-def _is_blocked_command(command: str) -> str | None:
-    for pattern in BLOCKED_BASH_PATTERNS:
-        if re.search(pattern, command):
-            return pattern
-    for protected_path in PROTECTED_ABSOLUTE_PATHS:
-        if re.search(rf"(?<![\w.-]){re.escape(protected_path)}(?:/|\b)", command):
-            return f"protected path: {protected_path}"
-    return None
 
 
 def create_directory(path: str) -> str:
@@ -135,81 +92,6 @@ def read_file(file_path: str) -> str:
         return f"✓ File read: {expanded_path}\n{content[:500]}..."
     except Exception as e:
         return f"✗ Error reading file {file_path}: {str(e)}"
-
-
-def compile_module(
-    module_dir: str,
-    kernel_dir: Optional[str] = None,
-    arch: str = "x86_64",
-    cross_compile: Optional[str] = None,
-) -> str:
-    """Compile kernel module using make.
-
-    Args:
-        module_dir: Directory containing module source and Makefile
-        kernel_dir: Optional kernel build directory (defaults to /lib/modules/$(uname -r)/build)
-        arch: Target architecture ('x86_64', 'arm64', 'arm32'). When not x86_64,
-            ARCH= and CROSS_COMPILE= are passed to make for cross-compilation.
-        cross_compile: Optional cross-compiler prefix (e.g. 'aarch64-linux-gnu-').
-            If None, derived from arch when arch != x86_64.
-
-    Returns:
-        Compilation output (success or error log)
-    """
-    try:
-        expanded_dir = os.path.expanduser(module_dir)
-
-        # 确保使用绝对路径
-        if not os.path.isabs(expanded_dir):
-            expanded_dir = os.path.abspath(expanded_dir)
-
-        if kernel_dir:
-            kdir = os.path.expanduser(kernel_dir)
-        else:
-            kdir = f"/lib/modules/{os.uname().release}/build"
-
-        # Kernel Makefile uses 'arm' (not 'arm32') for ARCH=
-        arch_to_kernel = {"x86_64": "x86_64", "arm64": "arm64", "arm32": "arm"}
-        kernel_arch = arch_to_kernel.get(arch, arch)
-
-        # Auto-derive cross-compiler prefix for non-host arches
-        if cross_compile is None:
-            cross_prefix = {
-                "arm64": "aarch64-linux-gnu-",
-                "arm32": "arm-linux-gnueabi-",
-                "x86_64": "",
-            }.get(arch, "")
-        else:
-            cross_prefix = cross_compile
-
-        cmd = ["make", "-C", kdir, f"M={expanded_dir}", "modules", "CONFIG_WERROR=n"]
-        if arch != "x86_64":
-            cmd.append(f"ARCH={kernel_arch}")
-            if cross_prefix:
-                cmd.append(f"CROSS_COMPILE={cross_prefix}")
-
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-
-        output = f"Command: {cmd}\n"
-        output += f"Return code: {result.returncode}\n"
-        output += f"stdout:\n{result.stdout}\n"
-        output += f"stderr:\n{result.stderr}\n"
-
-        if result.returncode == 0:
-            output += "✓ Compilation successful"
-        else:
-            output += "✗ Compilation failed"
-
-        return output
-    except subprocess.TimeoutExpired:
-        return "✗ Compilation timeout (>60s)"
-    except Exception as e:
-        return f"✗ Error compiling module: {str(e)}"
 
 
 def check_file_exists(file_path: str) -> str:
@@ -387,15 +269,6 @@ def create_kernel_tools() -> list:
             name="search_files",
             func=search_files,
             description="Search files using ripgrep; prefer this over bash grep for code search",
-        ),
-        StructuredTool.from_function(
-            name="bash",
-            func=bash,
-            description=(
-                "Run a controlled shell command for inspection or build operations. "
-                "Prefer dedicated tools for file writes. Userspace C reproducers are compiled only by Test Expert inside the guest. "
-                "Dangerous commands such as sudo, rm -rf, mount, reboot, mkfs, and system-path writes are blocked."
-            ),
         ),
     ]
     return tools

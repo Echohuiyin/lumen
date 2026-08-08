@@ -933,12 +933,6 @@ class PersistentQemuManager:
                 if not source.is_file():
                     raise ValueError(f"declared reproducer source is missing: {source}")
                 shutil.copy2(source, destination / relative_name)
-        if self.plan.reproducer_module_path:
-            module = Path(os.path.expanduser(self.plan.reproducer_module_path)).resolve()
-            if module.is_file():
-                modules = stage / "modules"
-                modules.mkdir(exist_ok=True)
-                shutil.copy2(module, modules / module.name)
         if self.plan.binaries_dir:
             binaries = Path(os.path.expanduser(self.plan.binaries_dir)).resolve()
             if binaries.is_dir():

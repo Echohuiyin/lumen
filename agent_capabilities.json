@@ -60,8 +60,8 @@
       "prompt_file": "prompts/kernel_expert.md",
       "required_inputs": ["user_input", "expert_results", "config"],
       "optional_inputs": ["input_artifacts_contract", "test_attempt_contract", "test_feedback", "tryout_count"],
-      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract", "semcode_path_analysis"],
-      "tools": ["create_directory", "write_file", "read_file", "check_file_exists", "list_directory", "search_files", "bash"],
+      "outputs": ["kernel_analysis", "reproduce_case", "kernel_diagnosis", "kernel_ready_for_test", "kernel_contract", "producer_frontier", "semcode_path_analysis"],
+      "tools": ["create_directory", "write_file", "read_file", "check_file_exists", "list_directory", "search_files"],
       "downstream_consumers": ["test_expert", "knowledge_base"],
       "bug_type_recipes": {
         "deadlock": {

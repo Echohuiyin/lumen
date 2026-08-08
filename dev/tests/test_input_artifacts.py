@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -11,7 +12,7 @@ from agents.input_artifacts import _resolve_input_path, parse_input_artifacts
 from project import format_user_input, parse_input_file
 
 
-def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
+def test_parse_input_rejects_unsanitized_reproducer_but_keeps_runtime_contract(tmp_path: Path):
     input_file = tmp_path / "input.txt"
     input_file.write_text(
         "\n".join(
@@ -32,10 +33,16 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
         encoding="utf-8",
     )
 
+    with pytest.raises(ValueError, match="BLOCKED_INPUT_REPRODUCER_PRESENT"):
+        parse_input_file(str(input_file))
+
+    input_file.write_text(
+        input_file.read_text(encoding="utf-8").replace("reproducer: /tmp/repro.syz\n", ""),
+        encoding="utf-8",
+    )
     fields = parse_input_file(str(input_file))
     assert fields["rootfs"] == "/tmp/debian.img"
     assert fields["test_assets_dir"] == "/tmp/lumen-test-assets"
-    assert fields["reproducer"] == "/tmp/repro.syz"
     assert fields["qemu_extra_cmdline"] == "no-kvmapf no-steal-acc init=/root/lumen-init"
     assert fields["maintenance_notes"] == "use fork workers and a blocking userspace sendmsg sequence"
     rendered = format_user_input(fields)
@@ -45,7 +52,7 @@ def test_parse_input_preserves_qemu_runtime_declarations(tmp_path: Path):
     contract = parse_input_artifacts(rendered, validate_paths=False)
     assert contract.rootfs_path == "/tmp/debian.img"
     assert contract.crash_report_path == "/tmp/report.txt"
-    assert contract.reproducer_path == "/tmp/repro.syz"
+    assert contract.reproducer_path == ""
     assert contract.test_assets_dir == "/tmp/lumen-test-assets"
     assert contract.qemu_extra_cmdline == "no-kvmapf no-steal-acc init=/root/lumen-init"
     assert contract.expected_kernel_commit == "bdf56c7580d267a123cc71ca0f2459c797b76fde"

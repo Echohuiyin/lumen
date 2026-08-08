@@ -356,7 +356,7 @@ def test_kernel_feedback_keeps_historical_userspace_crash_constraint():
     assert "pthread_create segfault" in feedback
 
 
-def test_guest_pthread_runtime_incompatibility_is_retryable_environment_evidence(tmp_path):
+def test_guest_pthread_runtime_incompatibility_is_terminal_environment_evidence(tmp_path):
     ssh_output = tmp_path / "ssh-command.log"
     ssh_output.write_text(
         "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone\n"
@@ -370,9 +370,11 @@ def test_guest_pthread_runtime_incompatibility_is_retryable_environment_evidence
     )
 
     promoted = _promote_guest_capability_block(result)
-    assert promoted.status == "failed"
-    assert promoted.code == "FAILED_GUEST_RUNTIME_INCOMPATIBLE"
-    assert "environment evidence" in promoted.kernel_feedback
+    assert promoted.status == "blocked"
+    assert promoted.code == "BLOCKED_GUEST_RUNTIME_INCOMPATIBLE"
+    assert promoted.failure_class == "guest_abi"
+    assert promoted.retryable is False
+    assert "environment/ABI block" in promoted.kernel_feedback
 
     feedback = _augment_kernel_feedback(promoted)
     assert "LUMEN_GUEST_RUNTIME_INCOMPATIBLE:pthread_clone" in feedback
@@ -673,7 +675,7 @@ def test_invalid_contract_is_blocked_before_image_copy():
     })
     assert result["test_contract"]["status"] == "blocked"
     assert result["test_contract"]["code"] == "BLOCKED_INVALID_KERNEL_CONTRACT"
-    assert result["tryout_count"] == 1
+    assert result["tryout_count"] == 0
 
 
 def test_semantic_review_never_overrides_missing_deterministic_match():

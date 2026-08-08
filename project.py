@@ -87,9 +87,6 @@ INPUT_FILE_FIELDS = {
     "rootfs_path",
     "test_assets_dir",
     "report",
-    "reproducer",
-    "reproducer_path",
-    "syz_repro",
     "kernel_config",
     "target_arch",
     "commit",
@@ -107,6 +104,11 @@ INPUT_FILE_FIELDS = {
     "maintenance_notes",
 }
 
+INPUT_FILE_FORBIDDEN_FIELDS = {
+    "reproducer", "reproducer_path", "syz_repro", "syz repro",
+    "test_script", "test_script_path", "test script", "repro_artifact",
+}
+
 
 def parse_input_file(file_path: str) -> dict[str, str]:
     """Parse a structured input file (key: value per line) into a field dict.
@@ -118,8 +120,6 @@ def parse_input_file(file_path: str) -> dict[str, str]:
         vmlinux: <path>
         log: <path>
         report: <path>
-        reproducer: <userspace C reproducer path>
-        syz_repro: <syz repro path>
         kernel_config: <.config path>
         boot_kernel: <path>
         rootfs: <disk image path>
@@ -142,6 +142,11 @@ def parse_input_file(file_path: str) -> dict[str, str]:
             key, _, value = line.partition(":")
             key = key.strip()
             value = value.strip()
+            if key.casefold() in {item.casefold() for item in INPUT_FILE_FORBIDDEN_FIELDS}:
+                raise ValueError(
+                    "BLOCKED_INPUT_REPRODUCER_PRESENT: input.txt must not "
+                    f"contain the forbidden artifact field {key!r}"
+                )
             # Resolve every declared path/value through the deployment
             # environment. Kernel source is intentionally not special-cased:
             # shared input files must work on hosts with different layouts.

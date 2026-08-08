@@ -57,7 +57,6 @@ class MaintenanceWorkflowState(TypedDict):
     target_arch: str                   # QEMU 目标架构：x86_64/arm64/arm32
     boot_kernel_path: str              # QEMU 可启动内核镜像路径（bzImage/Image）
     reproducer_dir: str                # 复现用例目录
-    reproducer_module_path: str        # 旧字段；新流程必须保持为空
     expected_signal: str               # 期望在 boot log 中观察到的复现信号
     # Kernel Expert ↔ Test Expert loop output
     test_result: str                  # 测试结果详情
@@ -121,7 +120,6 @@ def make_initial_state(
         "target_arch": "",
         "boot_kernel_path": "",
         "reproducer_dir": "",
-        "reproducer_module_path": "",
         "expected_signal": "",
         "test_result": "",
         "test_passed": False,

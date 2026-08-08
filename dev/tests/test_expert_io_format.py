@@ -280,6 +280,8 @@ def test_expert_qemu_tools():
     tools = create_qemu_tools()
     tool_names = [t.name for t in tools]
     print(f"QEMU tools ({len(tools)}): {tool_names}")
+    assert "create_ext4_rootfs" not in tool_names
+    assert "create_initramfs" not in tool_names
 
     for tool in tools:
         assert tool.name, f"Tool missing name"

@@ -39,7 +39,11 @@ def main():
     args = parser.parse_args()
 
     # Parse input file into structured fields
-    fields = parse_input_file(args.input_file)
+    try:
+        fields = parse_input_file(args.input_file)
+    except ValueError as exc:
+        print(f"[Error] {exc}")
+        return 2
     if fields.get("kernel_source"):
         os.environ["KERNEL_SOURCE_DIR"] = fields["kernel_source"]
     os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))

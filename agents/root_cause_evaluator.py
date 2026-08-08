@@ -59,6 +59,7 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
         # synthesized here.
         evidence = _dicts(contract.get("evidence"))
     oracle = dict(contract.get("call_chain_oracle") or {})
+    producer_frontier = _normalise_producer_frontier(contract)
 
     observed = _observed_facts(
         user_input=user_input, report_text=first_hand,
@@ -77,6 +78,10 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
         first_hand_text=first_hand,
     )
     score = _normalised_score(dimensions)
+    root_status = _root_status(
+        score, dimensions, source_audit, observed, producer_frontier,
+    )
+    diagnosis_status = _diagnosis_status(root_status, producer_frontier)
     public_fix_audit = dict(fix_audit)
     patch_text = str(public_fix_audit.pop("patch_text", "") or "")
     public_fix_audit["patch_bytes"] = len(patch_text.encode("utf-8"))
@@ -84,10 +89,11 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
         "schema_version": SCHEMA_VERSION,
         "method": "deterministic evidence alignment; human review remains authoritative",
         "root_cause": {
-            "status": _root_status(score, dimensions, source_audit, observed),
+            "status": root_status,
             "accuracy_score": score,
             "dimensions": dimensions,
             "conclusion": root_cause,
+            "diagnosis_status": diagnosis_status,
             "limitations": _root_limitations(
                 first_hand_text=first_hand, source_root=source_root,
                 fix_audit=fix_audit, root_cause=root_cause,
@@ -102,6 +108,14 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
             "source_head": source_audit.get("source_head", ""),
             "source_commit_matches": source_audit.get("source_commit_matches"),
             "observed": observed,
+            "producer_frontier": producer_frontier,
+            "producer_gate": {
+                "status": producer_frontier["status"],
+                "passed": producer_frontier["gate_passed"],
+                "source_evidence_count": len(producer_frontier["source_evidence"]),
+                "runtime_evidence_count": len(producer_frontier["runtime_evidence"]),
+                "unresolved_prerequisites": producer_frontier["unresolved_prerequisites"],
+            },
             "source_audit": source_audit,
             "fix_audit": public_fix_audit,
         },
@@ -119,6 +133,7 @@ def evaluate_root_cause(state: dict[str, Any]) -> dict[str, Any]:
             ),
             "code": (state.get("test_contract") or {}).get("code", ""),
         },
+        "diagnosis_status": diagnosis_status,
     }
 
 
@@ -218,6 +233,50 @@ def _dedupe(items: list[str]) -> list[str]:
             seen.add(value)
             result.append(value)
     return result
+
+
+def _normalise_producer_frontier(contract: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the producer gate without inferring a missing producer.
+
+    Contracts written before the producer-frontier field are explicitly marked
+    ``not_applicable`` for compatibility.  New contracts must opt into a
+    verified/partial/missing/blocked state and provide evidence for a verified
+    claim; the evaluator never reads a user-provided reproducer to fill this
+    boundary.
+    """
+    if "producer_frontier" not in contract:
+        return {
+            "status": "not_applicable", "target_function": "", "ingress": "",
+            "source_evidence": [], "runtime_evidence": [], "required_setup": [],
+            "unresolved_prerequisites": [], "rationale": "legacy contract without producer gate",
+            "gate_passed": True,
+        }
+    raw = contract.get("producer_frontier")
+    raw = raw if isinstance(raw, dict) else {}
+    allowed = {"verified", "partial", "missing", "blocked", "not_applicable"}
+    status = str(raw.get("status") or "missing").strip().lower()
+    if status not in allowed:
+        status = "blocked"
+    source_evidence = _dicts(raw.get("source_evidence"))
+    runtime_evidence = _dicts(raw.get("runtime_evidence"))
+    gate_passed = status in {"verified", "not_applicable"} and (
+        status == "not_applicable" or bool(source_evidence or runtime_evidence)
+    )
+    if status == "verified" and not gate_passed:
+        status = "partial"
+    return {
+        "status": status,
+        "target_function": str(raw.get("target_function") or ""),
+        "ingress": str(raw.get("ingress") or ""),
+        "source_evidence": source_evidence,
+        "runtime_evidence": runtime_evidence,
+        "required_setup": [str(item) for item in (raw.get("required_setup") or []) if str(item).strip()],
+        "unresolved_prerequisites": [
+            str(item) for item in (raw.get("unresolved_prerequisites") or []) if str(item).strip()
+        ],
+        "rationale": str(raw.get("rationale") or ""),
+        "gate_passed": gate_passed,
+    }
 
 
 def _observed_facts(
@@ -647,17 +706,33 @@ def _normalised_score(dimensions: list[dict[str, Any]]) -> int:
 def _root_status(
     score: int, dimensions: list[dict[str, Any]],
     source_audit: dict[str, Any], observed: dict[str, Any],
+    producer_frontier: dict[str, Any],
 ) -> str:
     source_ok = bool(source_audit.get("evidence_verified"))
     fault_ok = any(
         item.get("id") == "fault_site" and (item.get("score") or 0) >= 15
         for item in dimensions
     )
-    if score >= 80 and source_ok and fault_ok and observed.get("report_present"):
+    if (
+        score >= 80 and source_ok and fault_ok and observed.get("report_present")
+        and producer_frontier.get("gate_passed", False)
+    ):
         return "supported"
-    if score >= 50:
+    if score >= 50 or (source_ok and fault_ok and observed.get("report_present")):
         return "partially_supported"
     return "insufficient_evidence"
+
+
+def _diagnosis_status(root_status: str, producer_frontier: dict[str, Any]) -> str:
+    """Expose whether diagnosis is closed independently of reproduction."""
+    producer_status = str(producer_frontier.get("status") or "missing")
+    if producer_status in {"missing", "blocked", "partial"}:
+        return "root_cause_analyzed_producer_unresolved"
+    if root_status == "supported":
+        return "root_cause_supported"
+    if root_status == "partially_supported":
+        return "root_cause_partially_supported"
+    return "root_cause_insufficient_evidence"
 
 
 def _root_limitations(

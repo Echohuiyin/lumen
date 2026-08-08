@@ -15,7 +15,7 @@
 | 顺序 | 计划项 | 目标 | 现状 | 交付与验收 |
 |---:|---|---|---|---|
 | 1 | O-001 + O-002 | 持久化 crash 命令流水；命令准入和结果状态硬门禁 | 已实现，R0 待完成 | `crash_commands.jsonl`、原始输出及 SHA-256；稳定 `evidence_id`；危险 shell 语法不执行；全量必要命令失败为 `blocked`，部分失败为 `degraded`；专项单测通过；R0 真实回归目前被 Kernel Expert Codex 超时阻断，未计为复现结果 |
-| 2 | O-005 | Producer Frontier 与 Root Cause Gate | 待实现 | `producer_frontier`、逐项 gate、`diagnosis_status`、源码/log evidence；缺 producer 不得 `supported`，不改变独立 QEMU `test_passed`；回归门 R1 |
+| 2 | O-005 | Producer Frontier 与 Root Cause Gate | 本轮实施 | `producer_frontier`、逐项 gate、`diagnosis_status`、源码/log evidence；缺 producer 不得 `supported`，不改变独立 QEMU `test_passed`；回归门 R1 |
 | 3 | O-003 | 统一实际生效的 crash 分析策略 | 部分实现 | Codex compact maintenance prompt、禁止 broad `git show/diff`、仅 staged evidence/精确源码；部署模板导出 Codex model/reasoning/service 环境，现有配置默认 `xhigh`；仍需补齐统一策略 contract 与负向测试；回归门 R2 |
 | 4 | O-004 | 确定性 crash evidence 索引 | 已实现，随 R0 验收 | 每个命令稳定 `evidence_id`，索引到原始输出文件和 SHA-256；失败/空输出可追溯；`ToolExpertOutput.evidence` 与 artifacts 同时携带索引；与 O-001 兼容；专项单测通过；回归门 R0/R3 |
 | 5 | O-010 | 确定性故障证据骨架 EvidenceGraph | 待实现 | 统一事实、关系、来源、状态和 extractor 版本；运行时/源码双轨引用；缺证据不得升级 verdict；回归门 R4 |
@@ -60,3 +60,23 @@ P2（O-009、O-012、O-014、O-015）本轮不做，避免扩大架构和验证�
 ## 回归记录格式
 
 每个大迭代在 benchmark archive 对应目录新增 `e2e-regression/<iteration>/summary.json`，至少包含：代码 commit、输入 hash、expected kernel commit、case、attempt、QEMU 状态、guest compile 状态、`test_passed`、`call_chain_consistent`、串口路径、contract 路径、blocked/failure code、相对基线差异。第一轮不复现时第二轮仍必须执行；两轮都未复现只报告未复现，不伪造成功。
+
+## 当前 P0/P1 批次：contract/input boundary 与环境分类
+
+**引入原因**：旧的 `reproducer_module_path`、legacy one-shot runner 和
+Kernel Expert shell tool 仍可被旧 JSON/工具入口接触；这与 C-only、Test
+Expert-only QEMU 和 no-fallback 约束冲突。与此同时，显式 `reproducer:`
+路径没有在 Validator 边界硬阻断，guest ABI/QEMU 启动阻断可能被错误计入
+Kernel/Test trigger loop。
+
+**最小实现**：移除生产 contract/state/runner 的模块字段和模块 staging，
+不再合成 rootfs；Kernel Expert 工具面不再暴露 shell。Validator 对显式
+reproducer artifact 返回 `BLOCKED_INPUT_REPRODUCER_PRESENT`。Test Result
+增加 `failure_class`、`retryable`、`next_action`，QEMU/镜像/guest ABI/合同
+preflight 以 blocked 归档且不消耗 try-out；编译失败和真实触发/调用链不一致
+仍按有效 try-out 反馈给 Kernel Expert。
+
+**正负影响与边界**：正面是旧模块/脚本不会再通过兼容字段进入执行，输入和
+环境问题不会浪费重试预算；负面是依赖旧 one-shot runner、显式 `.ko` 或
+未声明 reproducer 的历史测试会明确阻断，必须迁移到 userspace-C contract。
+不改变独立 QEMU 的 `test_passed`/调用链判定，也不删除历史归档。

@@ -199,7 +199,6 @@ def knowledge_base_node(state: MaintenanceWorkflowState) -> dict:
         f"- Target arch: {state.get('target_arch', '')}\n"
         f"- Boot kernel: {state.get('boot_kernel_path', '')}\n"
         f"- Reproducer dir: {state.get('reproducer_dir', '')}\n"
-        f"- Reproducer module: {state.get('reproducer_module_path', '')}\n"
         f"- Execution steps: {kernel_contract.get('execution_steps', [])}\n"
         f"- Expected signal: {state.get('expected_signal', '')}\n\n"
         f"## 测试验证结果\n{state.get('test_result', '')}\n\n"

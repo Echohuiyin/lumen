@@ -3,6 +3,7 @@
 from pathlib import Path
 import sys
 import tempfile
+import pytest
 
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -50,6 +51,20 @@ def test_missing_kernel_source_blocks():
     assert result.validation_passed is False
     assert result.reason == "missing_kernel_source"
     assert "kernel_source" in result.missing_fields
+
+
+def test_explicit_reproducer_is_blocked_before_expert_routing():
+    result = _validate_input_by_rules(
+        "Bug Promote: KASAN slab issue\n"
+        "kernel_source: /tmp/linux\n"
+        "log: /tmp/kernel.log\n"
+        "reproducer: /tmp/repro.c\n"
+    )
+    assert result.status == "blocked"
+    assert result.validation_passed is False
+    assert result.reason == "input_contains_reproducer"
+    assert result.error is not None
+    assert result.error.code == "BLOCKED_INPUT_REPRODUCER_PRESENT"
 
 
 def test_vague_input_blocks():
@@ -201,8 +216,8 @@ def test_parse_input_artifacts_degrades_for_non_linux_source_dir():
     assert any("does not look like a Linux source tree" in warning for warning in contract.warnings)
 
 
-def test_parse_input_file_preserves_e2e_artifact_fields():
-    """The main entry point must pass all declared E2E assets to the workflow."""
+def test_parse_input_file_rejects_unsanitized_reproducer_fields():
+    """The main entry point must never pass historical reproducers to Lumen."""
     with tempfile.TemporaryDirectory() as tmp:
         input_file = Path(tmp) / "input.txt"
         input_file.write_text(
@@ -223,13 +238,8 @@ def test_parse_input_file_preserves_e2e_artifact_fields():
             encoding="utf-8",
         )
 
-        fields = parse_input_file(str(input_file))
-
-    assert fields["reproducer"] == "/tmp/repro.c"
-    assert fields["rootfs"] == "/tmp/debian.img"
-    assert fields["report"] == "/tmp/report.txt"
-    assert fields["kernel_config"] == "/tmp/kernel.config"
-    assert fields["expected_kernel_commit"] == "deadbeef"
+        with pytest.raises(ValueError, match="BLOCKED_INPUT_REPRODUCER_PRESENT"):
+            parse_input_file(str(input_file))
 
 
 if __name__ == "__main__":

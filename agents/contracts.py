@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, root_validator
 
 
 StepStatus = Literal["ok", "failed", "blocked", "skipped"]
@@ -182,6 +182,27 @@ class UserspaceReproducer(BaseModel):
     runtime_timeout_sec: int = 60
 
 
+class ProducerFrontierContract(BaseModel):
+    """Evidence for the first user-visible producer of the reported path.
+
+    A source-backed root cause may be accurate even when no safe public ABI
+    producer has been identified.  Keeping that distinction explicit prevents
+    the evaluator from promoting an analysis-only result to ``supported`` or
+    treating a missing producer as a QEMU call-chain failure.
+    """
+
+    status: Literal[
+        "verified", "partial", "missing", "blocked", "not_applicable",
+    ] = "missing"
+    target_function: str = ""
+    ingress: str = ""
+    source_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    runtime_evidence: list[dict[str, Any]] = Field(default_factory=list)
+    required_setup: list[str] = Field(default_factory=list)
+    unresolved_prerequisites: list[str] = Field(default_factory=list)
+    rationale: str = ""
+
+
 class ErrorEnvelope(BaseModel):
     """Actionable, stable error data for node and external-tool failures."""
 
@@ -221,7 +242,6 @@ class TestPlan(BaseModel):
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
-    reproducer_module_path: str = ""
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
@@ -240,6 +260,9 @@ class TestPlan(BaseModel):
     verified_setup: list[str] = Field(default_factory=list)
     best_call_chain_prefix: list[str] = Field(default_factory=list)
     root_cause: str = ""
+
+    class Config:
+        extra = "forbid"
 
 
 class TestResultContract(BaseModel):
@@ -277,6 +300,12 @@ class TestResultContract(BaseModel):
         "runtime_evidence", "no_progress", "retracted", "terminal",
     ] = "initial"
     no_progress_streak: int = 0
+    failure_class: Literal[
+        "environment", "contract", "guest_abi", "trigger", "call_chain",
+        "execution", "unknown",
+    ] = "unknown"
+    retryable: bool = False
+    next_action: str = ""
 
 
 class ValidationResultContract(BaseModel):
@@ -404,6 +433,7 @@ class KernelExpertOutput(BaseModel):
     root_cause_evidence: list[dict[str, Any]] = Field(default_factory=list)
     original_call_chain: list[str] = Field(default_factory=list)
     call_chain_oracle: CallChainOracle = Field(default_factory=CallChainOracle)
+    producer_frontier: ProducerFrontierContract = Field(default_factory=ProducerFrontierContract)
     reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
     setup_requirements: list[ExecutionStep] = Field(default_factory=list)
     pressure_requirements: list[ExecutionStep] = Field(default_factory=list)
@@ -418,7 +448,6 @@ class KernelExpertOutput(BaseModel):
     rootfs_path: str = ""
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
-    reproducer_module_path: str = ""
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
@@ -441,6 +470,19 @@ class KernelExpertOutput(BaseModel):
     blocked_reason: str = ""
     detection_signals: DetectionSignals = Field(default_factory=DetectionSignals)
     qemu_recipe: QemuRecipe = Field(default_factory=QemuRecipe)
+
+    @root_validator(pre=True)
+    def _reject_legacy_execution_fields(cls, values):
+        if isinstance(values, dict):
+            forbidden = {
+                "reproducer_module_path", "test_script_path", "load_module",
+            }
+            present = sorted(field for field in forbidden if field in values and values[field])
+            if present:
+                raise ValueError(
+                    "legacy execution fields are forbidden: " + ", ".join(present)
+                )
+        return values
 
 
 class ToolExpertOutput(BaseModel):

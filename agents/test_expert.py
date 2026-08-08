@@ -422,10 +422,15 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
     )
 
 
-def _blocked_attempt(*, code: str, summary: str, tryout: int, artifacts: dict[str, str] | None = None) -> TestResultContract:
+def _blocked_attempt(
+    *, code: str, summary: str, tryout: int,
+    artifacts: dict[str, str] | None = None,
+    failure_class: str = "contract", next_action: str = "",
+) -> TestResultContract:
     return TestResultContract(
         status="blocked", code=code, attempts=tryout, summary=summary,
         artifacts=artifacts or {}, kernel_feedback=summary,
+        failure_class=failure_class, retryable=False, next_action=next_action,
     )
 
 
@@ -538,13 +543,15 @@ def _promote_guest_capability_block(result: TestResultContract) -> TestResultCon
         if not match:
             continue
         capability = match.group(1)
-        result.status = "failed"
-        result.code = "FAILED_GUEST_RUNTIME_INCOMPATIBLE"
+        result.status = "blocked"
+        result.code = "BLOCKED_GUEST_RUNTIME_INCOMPATIBLE"
+        result.failure_class = "guest_abi"
+        result.retryable = False
+        result.next_action = "Select a guest/rootfs with the required runtime ABI or revise the trigger."
         result.summary = (
             f"Guest runtime capability check failed for {capability}; "
-            "this is environment evidence, not a reproducer C-safety verdict. "
-            "Use a compatible rootfs/kernel or revise the trigger to avoid "
-            "the unavailable userspace runtime ABI."
+            "this is an environment/ABI block, not a reproducer C-safety "
+            "verdict; the loop must not spend another try-out on the same guest."
         )
         result.kernel_feedback = result.summary
         result.artifacts.setdefault("capability_evidence", f"{key}:{raw_path}")
@@ -1332,6 +1339,7 @@ def _format_attempt(result: TestResultContract) -> str:
     lines = [
         f"TEST STATUS: {result.status}",
         f"CODE: {result.code}",
+        f"FAILURE CLASS: {result.failure_class} (retryable={result.retryable})",
         f"TRY-OUT: {result.attempts}/10",
         f"CALL CHAIN CONSISTENT: {result.call_chain_consistent}",
         f"SEMANTIC REVIEW: {result.principle_consistent}",
@@ -1344,6 +1352,8 @@ def _format_attempt(result: TestResultContract) -> str:
     lines.append("PROGRESS: " + result.progress_kind + f" (no_progress_streak={result.no_progress_streak})")
     if result.kernel_feedback:
         lines.append("KERNEL FEEDBACK: " + result.kernel_feedback)
+    if result.next_action:
+        lines.append("NEXT ACTION: " + result.next_action)
     for key, value in result.artifacts.items():
         lines.append(f"ARTIFACT {key}: {value}")
     return "\n".join(lines)
@@ -1377,32 +1387,43 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
     try:
         contract = _model_validate(KernelExpertOutput, state.get("kernel_contract") or {})
     except Exception as exc:
-        result = _blocked_attempt(code="BLOCKED_INVALID_KERNEL_CONTRACT", summary=str(exc), tryout=tryout)
+        result = _blocked_attempt(
+            code="BLOCKED_INVALID_KERNEL_CONTRACT", summary=str(exc), tryout=0,
+            failure_class="contract", next_action="Fix the Kernel Expert contract before starting Test Expert.",
+        )
     else:
         if contract.status != "ok":
             result = _blocked_attempt(
                 code="BLOCKED_INVALID_KERNEL_CONTRACT",
                 summary="Kernel Expert contract is not ready for Test Expert.",
-                tryout=tryout,
+                tryout=0,
+                failure_class="contract",
+                next_action="Return a complete userspace C Kernel Expert contract.",
             )
         elif (incremental_error := _validate_incremental_kernel_contract(contract, contract_history)):
             result = _blocked_attempt(
                 code="BLOCKED_INVALID_INCREMENTAL_CONTRACT",
                 summary=incremental_error,
-                tryout=tryout,
+                tryout=0,
+                failure_class="contract",
+                next_action="Restore the verified setup and declare an evidence-backed incremental change.",
             )
         elif (host_error := _host_qemu_capability_error(contract.target_arch)):
             result = _blocked_attempt(
                 code="BLOCKED_ENVIRONMENT_CAPABILITY",
                 summary=host_error,
                 tryout=0,
+                failure_class="environment",
+                next_action="Install the declared QEMU capability before rerunning.",
             )
             consumes_loop = False
-        elif contract.reproducer.artifact_type != "userspace" or contract.reproducer.language != "c" or contract.reproducer_module_path:
+        elif contract.reproducer.artifact_type != "userspace" or contract.reproducer.language != "c":
             result = _blocked_attempt(
                 code="BLOCKED_NON_USERSPACE_REPRODUCER",
                 summary="Test Expert accepts only an ok userspace C contract without kernel-module artifacts.",
-                tryout=tryout,
+                tryout=0,
+                failure_class="contract",
+                next_action="Return only userspace C source and a complete oracle.",
             )
         else:
             try:
@@ -1414,7 +1435,11 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                     if "unresolved reproducer argument" in message
                     else "BLOCKED_INVALID_EXECUTION_PLAN"
                 )
-                result = _blocked_attempt(code=code, summary=message, tryout=tryout)
+                result = _blocked_attempt(
+                    code=code, summary=message, tryout=0,
+                    failure_class="contract",
+                    next_action="Correct the structured execution plan before starting QEMU.",
+                )
             else:
                 try:
                     runtime_root = _attempt_runtime_root(state.get("session_dir", ""), tryout)
@@ -1428,13 +1453,54 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                     if contract.rootfs_path:
                         image_artifacts["declared_rootfs"] = contract.rootfs_path
                 except (OSError, ValueError) as exc:
-                    result = _blocked_attempt(code="BLOCKED_BASE_IMAGE_MISSING", summary=str(exc), tryout=tryout)
+                    result = _blocked_attempt(
+                        code="BLOCKED_BASE_IMAGE_MISSING", summary=str(exc), tryout=0,
+                        failure_class="environment",
+                        next_action="Provision the declared base image and matching SSH key.",
+                    )
                 else:
                     result = run_persistent_qemu_test_plan(
                         plan, attempt=tryout, runtime_root=runtime_root,
                     )
+                    # QEMU boot, SSH, image, and guest-capability failures are
+                    # preflight/environment outcomes.  They must be archived
+                    # but must not consume a Kernel/Test trigger iteration.
+                    preflight_block = result.status == "blocked" or result.code in {
+                        "FAILED_PERSISTENT_QEMU_BOOT", "BLOCKED_PERSISTENT_QEMU",
+                    }
+                    if result.code == "FAILED_PERSISTENT_QEMU_BOOT":
+                        result.status = "blocked"
+                        result.code = "BLOCKED_QEMU_BOOT"
+                        result.failure_class = "environment"
+                        result.retryable = False
+                        result.next_action = "Fix the QEMU boot/SSH environment before retrying."
+                    elif result.status == "blocked":
+                        result.failure_class = (
+                            "guest_abi" if "GUEST_" in result.code
+                            else "environment" if "QEMU" in result.code or "IMAGE" in result.code
+                            else "contract"
+                        )
+                        result.retryable = False
+                    if preflight_block:
+                        consumes_loop = False
                     result.artifacts.update(image_artifacts)
                     result = _promote_guest_capability_block(result)
+                    if result.status == "blocked":
+                        consumes_loop = False
+                        if result.failure_class == "unknown":
+                            result.failure_class = (
+                                "guest_abi" if "GUEST" in result.code
+                                else "environment" if "QEMU" in result.code or "IMAGE" in result.code
+                                else "contract"
+                            )
+                        result.retryable = False
+                    elif result.status == "failed" and result.failure_class == "unknown":
+                        result.failure_class = (
+                            "call_chain" if result.code == "FAILED_CALL_CHAIN_MISMATCH"
+                            else "execution" if "COMPILE" in result.code or "EXECUTION" in result.code
+                            else "trigger"
+                        )
+                        result.retryable = True
                     result = _apply_reproducer_regression_guard(
                         result, previous_rounds,
                     )
@@ -1453,6 +1519,9 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                             result.kernel_feedback = "Review missing/reordered frames and revise the userspace trigger or declared injection plan."
                     result.kernel_feedback = _augment_kernel_feedback(result, previous_rounds)
 
+    if result.status == "blocked" and result.attempts == 0:
+        # Contract/environment preflight did not start a valid try-out.
+        consumes_loop = False
     text = _format_attempt(result)
     _append_attempt_output(
         output_file,

@@ -311,7 +311,6 @@ def test_kernel_contract_file_is_preferred_over_text_extraction(tmp_path, monkey
     assert ke._kernel_contract_has_handoff(kernel_contract)
     assert kernel_contract.target_arch == "arm64"
     assert kernel_contract.expected_signal == "BUG: KASAN:"
-    assert kernel_contract.reproducer_module_path == ""
     assert kernel_contract.reproducer.artifact_type == "userspace"
 
 
@@ -367,7 +366,6 @@ KERNEL_CONTRACT:
         contract = ke._extract_kernel_contract(text)
         assert ke._kernel_contract_has_handoff(contract)
         assert contract.expected_signal == "BUG: KASAN:"
-        assert contract.reproducer_module_path == ""
         assert contract.reproducer.language == "c"
 
 
