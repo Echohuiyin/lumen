@@ -227,7 +227,11 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     )
     target_arch, arch_pattern = _extract_target_arch(text)
     expected_kernel_commit, commit_label = _extract_labeled_value(
-        text, ["expected_kernel_commit", "kernel_commit", "kernel commit"]
+        text,
+        [
+            "expected_kernel_commit", "kernel_commit", "kernel commit",
+            "commit", "Commit",
+        ],
     )
     fix_commit, fix_commit_label = _extract_labeled_value(
         text,
@@ -328,6 +332,7 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         fix_patch_path=fix_patch_path,
         target_arch=target_arch,
         kernel_source_path=kernel_source_path,
+        declared_kernel_source_path=kernel_source_path,
         source_snapshot_manifest_path=source_snapshot_manifest_path,
         log_path=log_path,
         crash_report_path=crash_report_path,

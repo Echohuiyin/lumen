@@ -5,6 +5,7 @@ vmlinux: ./test_case/vmlinux
 # crash_report: ./test_case/report.txt
 boot_kernel: ./test_case/bzImage
 kernel_source: /path/to/linux
+expected_kernel_commit: <7-40 hex characters>
 rootfs: ./test_case/debian.img
 reproducer: ./test_case/repro.syz
 qemu_extra_cmdline: panic_on_warn=1

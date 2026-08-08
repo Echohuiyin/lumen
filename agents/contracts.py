@@ -193,6 +193,22 @@ class ErrorEnvelope(BaseModel):
     cause: str = ""
 
 
+class SourceRevisionContract(BaseModel):
+    """Evidence that the validator selected the exact kernel source snapshot."""
+
+    status: Literal["unresolved", "resolved", "switched", "blocked"] = "unresolved"
+    declared_source_path: str = ""
+    resolved_source_path: str = ""
+    declared_commit: str = ""
+    resolved_commit: str = ""
+    switch_method: Literal[
+        "none", "same_checkout", "detached_worktree", "attested_snapshot",
+    ] = "none"
+    source_clean: bool = False
+    evidence: list[dict[str, Any]] = Field(default_factory=list)
+    error: ErrorEnvelope | None = None
+
+
 class TestPlan(BaseModel):
     """Machine-readable plan executed by the persistent QEMU runner."""
 
@@ -272,6 +288,8 @@ class ValidationResultContract(BaseModel):
     missing_fields: list[str] = Field(default_factory=list)
     detected_signals: list[str] = Field(default_factory=list)
     feedback: str = ""
+    source_revision: SourceRevisionContract = Field(default_factory=SourceRevisionContract)
+    error: ErrorEnvelope | None = None
 
 
 class InputArtifactsContract(BaseModel):
@@ -289,7 +307,9 @@ class InputArtifactsContract(BaseModel):
     fix_commit: str = ""
     fix_patch_path: str = ""
     kernel_source_path: str = ""
+    declared_kernel_source_path: str = ""
     source_snapshot_manifest_path: str = ""
+    source_revision: SourceRevisionContract = Field(default_factory=SourceRevisionContract)
     log_path: str = ""
     crash_report_path: str = ""
     reproducer_path: str = ""

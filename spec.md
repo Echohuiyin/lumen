@@ -73,6 +73,9 @@ Test Expert 使用 `input.txt`/`KernelExpertContract.rootfs_path` 声明的 root
 ## 5. 输入与证据
 
 - `input.txt` 是用户输入和 `kernel_source` 的唯一配置来源；`kernel_source` 必须是绝对路径。
+- `expected_kernel_commit`（也接受 `kernel_commit`/`commit` 标签）是源码准确性的必填声明，值必须是 7–40 位十六进制 Git object-id 或唯一前缀。Validator 在进入 PM/专家前解析为完整 SHA；缺失、格式错误、仓库中不存在或前缀不唯一分别以结构化错误阻断，禁止静默使用当前 HEAD。
+- Validator 检查源码 worktree 干净；目标 commit 不是当前 HEAD 时，通过配置的 worktree 根目录创建 detached worktree，并在交接合同中记录声明路径、解析路径、commit、切换方式和最终 HEAD。切换失败或 HEAD 不一致不得进入专家流程。
+- `input_artifacts_contract.source_revision` 和 `validation_contract.source_revision` 是源码版本事实源；`declared_kernel_source_path` 保留用户声明的共享 checkout，`kernel_source_path` 指向本轮确认过的只读源码树。
 - `log:` 是原始日志路径的唯一来源。没有 log 时，日志专家从可读的 `vmcore`/`vmlinux` 提取完整日志并原子落盘。
 - `vmcore` 和 log 至少存在一个；只有 vmcore 时必须同时提供可读取的 `vmlinux`。
 - `boot_kernel_path` 必须是可启动的 `bzImage`/`Image`，不得用 ELF `vmlinux` 启动 QEMU。

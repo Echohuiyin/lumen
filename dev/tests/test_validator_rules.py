@@ -67,8 +67,9 @@ def test_validator_node_returns_contract_for_readable_log(tmp_path):
         "config_path": "config.json",
     }
     result = validator_node(state)
-    assert result["validation_passed"] is True
-    assert result["validation_contract"]["reason"] == "rule_detected_kernel_signals"
+    assert result["validation_passed"] is False
+    assert result["validation_contract"]["reason"] == "kernel_commit_required"
+    assert result["validation_contract"]["error"]["code"] == "KERNEL_COMMIT_REQUIRED"
     assert "input_artifacts_contract" in result
     assert result["config"]
 

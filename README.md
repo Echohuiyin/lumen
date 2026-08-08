@@ -108,13 +108,18 @@ vmlinux: ./vmlinux
 log: ./kernel.log
 boot_kernel: ./bzImage
 kernel_source: /path/to/linux
+expected_kernel_commit: <7-40 hex characters>
 ```
 
-`Bug Promote` and `kernel_source` are required. Add whichever other artifacts
-you have; at least one readable `vmcore` or `log` is required. When `log` is
-absent, Lumen extracts it from `vmcore` plus `vmlinux` into the session and
-passes that generated log path to KernelExpert. `boot_kernel` enables QEMU
-verification.
+`Bug Promote`, `kernel_source`, and `expected_kernel_commit` are required.
+Validator resolves a unique commit prefix to its full SHA, verifies the source
+checkout is clean, and uses an isolated detached worktree when the declared
+commit is not the source checkout's current HEAD. It never falls back to a
+moving HEAD; failures are returned as structured validation errors. Add
+whichever other artifacts you have; at least one readable `vmcore` or `log` is
+required. When `log` is absent, Lumen extracts it from `vmcore` plus `vmlinux`
+into the session and passes that generated log path to KernelExpert.
+`boot_kernel` enables QEMU verification.
 
 QEMU deployment inputs are configurable and are not tied to a developer's
 machine:

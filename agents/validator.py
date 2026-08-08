@@ -5,6 +5,7 @@ import re
 
 from agents.contracts import ValidationResultContract, model_to_dict
 from agents.input_artifacts import parse_input_artifacts
+from agents.source_revision import resolve_source_revision
 from agents.llm_display import call_llm_with_persistence, set_session_dir, GREEN, YELLOW, DIM, _c
 from llm_config import get_llm_with_config, load_config, load_prompt_from_file
 from graph.rn_state import MaintenanceWorkflowState
@@ -18,12 +19,42 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
     """
     set_session_dir(state.get("session_dir"))
     input_artifacts = parse_input_artifacts(state.get("user_input", ""))
-    if input_artifacts.kernel_source_path:
-        os.environ["KERNEL_SOURCE_DIR"] = input_artifacts.kernel_source_path
     os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))
     config = load_config(state["config_path"])
     rule_result = _validate_input_by_rules(state.get("user_input", ""))
     rule_result = _require_vmcore_or_log(rule_result, input_artifacts)
+
+    source_revision = input_artifacts.source_revision
+    if rule_result.status != "blocked" and input_artifacts.kernel_source_path:
+        source_revision = resolve_source_revision(
+            input_artifacts.kernel_source_path,
+            input_artifacts.expected_kernel_commit,
+            workspace_root=str(state.get("session_dir") or ""),
+            source_snapshot_manifest_path=input_artifacts.source_snapshot_manifest_path,
+        )
+        input_artifacts.source_revision = source_revision
+        if source_revision.status in {"resolved", "switched"}:
+            input_artifacts.declared_kernel_source_path = input_artifacts.kernel_source_path
+            input_artifacts.kernel_source_path = source_revision.resolved_source_path
+            input_artifacts.expected_kernel_commit = source_revision.resolved_commit
+            os.environ["KERNEL_SOURCE_DIR"] = source_revision.resolved_source_path
+            rule_result.source_revision = source_revision
+        else:
+            error = source_revision.error
+            rule_result = ValidationResultContract(
+                status="blocked",
+                validation_passed=False,
+                reason=(error.code.lower() if error else "kernel_source_revision_blocked"),
+                missing_fields=(
+                    ["expected_kernel_commit"]
+                    if error and error.code == "KERNEL_COMMIT_REQUIRED" else []
+                ),
+                feedback=(error.message if error else "内核源码 commit 校验失败。"),
+                source_revision=source_revision,
+                error=error,
+            )
+    else:
+        input_artifacts.source_revision = source_revision
     if rule_result.status in {"ok", "blocked"}:
         # Compact rule-based validation result
         status_icon = _c(GREEN, "✓") if rule_result.validation_passed else _c(YELLOW, "⚠")
@@ -64,6 +95,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
             validation_passed=True,
             reason="llm_validation_passed",
             feedback="",
+            source_revision=source_revision,
         )
         return {
             "validation_passed": True,
@@ -86,6 +118,7 @@ def validator_node(state: MaintenanceWorkflowState) -> dict:
             validation_passed=False,
             reason="llm_validation_failed",
             feedback=feedback,
+            source_revision=source_revision,
         )
 
         return {
