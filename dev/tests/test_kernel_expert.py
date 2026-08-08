@@ -429,6 +429,42 @@ def test_codex_strict_required_frames_alias_is_handoff_ready_without_retry():
     assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:strlen+0x2c/0x70"]
 
 
+def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {"verified_invariant": "strlen receives the reported audit label"},
+        "original_call_chain": {
+            "printed_frames": ["strlen+0x2c/0x70", "smack_log_callback+0x105/0x1b0"],
+            "audit_call_chain_user_to_fault": ["keyctl_watch_key", "smack_watch_key", "strlen"],
+        },
+        "call_chain_oracle": {
+            "required_report_signatures": ["RIP: 0010:strlen+0x2c/0x70"],
+            "strict_required_frames": [
+                {"order": 1, "frame": "smack_log_callback+0x105/0x1b0"},
+                {"order": 2, "frame": "strlen+0x2c/0x70"},
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diag.c"],
+        },
+        "blocked_reason": {"precise_limitation": "public ABI cannot corrupt the label"},
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "strlen receives the reported audit label"
+    assert parsed.original_call_chain[0] == "strlen+0x2c/0x70"
+    assert parsed.call_chain_oracle.required_frames == [
+        "smack_log_callback+0x105/0x1b0", "strlen+0x2c/0x70",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "RIP: 0010:strlen+0x2c/0x70",
+    ]
+    assert parsed.blocked_reason == "public ABI cannot corrupt the label"
+
 def test_kernel_handoff_requires_an_explicit_guest_run_step():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))
