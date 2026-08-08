@@ -514,6 +514,41 @@ def test_materialized_unmarked_contract_shape_is_still_normalized():
     assert parsed.reproducer.compiler == "cc"
 
 
+def test_j1939_contract_maps_mixed_required_signatures_and_default_args():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": {"verified_invariant": "session lifetime crosses abort cleanup"},
+        "original_call_chain": {
+            "report_stack_top_to_bottom": ["j1939_sock_pending_del", "run_ksoftirqd"],
+        },
+        "call_chain_oracle": {
+            "required_signatures": [
+                "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+                "j1939_sock_pending_del", "j1939_session_put", "run_ksoftirqd",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/j1939", "source_files": ["j1939_uaf_diag.c"],
+            "compiler": "cc", "arguments": {
+                "default": ["./j1939_uaf_diag", "vcan0", "64"],
+                "syntax": "j1939_uaf_diag [ifname] [iterations]",
+            },
+        },
+    }
+    parsed = _extract_kernel_contract("KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```")
+    assert parsed.status == "ok"
+    assert parsed.original_call_chain == ["j1939_sock_pending_del", "run_ksoftirqd"]
+    assert parsed.call_chain_oracle.required_frames == [
+        "j1939_sock_pending_del", "j1939_session_put", "run_ksoftirqd",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+    ]
+    assert parsed.reproducer.run_args == ["./j1939_uaf_diag", "vcan0", "64"]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(

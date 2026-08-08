@@ -2738,6 +2738,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("observed_order_top_to_bottom")
             or raw_chain.get("frames")
             or raw_chain.get("required_primary_frames")
+            or raw_chain.get("report_stack_top_to_bottom")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
@@ -2759,6 +2760,13 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     raw_oracle = normalized.get("call_chain_oracle")
     if isinstance(raw_oracle, dict):
         oracle = dict(raw_oracle)
+        explicit_frame_fields = any(
+            oracle.get(key)
+            for key in (
+                "required_top_frames", "required_frames", "required_order_top_to_bottom",
+                "required_core", "strict_ordered_core",
+            )
+        )
         core_source = "required_order_top_to_bottom"
         core_frames = oracle.get(core_source)
         if not isinstance(core_frames, list) or not core_frames:
@@ -2824,7 +2832,32 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 if isinstance(pair, list)
             ]
         if "required_signatures" in oracle and "fault_signatures" not in oracle:
-            oracle["fault_signatures"] = oracle.get("required_signatures") or []
+            raw_signatures = [
+                str(item).strip()
+                for item in (oracle.get("required_signatures") or [])
+                if str(item).strip()
+            ]
+            frame_signatures = []
+            signal_signatures = []
+            for item in raw_signatures:
+                candidate = _runtime_frame_text(item)
+                if re.fullmatch(
+                    r"[A-Za-z_.$][A-Za-z0-9_.$]*(?:\+0x[0-9A-Fa-f]+(?:/0x[0-9A-Fa-f]+)?)?",
+                    candidate,
+                ):
+                    frame_signatures.append(candidate)
+                else:
+                    signal_signatures.append(item)
+            if frame_signatures and not explicit_frame_fields:
+                oracle["required_top_frames"] = frame_signatures
+                oracle["required_frames"] = list(frame_signatures)
+                oracle["required_frame_order"] = [
+                    [frame_signatures[index], frame_signatures[index + 1]]
+                    for index in range(len(frame_signatures) - 1)
+                ]
+            oracle["fault_signatures"] = signal_signatures or (
+                raw_signatures[:1] if raw_signatures else []
+            )
         if "required_log_signatures" in oracle and "fault_signatures" not in oracle:
             oracle["fault_signatures"] = oracle.get("required_log_signatures") or []
         if declared_fault_signatures and "fault_signatures" not in oracle:
@@ -2869,6 +2902,21 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             reproducer["source_files"] = normalized_files
             source_files = reproducer["source_files"]
         raw_run_args = reproducer.get("run_args")
+        if isinstance(raw_run_args, dict):
+            default_args = raw_run_args.get("default")
+            if isinstance(default_args, list):
+                reproducer["run_args"] = list(default_args)
+                warnings.append(
+                    "Codex declared an argument map; only its explicit default vector "
+                    "is executable and remaining descriptors remain audit-only."
+                )
+            else:
+                reproducer["run_args"] = []
+                warnings.append(
+                    "Codex argument map has no bounded default vector; no run arguments "
+                    "were synthesized."
+                )
+            raw_run_args = reproducer["run_args"]
         if isinstance(raw_run_args, list) and any(isinstance(item, list) for item in raw_run_args):
             variants = [item for item in raw_run_args if isinstance(item, list)]
             reproducer["run_args"] = variants[0] if variants else []

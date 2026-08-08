@@ -73,3 +73,10 @@ root-cause, original chain, oracle, and userspace reproducer), maps its
 explicit primary frames/crash signatures, and normalizes descriptive compiler
 labels. This preserves the source-proven `CAP_SYS_ADMIN` block while keeping
 arbitrary unstructured JSON rejected.
+
+The J1939 contract additionally exposed two harmless schema variants: its
+original stack used `report_stack_top_to_bottom`, while `required_signatures`
+mixed a KASAN headline with function symbols and `arguments.default` carried
+the executable vector. The adapter now performs only lexical classification
+and explicit-default selection, preserving the strict frame order without
+inventing a trigger or treating a generic frame as a fault signal.
