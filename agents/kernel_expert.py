@@ -616,6 +616,7 @@ def _kernel_expert_contract_is_terminal(contract: KernelExpertOutput | None) -> 
     return bool(
         contract.status not in {"degraded", "blocked"}
         and contract.root_cause
+        and contract.execution_steps
         and (
             contract.call_chain_oracle.required_top_frames
             or contract.call_chain_oracle.required_frames
