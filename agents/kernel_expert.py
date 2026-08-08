@@ -3370,6 +3370,7 @@ def _kernel_contract_has_handoff(contract: KernelExpertOutput) -> bool:
         and contract.reproducer.source_dir
         and contract.reproducer.source_files
         and contract.reproducer.entry_source
+        and contract.execution_steps
         and contract.call_chain_oracle.fault_signatures
         and (
             contract.call_chain_oracle.required_top_frames

@@ -68,6 +68,8 @@ The contract must contain:
 - `call_chain_oracle.fault_signatures`, `required_top_frames`, `required_frames` (the same core list), `required_frame_order`, `required_frame_alternatives`, `target_subsystems`, `target_objects`, and optional `allowed_wrapper_frames`;
 - `qemu_recipe` with only evidence-supported settings;
 - a `reproducer` object with `language: "c"` and `artifact_type: "userspace"`;
+- a non-empty `execution_steps` list containing the exact allow-listed guest
+  actions. It must include at least one `{"type":"run_binary","path":"bin/<output_binary>","args":[]}` step that runs the declared C binary; add only source/log-justified setup, pressure, or fault steps.
 - structured `setup_requirements` for explicit guest preconditions such as a
   vcan interface that the selected rootfs does not guarantee;
 - structured `pressure_requirements` and `fault_injection_requirements` only when justified by the report/source;
@@ -144,6 +146,9 @@ Finish with exactly one fenced JSON object headed `KERNEL_CONTRACT`:
     "rationale": "source-backed producer boundary"
   },
   "qemu_recipe": {"extra_cmdline": ""},
+  "execution_steps": [
+    {"type": "run_binary", "path": "bin/lumen-diagnostic", "args": [], "rationale": "run the declared userspace C harness"}
+  ],
   "reproducer": {
     "language": "c",
     "artifact_type": "userspace",

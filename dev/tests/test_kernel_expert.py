@@ -30,6 +30,7 @@ from agents.kernel_expert import (
     _sync_codex_artifacts,
     _validate_kernel_contract_artifacts,
     _kernel_expert_contract_is_terminal,
+    _kernel_contract_has_handoff,
     _preserve_valid_contract_after_cli_failure,
     _recover_materialized_contract_after_cli_failure,
     _render_incremental_test_round_context,
@@ -53,6 +54,9 @@ def _contract(root: Path) -> KernelExpertOutput:
             source_dir=str(source), source_files=["repro.c"], entry_source="repro.c",
             output_binary="lumen-repro",
         ),
+        execution_steps=[
+            {"type": "run_binary", "path": "bin/lumen-repro", "args": []},
+        ],
     )
 
 
@@ -423,6 +427,13 @@ def test_codex_strict_required_frames_alias_is_handoff_ready_without_retry():
         "smack_log_callback+0x105/0x1b0", "strlen+0x2c/0x70",
     ]]
     assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:strlen+0x2c/0x70"]
+
+
+def test_kernel_handoff_requires_an_explicit_guest_run_step():
+    with tempfile.TemporaryDirectory() as directory:
+        contract = _contract(Path(directory))
+        contract.execution_steps = []
+        assert not _kernel_contract_has_handoff(contract)
 
 
 def test_codex_flattened_contract_preserves_evidence_for_root_cause_scoring():

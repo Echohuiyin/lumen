@@ -36,6 +36,9 @@ def _contract(root: Path) -> KernelExpertOutput:
             source_dir=str(source), source_files=["repro.c"], entry_source="repro.c",
             output_binary="lumen-repro",
         ),
+        execution_steps=[
+            {"type": "run_binary", "path": "bin/lumen-repro", "args": []},
+        ],
     )
 
 
