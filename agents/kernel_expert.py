@@ -2840,6 +2840,45 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 warnings.append(
                     "Normalized strict_required_frames to the ordered call-chain gate."
                 )
+        strict_order = oracle.get("strict_order")
+        if (
+            isinstance(strict_order, list)
+            and strict_order
+            and not oracle.get("required_top_frames")
+            and not oracle.get("required_frames")
+        ):
+            strict_frames = []
+            strict_signatures = []
+            for item in strict_order:
+                if isinstance(item, dict):
+                    frame = _runtime_frame_text(
+                        item.get("required_frame")
+                        or item.get("frame")
+                        or item.get("function")
+                        or item.get("symbol")
+                    )
+                    signature = str(item.get("signature") or "").strip()
+                else:
+                    frame = _runtime_frame_text(item)
+                    signature = ""
+                if frame:
+                    strict_frames.append(frame)
+                if signature:
+                    strict_signatures.append(signature)
+            if strict_frames:
+                oracle["required_top_frames"] = strict_frames
+                oracle["required_frames"] = list(strict_frames)
+                oracle["required_frame_order"] = [
+                    [strict_frames[index], strict_frames[index + 1]]
+                    for index in range(len(strict_frames) - 1)
+                ]
+                if strict_signatures and not oracle.get("fault_signatures"):
+                    # Versioned ``strict_order`` is entry-to-fault ordered;
+                    # only its final explicit signature is the fault signal.
+                    oracle["fault_signatures"] = [strict_signatures[-1]]
+                warnings.append(
+                    "Normalized strict_order to the ordered call-chain gate."
+                )
         if not oracle.get("fault_signatures"):
             for signal_key in (
                 "required_report_signatures", "required_log_signatures",

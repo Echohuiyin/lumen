@@ -476,6 +476,36 @@ def test_codex_strict_required_frames_alias_is_handoff_ready_without_retry():
     assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:strlen+0x2c/0x70"]
 
 
+def test_codex_strict_order_alias_preserves_explicit_fault_signature():
+    data = {
+        "schema": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": {"classification": "SMACK audit callback path"},
+        "original_call_chain": ["keyctl_watch_key", "strlen"],
+        "call_chain_oracle": {
+            "strict_order": [
+                {"order": 1, "required_frame": "keyctl_watch_key", "signature": "watch install"},
+                {"order": 2, "required_frame": "smack_log_callback", "signature": "audit callback"},
+                {"order": 3, "required_frame": "strlen", "signature": "RIP at strlen with a KASAN wild-memory report"},
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diag.c"],
+        },
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "ok"
+    assert parsed.call_chain_oracle.required_top_frames == [
+        "keyctl_watch_key", "smack_log_callback", "strlen",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "RIP at strlen with a KASAN wild-memory report",
+    ]
+
+
 def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
     data = {
         "contract": "KERNEL_CONTRACT",
