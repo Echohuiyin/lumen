@@ -2823,11 +2823,23 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 reproducer[target] = reproducer[source]
         source_files = reproducer.get("source_files") or []
         if isinstance(source_files, list):
-            reproducer["source_files"] = [
-                item.get("path") if isinstance(item, dict) and item.get("path")
-                else item
-                for item in source_files
-            ]
+            source_dir = str(reproducer.get("source_dir") or "").rstrip("/")
+            normalized_files = []
+            for item in source_files:
+                value = (
+                    str(item.get("path") or "").strip()
+                    if isinstance(item, dict) and item.get("path")
+                    else _frame_text(item)
+                )
+                if source_dir and value.startswith(source_dir + "/"):
+                    # The Codex workdir is already authenticated by the
+                    # artifact handoff.  Preserve the path only as a
+                    # source-dir-relative entry for the internal ABI; paths
+                    # outside that declared directory remain absolute and
+                    # are rejected by the existing source gate.
+                    value = value[len(source_dir) + 1:]
+                normalized_files.append(value)
+            reproducer["source_files"] = normalized_files
             source_files = reproducer["source_files"]
         raw_run_args = reproducer.get("run_args")
         if isinstance(raw_run_args, list) and any(isinstance(item, list) for item in raw_run_args):

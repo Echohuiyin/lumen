@@ -462,7 +462,7 @@ def test_codex_contract_type_preserves_precise_blocked_reason_and_oracle():
         "reproducer": {
             "language": "c", "artifact_type": "userspace",
             "source_dir": "/tmp/jfs-session",
-            "source_files": [{"path": "jfs_mount_abi_probe.c", "purpose": "probe"}],
+            "source_files": [{"path": "/tmp/jfs-session/jfs_mount_abi_probe.c", "purpose": "probe"}],
             "flags": ["-Wall"], "arguments": [], "timeout_seconds": 5,
         },
         "blocked_reason": {
@@ -476,6 +476,7 @@ def test_codex_contract_type_preserves_precise_blocked_reason_and_oracle():
     assert parsed.root_cause == "JFS cleanup reaches diFree"
     assert parsed.reproducer.source_dir == "/tmp/jfs-session"
     assert parsed.reproducer.entry_source == "jfs_mount_abi_probe.c"
+    assert parsed.reproducer.source_files == ["jfs_mount_abi_probe.c"]
     assert parsed.call_chain_oracle.required_frames == ["diFree+0x13d", "entry_SYSCALL_64_after_hwframe"]
     assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:diFree+0x13d/0x2dc0"]
     assert "CAP_SYS_ADMIN" in parsed.blocked_reason

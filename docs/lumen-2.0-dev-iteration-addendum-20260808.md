@@ -55,3 +55,13 @@ normalization accepts only that exact marker, reverses an explicitly declared
 `syscall_entry_to_fault` core into the runtime fault-to-entry order, and keeps
 the blocked contract terminal. It still does not turn an ABI reachability probe
 into a reproduction attempt.
+
+## R0 observation: bcachefs source-path normalization
+
+Case `56edda805363e0a093b8` produced a precise non-privileged ABI boundary
+analysis, but its C source was declared as an absolute path inside the
+authenticated Codex `source_dir`. The existing source gate intentionally
+accepts only relative files under that directory, so the path spelling caused
+an early false block. The minimal adapter fix strips the declared directory
+prefix only when it is an exact in-directory prefix; outside paths remain
+unchanged and continue to fail closed. No source or runtime action is inferred.
