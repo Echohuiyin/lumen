@@ -421,6 +421,17 @@ def test_test_plan_executes_setup_requirements_before_pressure_and_binary(tmp_pa
     assert [step.type for step in plan.execution_steps] == ["setup_vcan", "run_binary"]
 
 
+def test_test_plan_preserves_declared_execution_steps_without_duplicate_binary(tmp_path):
+    contract = _contract(tmp_path)
+    contract.execution_steps = [
+        ExecutionStep(type="setup_vcan", interface="vcan0", rationale="declared setup"),
+        ExecutionStep(type="run_binary", path="bin/lumen-repro", args=["--once"]),
+    ]
+    plan = _build_plan(contract)
+    assert [step.type for step in plan.execution_steps] == ["setup_vcan", "run_binary"]
+    assert plan.execution_steps[-1].args == ["--once"]
+
+
 def test_test_plan_carries_declared_reproduction_assets():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

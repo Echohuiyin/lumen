@@ -57,6 +57,13 @@ Write a new ordinary userspace C program in the current Codex workdir. The progr
 
 Before handing off, perform a source-level review of every C file: syntax, warnings, ABI payload sizes, bounds, lifetime, process/thread joins, error paths, and cleanup. A failed static check requires a C repair and another review; it must never be handed to Test Expert.
 
+Treat compiler diagnostics as actionable source defects, not as permission to
+drop the contract or suppress warnings. When a public Linux UAPI header overlaps
+with a libc header (for example, duplicate fcntl structure definitions), revise
+the include set or use the documented UAPI constants without mixing duplicate
+kernel/libc declarations, then rerun the exact warning-clean check. Do not add
+`-w`, `-Wno-error`, or a private ABI workaround.
+
 For concurrent work, prefer bounded processes when that is the evidence-supported guest capability. Every worker must have explicit resource ownership, every started worker must be joined with a bounded wait, and a guest-process crash or compiler/runtime error is a failed harness run, not a kernel result.
 
 ## Contract and retry rules
@@ -70,6 +77,10 @@ The contract must contain:
 - a `reproducer` object with `language: "c"` and `artifact_type: "userspace"`;
 - a non-empty `execution_steps` list containing the exact allow-listed guest
   actions. It must include at least one `{"type":"run_binary","path":"bin/<output_binary>","args":[]}` step that runs the declared C binary; add only source/log-justified setup, pressure, or fault steps.
+- `reproducer.entry_source`, `reproducer.output_binary`, and `reproducer.run_args`
+  must be explicit even when a versioned contract also contains a
+  `userspace_c_declaration` section. Do not rely on a prose `entrypoint`, an
+  implicit binary name, or a runner default in place of these fields.
 - structured `setup_requirements` for explicit guest preconditions such as a
   vcan interface that the selected rootfs does not guarantee;
 - structured `pressure_requirements` and `fault_injection_requirements` only when justified by the report/source;

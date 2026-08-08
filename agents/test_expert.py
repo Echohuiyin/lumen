@@ -387,16 +387,31 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
             + ", ".join(sorted(set(unresolved_args)))
         )
     oracle = _strict_call_chain_oracle(contract)
-    steps = [
+    # Preserve the Kernel Expert's explicit execution plan.  The previous
+    # builder ignored ``contract.execution_steps`` and therefore silently
+    # dropped setup_vcan/pressure/fault actions before the runner saw them.
+    # Keep the typed requirement lists for backward compatibility, but dedupe
+    # exact step records and append the standard binary action only when the
+    # contract did not already declare one.
+    steps = []
+    seen_steps: set[str] = set()
+    for step in [
         *contract.setup_requirements,
         *contract.pressure_requirements,
         *contract.fault_injection_requirements,
-    ]
-    steps.append(ExecutionStep(
-        type="run_binary",
-        path=f"bin/{reproducer.output_binary}",
-        args=list(reproducer.run_args),
-    ))
+        *contract.execution_steps,
+    ]:
+        key = json.dumps(model_to_dict(step), ensure_ascii=False, sort_keys=True)
+        if key in seen_steps:
+            continue
+        seen_steps.add(key)
+        steps.append(step)
+    if not any(step.type == "run_binary" for step in steps):
+        steps.append(ExecutionStep(
+            type="run_binary",
+            path=f"bin/{reproducer.output_binary}",
+            args=list(reproducer.run_args),
+        ))
     return TestPlan(
         target_arch=contract.target_arch,
         boot_kernel_path=contract.boot_kernel_path,

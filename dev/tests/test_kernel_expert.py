@@ -232,6 +232,53 @@ def test_inline_report_annotations_are_preserved(tmp_path):
     assert enriched.call_chain_oracle.required_frames == ["helper [inline]", "caller"]
 
 
+def test_versioned_codex_contract_normalizes_entrypoint_and_binary_step(tmp_path):
+    source = tmp_path / "diag.c"
+    source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    raw = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": {"verified_invariant": "the documented ABI reaches the target"},
+        "original_call_chain": {"printed_frames": [{"function": "fault"}, {"function": "caller"}]},
+        "call_chain_oracle": {
+            "required_frames": [{"function": "fault"}, {"function": "caller"}],
+            "required_log_signatures": ["BUG: target"],
+        },
+        "reproducer": {
+            "language": "c",
+            "artifact_type": "userspace",
+            "source_dir": str(tmp_path),
+            "source_files": ["diag.c"],
+            "entrypoint": "main",
+            "compiler": "cc",
+            "flags": ["-std=c11"],
+            "libraries": ["libc"],
+            "arguments": [],
+        },
+    }
+    contract = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(raw) + "\n```"
+    )
+    assert contract.status == "ok"
+    assert contract.reproducer.entry_source == "main"
+    assert contract.reproducer.output_binary == "lumen-repro"
+    assert contract.call_chain_oracle.fault_signatures == ["BUG: target"]
+    assert [step.type for step in contract.execution_steps] == ["run_binary"]
+    assert contract.execution_steps[0].path == "bin/lumen-repro"
+
+
+def test_contract_schema_block_is_repairable_but_capability_block_is_terminal(tmp_path):
+    schema_block = _contract(tmp_path)
+    schema_block.status = "blocked"
+    schema_block.blocked_reason = "missing call_chain_oracle.fault_signatures"
+    assert _kernel_expert_contract_is_terminal(schema_block) is False
+
+    capability_block = KernelExpertOutput(**model_to_dict(schema_block))
+    capability_block.status = "blocked"
+    capability_block.blocked_reason = "documented userspace ABI requires CAP_SYS_ADMIN"
+    assert _kernel_expert_contract_is_terminal(capability_block) is True
+
+
 def test_inline_report_annotations_are_preserved_in_required_top_frames(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text("Call trace:\n helper fs/example.c:10 [inline]\n", encoding="utf-8")

@@ -612,7 +612,27 @@ def _kernel_expert_contract_is_terminal(contract: KernelExpertOutput | None) -> 
     if contract is None:
         return False
     if contract.status == "blocked":
-        return bool(str(contract.blocked_reason or "").strip())
+        reason = str(contract.blocked_reason or "").strip().lower()
+        if not reason:
+            return False
+        # A model sometimes labels a schema omission as ``blocked`` after
+        # writing a usable C artifact.  Keep that response repairable; only a
+        # source/capability/environment limitation is terminal.  This avoids
+        # treating missing oracle/guest actions as a valid hard block while
+        # preserving the no-fallback rule for genuine prerequisites.
+        schema_markers = (
+            "missing explicit structured",
+            "missing execution_steps",
+            "missing execution steps",
+            "missing call_chain_oracle",
+            "missing fault_signatures",
+            "missing fault signatures",
+            "missing entry_source",
+            "missing reproducer",
+            "contract schema",
+            "contract handoff",
+        )
+        return not any(marker in reason for marker in schema_markers)
     return bool(
         contract.status not in {"degraded", "blocked"}
         and contract.root_cause
@@ -2966,6 +2986,10 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         normalized["call_chain_oracle"] = oracle
 
     raw_reproducer = normalized.get("reproducer")
+    # Older project-local Codex skill revisions put the same entry function
+    # under ``entrypoint``.  This is a schema alias only: the source file must
+    # still be present in the current invocation manifest and the downstream
+    # static/guest gates remain authoritative.
     if isinstance(raw_reproducer, dict):
         reproducer = dict(raw_reproducer)
         aliases = {
@@ -2973,6 +2997,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             "libraries": "link_libraries",
             "arguments": "run_args",
             "timeout_seconds": "runtime_timeout_sec",
+            "entrypoint": "entry_source",
         }
         for source, target in aliases.items():
             if source in reproducer and target not in reproducer:
@@ -3052,6 +3077,47 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         if not reproducer.get("entry_source") and isinstance(source_files, list) and source_files:
             reproducer["entry_source"] = str(source_files[0])
         normalized["reproducer"] = reproducer
+
+    # The versioned maintenance contract historically described the guest
+    # binary in ``reproducer.output_binary``/``arguments`` but omitted the
+    # newer explicit execution-step array.  Materialize exactly one bounded
+    # ``run_binary`` action from those already-declared fields.  This is not a
+    # source, command, or trigger fallback: no action is created unless a C
+    # source and a safe binary name are present in the same contract, and the
+    # normal source/static/QEMU gates still decide whether it can run.
+    raw_steps = normalized.get("execution_steps")
+    if not isinstance(raw_steps, list) or not raw_steps:
+        repro = normalized.get("reproducer") or {}
+        if isinstance(repro, dict):
+            source_files = repro.get("source_files") or []
+            output_binary = str(repro.get("output_binary") or "").strip()
+            # ``lumen-repro`` is the declared UserspaceReproducer schema
+            # default, not a case-specific path.  Use it only when the model
+            # supplied a C source but omitted this optional presentation key.
+            if not output_binary and source_files:
+                output_binary = "lumen-repro"
+                repro["output_binary"] = output_binary
+                normalized["reproducer"] = repro
+                warnings.append(
+                    "Applied the UserspaceReproducer schema default output_binary "
+                    "while normalizing an explicit C artifact."
+                )
+            run_args = repro.get("run_args")
+            if (
+                source_files
+                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", output_binary)
+                and isinstance(run_args, list)
+                and all(isinstance(item, (str, int, float)) for item in run_args)
+            ):
+                normalized["execution_steps"] = [{
+                    "type": "run_binary",
+                    "path": f"bin/{output_binary}",
+                    "args": [str(item) for item in run_args],
+                    "rationale": "Run the explicitly declared userspace C artifact.",
+                }]
+                warnings.append(
+                    "Normalized the explicit reproducer binary/arguments to one run_binary step."
+                )
 
     raw_change = normalized.get("change_from_previous_tryout")
     if isinstance(raw_change, dict):
