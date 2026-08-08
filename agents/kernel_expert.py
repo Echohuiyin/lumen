@@ -2667,6 +2667,13 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # arbitrary prose is still rejected by the extractor.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
+        elif data.get("kind") == "KERNEL_CONTRACT":
+            # Codex maintenance skill revisions may call the explicit marker
+            # ``kind``.  Accept that exact marker so a source-grounded blocked
+            # analysis is retained for RCA scoring instead of becoming an
+            # empty fallback envelope.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
         elif (
             data.get("status") in {"ok", "ready", "blocked"}
             and isinstance(data.get("root_cause"), dict)
@@ -2703,7 +2710,11 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         """Strip log-only prefixes while retaining source-provided offsets."""
         value = _frame_text(item, prefer_signature=True)
         value = re.sub(r"^\s*RIP:\s*(?:[0-9A-Fa-f]+:)?", "", value)
-        return value.lstrip("?* ").strip()
+        value = value.lstrip("?* ").strip()
+        # Contract prose may append a source-location annotation (for
+        # example ``[fs/buffer.c:391]``).  It is audit evidence, not part of
+        # the serial frame ABI, so do not make matching depend on it.
+        return re.sub(r"\s+\[[^\]]+\]$", "", value).strip()
 
     raw_tryout = normalized.get("tryout")
     if isinstance(raw_tryout, dict):
@@ -2712,6 +2723,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             number = raw_tryout.get("index")
         if isinstance(number, int):
             normalized["tryout"] = number
+
+    if not normalized.get("evidence") and isinstance(normalized.get("source_evidence"), list):
+        normalized["evidence"] = normalized["source_evidence"]
 
     raw_root_cause = normalized.get("root_cause")
     if isinstance(raw_root_cause, dict):
@@ -2745,6 +2759,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("fault_report_trace")
             or raw_chain.get("access_report_order")
             or raw_chain.get("reported_trace_order_leaf_to_outer")
+            or raw_chain.get("frames_in_report_order")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
@@ -2844,7 +2859,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 for pair in raw_order
                 if isinstance(pair, list)
             ]
-        if "required_signatures" in oracle and "fault_signatures" not in oracle:
+        if "required_signatures" in oracle:
             raw_signatures = [
                 str(item).strip()
                 for item in (oracle.get("required_signatures") or [])
@@ -2868,9 +2883,18 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     [frame_signatures[index], frame_signatures[index + 1]]
                     for index in range(len(frame_signatures) - 1)
                 ]
-            oracle["fault_signatures"] = signal_signatures or (
-                raw_signatures[:1] if raw_signatures else []
-            )
+            if signal_signatures:
+                oracle["fault_signatures"] = signal_signatures
+            elif raw_signatures and re.match(
+                r"^(?:rip:|bug:|warning:|kernel panic|call trace:)",
+                raw_signatures[0].lstrip(),
+                flags=re.IGNORECASE,
+            ):
+                # A report marker such as ``RIP:`` is a signal even though
+                # its tail is lexically frame-like after prefix stripping.
+                oracle["fault_signatures"] = [raw_signatures[0]]
+            elif "fault_signatures" not in oracle:
+                oracle["fault_signatures"] = raw_signatures[:1] if raw_signatures else []
         if "required_log_signatures" in oracle and "fault_signatures" not in oracle:
             oracle["fault_signatures"] = oracle.get("required_log_signatures") or []
         if declared_fault_signatures and "fault_signatures" not in oracle:

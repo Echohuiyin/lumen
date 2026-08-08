@@ -668,6 +668,54 @@ def test_codex_descriptive_pthread_library_is_linker_safe():
     assert parsed.reproducer.link_libraries == ["pthread"]
 
 
+def test_codex_kind_marker_preserves_blocked_source_evidence_contract():
+    data = {
+        "kind": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "tryout": {"number": 1},
+        "root_cause": {
+            "classification": "verified invariant violation",
+            "invariant": "completion requires an async-write buffer flag",
+        },
+        "source_evidence": [
+            {"source_domain": "kernel", "function": "end_buffer_async_write"},
+        ],
+        "original_call_chain": {
+            "frames_in_report_order": [
+                "end_buffer_async_write+0x2db/0x340", "bio_endio+0x5af/0x6c0",
+            ],
+        },
+        "call_chain_oracle": {
+            "strict_ordered_core": [
+                "end_buffer_async_write+0x2db/0x340 [fs/buffer.c:391 assertion site]",
+                "bio_endio+0x5af/0x6c0 [block/bio.c:1576-1609]",
+            ],
+            "required_signatures": [
+                "RIP: 0010:end_buffer_async_write+0x2db/0x340",
+                "bio_endio+0x5af/0x6c0",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["probe.c"],
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "blocked"
+    assert parsed.tryout == 1
+    assert parsed.root_cause == "verified invariant violation"
+    assert parsed.root_cause_evidence == data["source_evidence"]
+    assert parsed.original_call_chain == [
+        "end_buffer_async_write+0x2db/0x340", "bio_endio+0x5af/0x6c0",
+    ]
+    assert parsed.call_chain_oracle.required_frames == [
+        "end_buffer_async_write+0x2db/0x340", "bio_endio+0x5af/0x6c0",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "RIP: 0010:end_buffer_async_write+0x2db/0x340",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
