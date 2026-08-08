@@ -2739,18 +2739,20 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("frames")
             or raw_chain.get("required_primary_frames")
             or raw_chain.get("report_stack_top_to_bottom")
+            or raw_chain.get("fault_report_call_trace")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
                 value for item in frames
                 if (value := _frame_text(item))
             ]
-        if isinstance(raw_chain.get("crash_signatures"), list):
-            declared_fault_signatures = [
-                str(item).strip()
-                for item in raw_chain["crash_signatures"]
-                if str(item).strip()
-            ]
+        for signature_key in ("crash_signatures", "log_signatures"):
+            if isinstance(raw_chain.get(signature_key), list):
+                declared_fault_signatures.extend(
+                    str(item).strip()
+                    for item in raw_chain[signature_key]
+                    if str(item).strip()
+                )
     elif isinstance(raw_chain, list):
         normalized["original_call_chain"] = [
             value for item in raw_chain

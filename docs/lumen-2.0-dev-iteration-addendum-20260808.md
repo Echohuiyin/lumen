@@ -80,3 +80,9 @@ mixed a KASAN headline with function symbols and `arguments.default` carried
 the executable vector. The adapter now performs only lexical classification
 and explicit-default selection, preserving the strict frame order without
 inventing a trigger or treating a generic frame as a fault signal.
+
+The subsequent J1939 materialized contract separated the report stack under
+`fault_report_call_trace` and stored the serial evidence in `log_signatures`;
+the adapter now retains those explicit fields as the call-chain and signal
+inputs. Allocation/free chains remain evidence-only and are not merged into
+the runtime oracle.

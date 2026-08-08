@@ -520,7 +520,8 @@ def test_j1939_contract_maps_mixed_required_signatures_and_default_args():
         "status": "ready",
         "root_cause": {"verified_invariant": "session lifetime crosses abort cleanup"},
         "original_call_chain": {
-            "report_stack_top_to_bottom": ["j1939_sock_pending_del", "run_ksoftirqd"],
+            "fault_report_call_trace": ["j1939_sock_pending_del", "run_ksoftirqd"],
+            "log_signatures": ["BUG: KASAN: use-after-free in j1939_sock_pending_del"],
         },
         "call_chain_oracle": {
             "required_signatures": [
