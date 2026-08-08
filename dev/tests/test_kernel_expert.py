@@ -538,6 +538,50 @@ def test_codex_ordered_frames_top_to_bottom_preserves_blocked_rca():
     assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:0x0"]
 
 
+def test_codex_stack_order_alias_preserves_blocked_rca_contract():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "blocked",
+        "root_cause": {
+            "verified_invariant": "The update pool must be initialized before mempool_alloc.",
+        },
+        "original_call_chain": {
+            "stack_order_top_to_bottom": [
+                "mempool_alloc_noprof+0x1a4/0x510",
+                "bch2_btree_update_start+0x549/0x1480",
+                "bch2_data_job+0x646/0x910",
+            ],
+        },
+        "call_chain_oracle": {
+            "required_stack_order_top_to_bottom": [
+                "mempool_alloc_noprof",
+                "bch2_btree_update_start",
+                "bch2_data_job",
+            ],
+            "required_signatures": [
+                "#PF: supervisor instruction fetch in kernel mode",
+                "RIP: 0010:0x0",
+            ],
+        },
+    }
+    parsed = _extract_kernel_contract(
+        "KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```"
+    )
+    assert parsed.status == "blocked"
+    assert parsed.root_cause == "The update pool must be initialized before mempool_alloc."
+    assert parsed.original_call_chain == [
+        "mempool_alloc_noprof+0x1a4/0x510",
+        "bch2_btree_update_start+0x549/0x1480",
+        "bch2_data_job+0x646/0x910",
+    ]
+    assert parsed.call_chain_oracle.required_frames == [
+        "mempool_alloc_noprof", "bch2_btree_update_start", "bch2_data_job",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "#PF: supervisor instruction fetch in kernel mode", "RIP: 0010:0x0",
+    ]
+
+
 def test_codex_printed_frames_alias_preserves_blocked_rca_contract():
     data = {
         "contract": "KERNEL_CONTRACT",

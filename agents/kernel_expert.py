@@ -2778,6 +2778,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("observed_top_to_bottom")
             or raw_chain.get("observed_order_top_to_bottom")
             or raw_chain.get("ordered_frames_top_to_bottom")
+            or raw_chain.get("stack_order_top_to_bottom")
             or raw_chain.get("frames")
             or raw_chain.get("required_primary_frames")
             or raw_chain.get("report_stack_top_to_bottom")
@@ -2900,6 +2901,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         )
         core_source = "required_order_top_to_bottom"
         core_frames = oracle.get(core_source)
+        if not isinstance(core_frames, list) or not core_frames:
+            core_source = "required_stack_order_top_to_bottom"
+            core_frames = oracle.get(core_source)
         if not isinstance(core_frames, list) or not core_frames:
             core_source = "required_order_leaf_to_outer"
             core_frames = oracle.get(core_source)
