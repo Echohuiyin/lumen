@@ -833,6 +833,36 @@ def test_codex_root_cause_statement_alias_preserves_bcachefs_rca():
     assert parsed.original_call_chain == ["mempool_alloc_noprof", "bch2_data_thread"]
     assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:0x0"]
 
+
+def test_codex_nested_incremental_setup_change_is_preserved_for_retry_gate():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ready",
+        "tryout": 2,
+        "previous_tryout": 1,
+        "root_cause": "The public key-watch path reaches the SMACK hook.",
+        "original_call_chain": ["keyctl_watch_key", "smack_watch_key", "strlen"],
+        "call_chain_oracle": {
+            "required_frames": ["keyctl_watch_key", "smack_watch_key", "strlen"],
+            "fault_signatures": ["RIP: 0010:strlen+0x2c/0x70"],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diag.c"],
+        },
+        "incremental_setup": {
+            "prior_tryout": 1,
+            "change_from_previous_tryout": (
+                "Retain the exact-commit guest setup and add one explicit key-watch trigger."
+            ),
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "ok"
+    assert parsed.change_from_previous_tryout == (
+        "Retain the exact-commit guest setup and add one explicit key-watch trigger."
+    )
+
 def test_kernel_handoff_requires_an_explicit_guest_run_step():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))

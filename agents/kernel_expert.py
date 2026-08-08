@@ -3212,6 +3212,25 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         normalized["change_from_previous_tryout"] = str(
             raw_change.get("change") or raw_change.get("summary") or ""
         ).strip()
+    if not str(normalized.get("change_from_previous_tryout") or "").strip():
+        # Versioned Codex contracts may nest the explicit retry delta under
+        # incremental_setup instead of repeating the internal top-level
+        # field.  Preserve only a declared textual change; do not infer one
+        # from setup steps, prior_tryout, or source differences.
+        incremental_setup = normalized.get("incremental_setup")
+        if isinstance(incremental_setup, dict):
+            for key in ("change_from_previous_tryout", "setup_change", "change"):
+                candidate = incremental_setup.get(key)
+                if isinstance(candidate, dict):
+                    candidate = candidate.get("change") or candidate.get("summary")
+                candidate = str(candidate or "").strip()
+                if candidate:
+                    normalized["change_from_previous_tryout"] = candidate
+                    warnings.append(
+                        "Normalized the explicit incremental_setup change to "
+                        "change_from_previous_tryout."
+                    )
+                    break
 
     reason = normalized.get("blocked_reason")
     if isinstance(reason, dict):
