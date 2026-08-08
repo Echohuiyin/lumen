@@ -2780,6 +2780,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("ordered_frames_top_to_bottom")
             or raw_chain.get("stack_order_top_to_bottom")
             or raw_chain.get("raw_frames_leaf_to_user")
+            or raw_chain.get("logged_frames_in_order")
             or raw_chain.get("frames")
             or raw_chain.get("required_primary_frames")
             or raw_chain.get("report_stack_top_to_bottom")
@@ -2798,7 +2799,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 value for item in frames
                 if (value := _frame_text(item))
             ]
-        for signature_key in ("crash_signatures", "log_signatures"):
+        for signature_key in ("crash_signatures", "log_signatures", "fault_signatures"):
             if isinstance(raw_chain.get(signature_key), list):
                 declared_fault_signatures.extend(
                     str(item).strip()
@@ -2885,7 +2886,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         if not oracle.get("fault_signatures"):
             for signal_key in (
                 "required_report_signatures", "required_log_signatures",
-                "concrete_log_signatures",
+                "concrete_log_signatures", "required_fault_signatures",
             ):
                 signals = oracle.get(signal_key)
                 if isinstance(signals, list) and signals:
