@@ -396,6 +396,35 @@ def test_codex_versioned_contract_aliases_normalize_without_inventing_runtime_ac
     assert parsed.fault_injection_requirements == []
 
 
+def test_codex_strict_required_frames_alias_is_handoff_ready_without_retry():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": {"classification": "SMACK callback receives the wrong label"},
+        "original_call_chain": {"observed_frames": ["strlen", "smack_log_callback"]},
+        "call_chain_oracle": {
+            "strict_required_frames": [
+                {"order": 1, "frame": "smack_log_callback+0x105/0x1b0"},
+                {"order": 2, "frame": "strlen+0x2c/0x70"},
+            ],
+            "concrete_log_signatures": ["RIP: 0010:strlen+0x2c/0x70"],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diag.c"],
+        },
+    }
+    parsed = _extract_kernel_contract("KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```")
+    assert parsed.status == "ok"
+    assert parsed.call_chain_oracle.required_frames == [
+        "smack_log_callback+0x105/0x1b0", "strlen+0x2c/0x70",
+    ]
+    assert parsed.call_chain_oracle.required_frame_order == [[
+        "smack_log_callback+0x105/0x1b0", "strlen+0x2c/0x70",
+    ]]
+    assert parsed.call_chain_oracle.fault_signatures == ["RIP: 0010:strlen+0x2c/0x70"]
+
+
 def test_codex_flattened_contract_preserves_evidence_for_root_cause_scoring():
     data = {
         "contract": "KERNEL_CONTRACT",

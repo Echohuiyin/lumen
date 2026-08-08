@@ -2785,6 +2785,43 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     raw_oracle = normalized.get("call_chain_oracle")
     if isinstance(raw_oracle, dict):
         oracle = dict(raw_oracle)
+        # Versioned Codex contracts may call the ordered runtime gate
+        # ``strict_required_frames``.  It is an explicit frame list (not a
+        # prose hint), so map it to the internal ABI before the handoff gate
+        # evaluates completeness.  Without this alias a valid contract was
+        # treated as incomplete and triggered repeated Codex repair turns.
+        strict_required = oracle.get("strict_required_frames")
+        if (
+            isinstance(strict_required, list)
+            and strict_required
+            and not oracle.get("required_top_frames")
+            and not oracle.get("required_frames")
+        ):
+            strict_frames = [
+                value for item in strict_required
+                if (value := _runtime_frame_text(item))
+            ]
+            if strict_frames:
+                oracle["required_top_frames"] = strict_frames
+                oracle["required_frames"] = list(strict_frames)
+                oracle["required_frame_order"] = [
+                    [strict_frames[index], strict_frames[index + 1]]
+                    for index in range(len(strict_frames) - 1)
+                ]
+                warnings.append(
+                    "Normalized strict_required_frames to the ordered call-chain gate."
+                )
+        if not oracle.get("fault_signatures"):
+            for signal_key in (
+                "required_report_signatures", "required_log_signatures",
+                "concrete_log_signatures",
+            ):
+                signals = oracle.get(signal_key)
+                if isinstance(signals, list) and signals:
+                    oracle["fault_signatures"] = [
+                        str(item).strip() for item in signals if str(item).strip()
+                    ]
+                    break
         explicit_frame_fields = any(
             oracle.get(key)
             for key in (
