@@ -611,6 +611,45 @@ def test_j1939_contract_accepts_access_report_order_alias():
     ]
 
 
+def test_codex_ready_for_test_and_indexed_tryout_are_normalized():
+    data = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ready_for_test",
+        "tryout": {"index": 3, "maximum": 10},
+        "root_cause": "J1939 session teardown accesses a dead socket",
+        "original_call_chain": {
+            "reported_trace_order_leaf_to_outer": [
+                "j1939_sock_pending_del", "j1939_session_put",
+            ],
+        },
+        "call_chain_oracle": {
+            "required_order_leaf_to_outer": [
+                "j1939_sock_pending_del", "j1939_session_put",
+            ],
+            "required_log_signatures": [
+                "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/j1939", "source_files": ["probe.c"],
+            "compiler": "cc",
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "ok"
+    assert parsed.tryout == 3
+    assert parsed.original_call_chain == [
+        "j1939_sock_pending_del", "j1939_session_put",
+    ]
+    assert parsed.call_chain_oracle.required_frames == [
+        "j1939_sock_pending_del", "j1939_session_put",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(

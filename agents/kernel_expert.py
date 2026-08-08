@@ -2708,6 +2708,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     raw_tryout = normalized.get("tryout")
     if isinstance(raw_tryout, dict):
         number = raw_tryout.get("number")
+        if not isinstance(number, int):
+            number = raw_tryout.get("index")
         if isinstance(number, int):
             normalized["tryout"] = number
 
@@ -2742,6 +2744,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("fault_report_call_trace")
             or raw_chain.get("fault_report_trace")
             or raw_chain.get("access_report_order")
+            or raw_chain.get("reported_trace_order_leaf_to_outer")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
@@ -2773,6 +2776,12 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         )
         core_source = "required_order_top_to_bottom"
         core_frames = oracle.get(core_source)
+        if not isinstance(core_frames, list) or not core_frames:
+            core_source = "required_order_leaf_to_outer"
+            core_frames = oracle.get(core_source)
+        if not isinstance(core_frames, list) or not core_frames:
+            core_source = "required_order_leaf_to_outer"
+            core_frames = oracle.get("required_frames_in_order")
         if not isinstance(core_frames, list) or not core_frames:
             core_source = "required_core"
             core_frames = oracle.get(core_source)
@@ -2948,10 +2957,10 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     elif reason is None:
         normalized["blocked_reason"] = ""
 
-    if normalized.get("status") == "ready":
+    if normalized.get("status") in {"ready", "ready_for_test"}:
         normalized["status"] = "ok"
         warnings.append(
-            "Normalized the explicit Codex KERNEL_CONTRACT schema_version=1 status=ready; "
+            "Normalized the explicit Codex KERNEL_CONTRACT ready status; "
             "source, static-C, and Test Expert guest gates remain authoritative."
         )
     normalized["warnings"] = warnings
