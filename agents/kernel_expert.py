@@ -2741,6 +2741,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             or raw_chain.get("report_stack_top_to_bottom")
             or raw_chain.get("fault_report_call_trace")
             or raw_chain.get("fault_report_trace")
+            or raw_chain.get("access_report_order")
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [

@@ -582,6 +582,35 @@ def test_j1939_contract_accepts_fault_report_trace_alias():
     ]
 
 
+def test_j1939_contract_accepts_access_report_order_alias():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": "J1939 receive-side abort releases session state too early",
+        "original_call_chain": {
+            "access_report_order": [
+                "j1939_sock_pending_del", "j1939_session_put",
+                "j1939_xtp_rx_abort_one",
+            ],
+        },
+        "call_chain_oracle": {
+            "required_signatures": [
+                "BUG: KASAN: use-after-free in j1939_sock_pending_del",
+                "j1939_sock_pending_del", "j1939_session_put",
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/j1939", "source_files": ["probe.c"],
+            "compiler": "cc",
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.original_call_chain == [
+        "j1939_sock_pending_del", "j1939_session_put", "j1939_xtp_rx_abort_one",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
