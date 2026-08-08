@@ -2665,6 +2665,27 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     normalized = dict(data)
     warnings = list(normalized.get("warnings") or [])
 
+    def _frame_text(item: object, *, prefer_signature: bool = False) -> str:
+        """Convert versioned frame records to the internal string ABI."""
+        if isinstance(item, dict):
+            keys = (
+                ("required_signature", "signature", "frame", "function", "symbol", "name")
+                if prefer_signature
+                else ("function", "frame", "symbol", "name", "required_signature", "signature")
+            )
+            for key in keys:
+                value = str(item.get(key) or "").strip()
+                if value:
+                    return value
+            return ""
+        return str(item or "").strip()
+
+    def _runtime_frame_text(item: object) -> str:
+        """Strip log-only prefixes while retaining source-provided offsets."""
+        value = _frame_text(item, prefer_signature=True)
+        value = re.sub(r"^\s*RIP:\s*(?:[0-9A-Fa-f]+:)?", "", value)
+        return value.lstrip("?* ").strip()
+
     raw_tryout = normalized.get("tryout")
     if isinstance(raw_tryout, dict):
         number = raw_tryout.get("number")
@@ -2699,25 +2720,49 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         )
         if isinstance(frames, list):
             normalized["original_call_chain"] = [
-                item.get("function") if isinstance(item, dict) and item.get("function")
-                else item
-                for item in frames
+                value for item in frames
+                if (value := _frame_text(item))
             ]
+    elif isinstance(raw_chain, list):
+        normalized["original_call_chain"] = [
+            value for item in raw_chain
+            if (value := _frame_text(item))
+        ]
 
     raw_oracle = normalized.get("call_chain_oracle")
     if isinstance(raw_oracle, dict):
         oracle = dict(raw_oracle)
         core_frames = oracle.get("required_order_top_to_bottom")
+        if isinstance(core_frames, list):
+            core_frames = [
+                value for item in core_frames
+                if (value := _runtime_frame_text(item))
+            ]
         if not isinstance(core_frames, list) or not core_frames:
             strict_core = oracle.get("strict_ordered_core")
             if isinstance(strict_core, list):
-                # The versioned contract records signatures from user entry to
-                # fault.  The runtime contract remains fault-to-entry, using
-                # the already audited original frame order; no new frame is
-                # inferred from a prose signature.
+                # The versioned contract records explicit source-backed
+                # signatures.  Convert those records to the string frame ABI;
+                # no frame is inferred from prose or from an unstructured log.
+                core_frames = [
+                    value for item in strict_core
+                    if (value := _runtime_frame_text(item))
+                ]
+                strict_signatures = [
+                    value for item in strict_core
+                    if (value := _frame_text(item, prefer_signature=True))
+                ]
+                if strict_signatures and "fault_signatures" not in oracle:
+                    # The first explicit strict signature is the fault-site
+                    # signal; the remaining entries are ordered frame gates.
+                    oracle["fault_signatures"] = [strict_signatures[0]]
+            if not core_frames:
                 audited_frames = normalized.get("original_call_chain") or []
                 if audited_frames:
-                    core_frames = list(audited_frames)
+                    core_frames = [
+                        value for item in audited_frames
+                        if (value := _runtime_frame_text(item))
+                    ]
         if isinstance(core_frames, list) and core_frames:
             oracle.setdefault("required_top_frames", core_frames)
             oracle.setdefault("required_frames", core_frames)
@@ -2726,6 +2771,23 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 [[core_frames[index], core_frames[index + 1]]
                  for index in range(len(core_frames) - 1)],
             )
+        for field in ("required_top_frames", "required_frames"):
+            raw_frames = oracle.get(field)
+            if isinstance(raw_frames, list):
+                oracle[field] = [
+                    value for item in raw_frames
+                    if (value := _runtime_frame_text(item))
+                ]
+        raw_order = oracle.get("required_frame_order")
+        if isinstance(raw_order, list):
+            oracle["required_frame_order"] = [
+                [
+                    value for item in pair
+                    if (value := _runtime_frame_text(item))
+                ]
+                for pair in raw_order
+                if isinstance(pair, list)
+            ]
         if "required_signatures" in oracle and "fault_signatures" not in oracle:
             oracle["fault_signatures"] = oracle.get("required_signatures") or []
         if "required_log_signatures" in oracle and "fault_signatures" not in oracle:

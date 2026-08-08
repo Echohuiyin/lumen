@@ -32,3 +32,16 @@ overlays, serial logs, QEMU logs, state files, contracts, and C sources remain
 under the case archive. Re-evaluating the archived contract with the corrected
 scorer gives 91/100 (`supported`); this is a diagnosis result, not a
 reproduction pass.
+
+## R0 observation: JFS contract-shape regression
+
+Case `0a89a7b56db04c21a656` initially produced a source-backed JFS diagnosis,
+but the handoff was blocked before QEMU because the versioned contract used
+object-shaped `original_call_chain`/`strict_ordered_core` entries. The adapter
+accepted only string frames, so Pydantic rejected the complete contract and
+the workflow replaced it with an empty blocked envelope. This was a P0 data-
+loss/false-blocking bug, not an environment failure. The minimal fix converts
+only explicit `frame`/`required_signature` fields to the internal string ABI,
+preserves `reproducer.source_dir` and `entry_source`, and derives the first
+fault signal from the first explicit strict signature. It does not infer the
+missing xtree-corruption precursor or add any fixture action.

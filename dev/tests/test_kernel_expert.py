@@ -409,6 +409,42 @@ def test_codex_flattened_contract_preserves_evidence_for_root_cause_scoring():
     assert parsed.root_cause_evidence[0]["function"] == "smack_watch_key"
 
 
+def test_codex_structured_frame_records_preserve_jfs_handoff_fields():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "root_cause": {"verified_invariant": "mount cleanup reaches diFree"},
+        "original_call_chain": [
+            {"order": 1, "frame": "diFree+0x13d/0x2dc0"},
+            {"order": 2, "frame": "jfs_evict_inode+0x2c9/0x370"},
+        ],
+        "call_chain_oracle": {
+            "strict_ordered_core": [
+                {"order": 1, "required_signature": "RIP: 0010:diFree+0x13d/0x2dc0"},
+                {"order": 2, "required_signature": "jfs_evict_inode+0x2c9/0x370"},
+            ],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/jfs-session", "source_files": ["jfs_mount_diag.c"],
+            "flags": ["-Wall"], "arguments": [], "timeout_seconds": 10,
+        },
+    }
+    parsed = _extract_kernel_contract("KERNEL_CONTRACT:\n```json\n" + json.dumps(data) + "\n```")
+    assert parsed.status == "ok"
+    assert parsed.reproducer.source_dir == "/tmp/jfs-session"
+    assert parsed.reproducer.entry_source == "jfs_mount_diag.c"
+    assert parsed.original_call_chain == [
+        "diFree+0x13d/0x2dc0", "jfs_evict_inode+0x2c9/0x370",
+    ]
+    assert parsed.call_chain_oracle.required_frames == [
+        "diFree+0x13d/0x2dc0", "jfs_evict_inode+0x2c9/0x370",
+    ]
+    assert parsed.call_chain_oracle.fault_signatures == [
+        "RIP: 0010:diFree+0x13d/0x2dc0",
+    ]
+
+
 
 def test_explicit_blocked_contract_is_terminal_but_empty_block_retries():
     blocked = KernelExpertOutput(
