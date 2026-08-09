@@ -863,6 +863,36 @@ def test_codex_nested_incremental_setup_change_is_preserved_for_retry_gate():
         "Retain the exact-commit guest setup and add one explicit key-watch trigger."
     )
 
+
+def test_codex_incremental_change_list_is_preserved_for_retry_gate():
+    data = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "tryout": 2,
+        "root_cause": "The documented key-watch path reaches the SMACK hook.",
+        "original_call_chain": ["keyctl_watch_key", "smack_watch_key", "strlen"],
+        "call_chain_oracle": {
+            "required_frames": ["keyctl_watch_key", "smack_watch_key", "strlen"],
+            "fault_signatures": ["RIP: 0010:strlen+0x2c/0x70"],
+        },
+        "reproducer": {
+            "language": "c", "artifact_type": "userspace",
+            "source_dir": "/tmp/session", "source_files": ["diag.c"],
+        },
+        "change_from_previous_tryout": {
+            "previous_attempt": 1,
+            "incremental_change": [
+                "Add the notification pipe setup.",
+                "Pass the approved key serial to KEYCTL_WATCH_KEY.",
+            ],
+        },
+    }
+    parsed = _extract_kernel_contract(json.dumps(data))
+    assert parsed.status == "ok"
+    assert parsed.change_from_previous_tryout == (
+        "Add the notification pipe setup. Pass the approved key serial to KEYCTL_WATCH_KEY."
+    )
+
 def test_kernel_handoff_requires_an_explicit_guest_run_step():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))

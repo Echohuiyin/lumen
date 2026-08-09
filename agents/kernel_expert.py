@@ -3209,9 +3209,19 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
 
     raw_change = normalized.get("change_from_previous_tryout")
     if isinstance(raw_change, dict):
-        normalized["change_from_previous_tryout"] = str(
-            raw_change.get("change") or raw_change.get("summary") or ""
-        ).strip()
+        raw_change = (
+            raw_change.get("change")
+            or raw_change.get("summary")
+            or raw_change.get("incremental_change")
+            or raw_change.get("setup_change")
+            or ""
+        )
+    if isinstance(raw_change, list):
+        raw_change = " ".join(
+            str(item).strip() for item in raw_change if str(item).strip()
+        )
+    if raw_change is not None and not isinstance(raw_change, dict):
+        normalized["change_from_previous_tryout"] = str(raw_change).strip()
     if not str(normalized.get("change_from_previous_tryout") or "").strip():
         # Versioned Codex contracts may nest the explicit retry delta under
         # incremental_setup instead of repeating the internal top-level
@@ -3222,7 +3232,16 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             for key in ("change_from_previous_tryout", "setup_change", "change"):
                 candidate = incremental_setup.get(key)
                 if isinstance(candidate, dict):
-                    candidate = candidate.get("change") or candidate.get("summary")
+                    candidate = (
+                        candidate.get("change")
+                        or candidate.get("summary")
+                        or candidate.get("incremental_change")
+                        or candidate.get("setup_change")
+                    )
+                if isinstance(candidate, list):
+                    candidate = " ".join(
+                        str(item).strip() for item in candidate if str(item).strip()
+                    )
                 candidate = str(candidate or "").strip()
                 if candidate:
                     normalized["change_from_previous_tryout"] = candidate
