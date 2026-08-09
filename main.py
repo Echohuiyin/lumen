@@ -38,6 +38,8 @@ def main():
     )
     args = parser.parse_args()
 
+    # Resolve deployment-selected shared paths before parsing input.txt.
+    os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))
     # Parse input file into structured fields
     try:
         fields = parse_input_file(args.input_file)
@@ -46,7 +48,6 @@ def main():
         return 2
     if fields.get("kernel_source"):
         os.environ["KERNEL_SOURCE_DIR"] = fields["kernel_source"]
-    os.environ.setdefault("LUMEN_PROJECT_ROOT", str(PROJECT_ROOT))
     user_input = format_user_input(fields)
     if not user_input:
         print(f"[Error] Input file {args.input_file} is empty or malformed.")

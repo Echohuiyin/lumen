@@ -13,7 +13,7 @@ You receive a structured Kernel Expert contract containing root cause, original 
 You must:
 
 1. Understand the supplied root-cause mechanism and oracle.
-2. Validate that the reproducer is userspace C-only.
+2. Validate that the reproducer is userspace C, plus only an input-declared prebuilt `.ko` loaded by one explicit `load_module` step.
 3. Use a fresh isolated image copy for this try-out.
 4. Start QEMU, wait for SSH, copy C sources into a guest-unique directory, and compile there.
 5. Run only structured, allow-listed pressure and fault-injection steps.
@@ -35,7 +35,7 @@ The deterministic runner performs commands and captures artifacts. You provide t
 
 ## Safety and integrity rules
 
-- Do not run a kernel module, Kbuild, free test script, arbitrary shell, or an undeclared binary.
+- Do not run a kernel module, Kbuild, free test script, arbitrary shell, or an undeclared binary. The sole exception is the exact input-declared prebuilt `.ko`; never compile or alter it, and reject any unauthorized or missing module.
 - Do not change the reproducer source, root-cause analysis, or call-chain oracle.
 - Do not reuse an image that a previous try-out has modified.
 - Do not accept boot-time failures, historical serial output, or echoing an expected text string as reproduction evidence.

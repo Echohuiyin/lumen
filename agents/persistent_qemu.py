@@ -36,6 +36,7 @@ from agents.test_runner import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_IMAGE_ROOT = PROJECT_ROOT / "runtime" / "qemu-ssh"
 _SAFE_PAYLOAD_PATH = re.compile(r"^bin/[A-Za-z0-9][A-Za-z0-9._+-]*$")
+_SAFE_MODULE_PATH = re.compile(r"^modules/[A-Za-z0-9][A-Za-z0-9._+-]*\.ko$")
 _SAFE_INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SAFE_GUEST_WORKDIR = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._/-]*$")
@@ -306,13 +307,26 @@ def _validate_execution_steps(plan: TestPlan) -> None:
     """Reject unspecified or unsafe guest actions before QEMU is touched."""
     if not plan.execution_steps:
         raise ValueError("execution_steps must not be empty")
+    module_steps = []
+    run_binary_indices = []
     for index, step in enumerate(plan.execution_steps, start=1):
-        if step.type == "setup_vcan":
+        if step.type == "load_module":
+            module_steps.append(step)
+            if not plan.prebuilt_module_authorized:
+                raise ValueError(
+                    f"execution step {index} requests a kernel module without an explicitly authorized prebuilt module"
+                )
+            if not _SAFE_MODULE_PATH.fullmatch(step.path):
+                raise ValueError(f"execution step {index} has invalid kernel module path: {step.path!r}")
+            if step.args:
+                raise ValueError(f"execution step {index} must not pass arguments to a kernel module")
+        elif step.type == "setup_vcan":
             if not _SAFE_INTERFACE.fullmatch(step.interface):
                 raise ValueError(
                     f"execution step {index} has invalid vcan interface: {step.interface!r}"
                 )
         elif step.type == "run_binary":
+            run_binary_indices.append(index)
             if not _SAFE_PAYLOAD_PATH.fullmatch(step.path):
                 raise ValueError(f"execution step {index} has invalid userspace binary path: {step.path!r}")
             if any("\x00" in arg or "\n" in arg for arg in step.args):
@@ -337,6 +351,24 @@ def _validate_execution_steps(plan: TestPlan) -> None:
                 raise ValueError(f"execution step {index} fault probability must be in 0..100")
             if not 1 <= step.interval <= 100000 or not 1 <= step.times <= 100000:
                 raise ValueError(f"execution step {index} fault interval/times are out of range")
+
+    declared_module = str(plan.reproducer_module_path or "").strip()
+    if declared_module and not plan.prebuilt_module_authorized:
+        raise ValueError("reproducer_module_path requires explicit prebuilt_module_authorized=true")
+    if plan.prebuilt_module_authorized:
+        if not declared_module:
+            raise ValueError("prebuilt_module_authorized requires reproducer_module_path")
+        module_path = Path(os.path.expandvars(os.path.expanduser(declared_module))).resolve()
+        if not module_path.is_file() or module_path.suffix.lower() != ".ko":
+            raise ValueError(f"authorized prebuilt module is missing or not a .ko file: {declared_module}")
+        if len(module_steps) != 1:
+            raise ValueError("an authorized prebuilt module requires exactly one load_module step")
+        if Path(module_steps[0].path).name != module_path.name:
+            raise ValueError("load_module path must name the explicitly declared prebuilt module")
+        if run_binary_indices and plan.execution_steps.index(module_steps[0]) > min(run_binary_indices) - 1:
+            raise ValueError("load_module must occur before the userspace run_binary step")
+    elif module_steps:
+        raise ValueError("load_module steps require an explicitly authorized prebuilt module")
 
 
 def _render_execution_script(plan: TestPlan, marker: str) -> str:
@@ -454,7 +486,12 @@ def _render_execution_script(plan: TestPlan, marker: str) -> str:
         f"echo {shlex.quote(marker)} > /dev/console",
     ])
     for step in plan.execution_steps:
-        if step.type == "setup_vcan":
+        if step.type == "load_module":
+            lines.extend([
+                f"test -f {shlex.quote('./' + step.path)}",
+                f"insmod {shlex.quote('./' + step.path)}",
+            ])
+        elif step.type == "setup_vcan":
             interface = shlex.quote(step.interface)
             marker_name = re.sub(r"[^A-Za-z0-9_.+-]", "_", step.interface)
             component_marker = f"LUMEN_GUEST_COMPONENT_MISSING:kernel:vcan:{marker_name}"
@@ -933,6 +970,15 @@ class PersistentQemuManager:
                 if not source.is_file():
                     raise ValueError(f"declared reproducer source is missing: {source}")
                 shutil.copy2(source, destination / relative_name)
+        if self.plan.reproducer_module_path:
+            module = Path(
+                os.path.expandvars(os.path.expanduser(self.plan.reproducer_module_path))
+            ).resolve()
+            if not module.is_file() or module.suffix.lower() != ".ko":
+                raise ValueError(f"declared prebuilt module is missing or not a .ko file: {module}")
+            modules = stage / "modules"
+            modules.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(module, modules / module.name)
         if self.plan.binaries_dir:
             binaries = Path(os.path.expanduser(self.plan.binaries_dir)).resolve()
             if binaries.is_dir():
@@ -958,11 +1004,17 @@ class PersistentQemuManager:
         mkdir_result = subprocess.run([*self._ssh_base(port), command], capture_output=True, text=True, timeout=15)
         if mkdir_result.returncode != 0:
             return ToolStepResult(name="run_poc_over_ssh", status="failed", message="Failed to prepare remote POC directory.", error=mkdir_result.stderr[-1000:])
+        # OpenSSH 9.x rejects the historical ``stage/.`` source spelling.
+        # Upload the staged children explicitly so nested source/module files
+        # land directly under the already-created guest directory.
+        upload_sources = [
+            str(entry) for entry in sorted(stage.iterdir(), key=lambda item: item.name)
+        ]
         upload = subprocess.run(
             ["scp", "-i", str(self.paths.ssh_key), "-P", str(port), "-r",
              "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no",
-             "-o", "UserKnownHostsFile=/dev/null",
-             f"{stage}/.", f"{_ssh_user()}@127.0.0.1:{remote}"],
+             "-o", "UserKnownHostsFile=/dev/null", *upload_sources,
+             f"{_ssh_user()}@127.0.0.1:{remote}"],
             capture_output=True, text=True, timeout=60,
         )
         if upload.returncode != 0:

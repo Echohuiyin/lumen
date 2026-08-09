@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import os
+import json
 from pathlib import Path
 
 from agents.contracts import InputArtifactsContract
@@ -194,6 +195,34 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
     qemu_extra_cmdline, qemu_extra_label = _extract_labeled_value(
         text, ["qemu_extra_cmdline", "qemu recipe extra cmdline", "extra_cmdline"]
     )
+    qemu_recipe_text, qemu_recipe_label = _extract_labeled_value(
+        text, ["qemu_recipe"]
+    )
+    qemu_recipe: dict = {}
+    if qemu_recipe_text:
+        try:
+            parsed_recipe = json.loads(qemu_recipe_text)
+        except json.JSONDecodeError as exc:
+            errors.append(f"qemu_recipe is not valid JSON: {exc}")
+        else:
+            if not isinstance(parsed_recipe, dict):
+                errors.append("qemu_recipe must be a JSON object")
+            else:
+                qemu_recipe = parsed_recipe
+                evidence.append({
+                    "kind": "input_value", "field": "qemu_recipe",
+                    "value": qemu_recipe, "source": qemu_recipe_label,
+                })
+    expected_signal, expected_signal_label = _extract_labeled_value(
+        text, ["expected_signal", "expected kernel signal", "fault signal"]
+    )
+    guest_sysctls_text, guest_sysctls_label = _extract_labeled_value(
+        text, ["guest_sysctls", "guest_sysctl", "runtime_sysctls"]
+    )
+    guest_sysctls = [
+        item.strip() for item in re.split(r"[,;]", guest_sysctls_text)
+        if item.strip()
+    ]
     kernel_source_path, source_label = _extract_labeled_path(
         text,
         [
@@ -229,6 +258,14 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "test script",
         ],
     )
+    reproducer_module_path, reproducer_module_label = _extract_labeled_path(
+        text,
+        ["reproducer_module_path", "reproducer_module", "kernel_module"],
+    )
+    reproducer_trigger_path, reproducer_trigger_label = _extract_labeled_path(
+        text,
+        ["reproducer_trigger_path", "reproducer_trigger", "trigger_source"],
+    )
     target_arch, arch_pattern = _extract_target_arch(text)
     expected_kernel_commit, commit_label = _extract_labeled_value(
         text,
@@ -254,11 +291,15 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         "rootfs_path": (rootfs_path, rootfs_label),
         "test_assets_dir": (test_assets_dir, test_assets_label),
         "qemu_extra_cmdline": (qemu_extra_cmdline, qemu_extra_label),
+        "expected_signal": (expected_signal, expected_signal_label),
+        "guest_sysctls": (guest_sysctls_text, guest_sysctls_label),
         "kernel_source_path": (kernel_source_path, source_label),
         "source_snapshot_manifest_path": (source_snapshot_manifest_path, source_snapshot_label),
         "log_path": (log_path, log_label),
         "crash_report_path": (crash_report_path, crash_report_label),
         "reproducer_path": (reproducer_path, reproducer_label),
+        "reproducer_module_path": (reproducer_module_path, reproducer_module_label),
+        "reproducer_trigger_path": (reproducer_trigger_path, reproducer_trigger_label),
         "fix_patch_path": (fix_patch_path, fix_patch_label),
     }
     for field, (value, source) in fields.items():
@@ -286,23 +327,39 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "kind": "input_value", "field": "fix_commit",
             "value": fix_commit, "source": fix_commit_label,
         })
+    if expected_signal:
+        evidence.append({
+            "kind": "input_value", "field": "expected_signal",
+            "value": expected_signal, "source": expected_signal_label,
+        })
+    if guest_sysctls:
+        evidence.append({
+            "kind": "input_value", "field": "guest_sysctls",
+            "value": guest_sysctls, "source": guest_sysctls_label,
+        })
     if log_excerpt:
         evidence.append({"kind": "input_log_excerpt", "field": "log_excerpt", "length": len(log_excerpt)})
 
-    # Lumen receives only the sanitized problem description and declared
-    # first-hand evidence.  Historical C/syz/module/script reproducers are
-    # audit-only artifacts and must be rejected at the input boundary rather
-    # than silently becoming optional expert context.
+    # An operator-declared reproducer is first-hand evidence, not an
+    # agent-authored executable.  Preserve the declaration and make its
+    # provenance explicit; later stages copy it read-only and validate it.
     explicit_reproducer = bool(_EXPLICIT_REPRODUCER_DECLARATION.search(text))
+    supported_operator_reproducer = bool(
+        reproducer_path
+        and Path(reproducer_path).suffix.lower() in {".c", ".ko"}
+    )
     if reproducer_path or explicit_reproducer:
-        errors.append(
-            "input.txt contains an explicit reproducer artifact; remove it "
-            "before sending the sanitized case to Lumen"
-        )
+        if not supported_operator_reproducer:
+            errors.append(
+                "BLOCKED_INPUT_REPRODUCER_PRESENT: input.txt contains an unsupported "
+                "reproducer artifact; only an existing .c source or explicitly declared "
+                "prebuilt .ko is accepted"
+            )
         evidence.append({
-            "kind": "input_sanitization_check",
-            "passed": False,
+            "kind": "operator_reproducer_declaration",
+            "passed": supported_operator_reproducer,
             "field": "reproducer_path",
+            "path": reproducer_path,
             "explicit_declaration": explicit_reproducer,
         })
 
@@ -321,6 +378,8 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
             "log_path": "file",
             "crash_report_path": "file",
             "reproducer_path": "file",
+            "reproducer_module_path": "file",
+            "reproducer_trigger_path": "file",
             "fix_patch_path": "file",
         }
         for field, (value, _) in fields.items():
@@ -348,6 +407,9 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         rootfs_path=rootfs_path,
         test_assets_dir=test_assets_dir,
         qemu_extra_cmdline=qemu_extra_cmdline,
+        qemu_recipe=qemu_recipe,
+        expected_signal=expected_signal,
+        guest_sysctls=guest_sysctls,
         expected_kernel_commit=expected_kernel_commit,
         fix_commit=fix_commit,
         fix_patch_path=fix_patch_path,
@@ -358,6 +420,8 @@ def parse_input_artifacts(user_input: str, *, validate_paths: bool = True) -> In
         log_path=log_path,
         crash_report_path=crash_report_path,
         reproducer_path=reproducer_path,
+        reproducer_module_path=reproducer_module_path,
+        reproducer_trigger_path=reproducer_trigger_path,
         log_excerpt=log_excerpt,
         evidence=evidence,
         warnings=warnings,

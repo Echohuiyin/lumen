@@ -116,6 +116,9 @@ def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> di
     if reproducer is None or reproducer.language != "c" or reproducer.artifact_type != "userspace":
         return finish("skipped", "not a userspace C reproducer")
     source_dir = Path(os.path.expanduser(str(reproducer.source_dir or ""))).resolve()
+    operator_supplied = bool(getattr(reproducer, "operator_supplied", False))
+    if operator_supplied:
+        audit_lines.append("OPERATOR_SUPPLIED: true")
     audit_lines.append("SOURCE_DIR: " + str(source_dir))
     if not source_dir.is_dir():
         return finish("failed", f"source_dir does not exist: {source_dir}")
@@ -172,7 +175,8 @@ def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> di
             return finish("failed", f"invalid link library: {library!r}")
         libraries.append(library if library.startswith("-l") else f"-l{library}")
 
-    mandatory_flags = ["-std=gnu11", "-O2", *extra_args, "-Wall", "-Wextra", "-Werror"]
+    warning_flags = [] if operator_supplied else ["-Wall", "-Wextra", "-Werror"]
+    mandatory_flags = ["-std=gnu11", "-O2", *extra_args, *warning_flags]
     source_args = [str(path) for path in source_paths]
 
     def run_check(label: str, command: list[str], timeout: int = 90) -> bool:
@@ -212,6 +216,13 @@ def _static_check_userspace_reproducer(contract, session_output_dir: Path) -> di
         link_command = [compiler, *mandatory_flags, *source_args, *libraries, "-o", linked_binary]
         if not run_check("LINK", link_command):
             return finish("failed", "link/ABI usage check failed; repair declarations, calls, or link_libraries")
+
+    if operator_supplied:
+        return finish(
+            "passed",
+            "operator-supplied source passed syntax and link/ABI checks; "
+            "the immutable upstream artifact is not rewritten; guest compile/run remains mandatory",
+        )
 
     try:
         version_probe = subprocess.run(
@@ -311,7 +322,10 @@ def _stage_codex_evidence(
                     if in_trace and re.search(r"end\s+trace", line, re.IGNORECASE):
                         break
                 raw = "\n".join(selected) + "\n"
-            elif name in {"semcode-evidence.json", "fix.patch"}:
+            elif name in {
+                "semcode-evidence.json", "fix.patch", "operator-reproducer.c",
+                "known-trigger.c", "reproduction-notes.md",
+            }:
                 # These are explicit source-backed evidence artifacts.
                 # Preserve them byte-for-byte; generic risk filtering would
                 # silently remove patch hunks or JSON fields.
@@ -519,6 +533,39 @@ def _scan_test_assets_for_reproducers(test_assets_dir: str) -> list[dict[str, st
     return findings
 
 
+def _prebuilt_module_symbol_hints(module_path: str) -> list[str]:
+    """Read bounded defined symbols from an explicitly supplied .ko.
+
+    Constructed module cases may have no in-tree Call Trace for the module
+    frames.  The declared ELF is read-only evidence; it is never compiled or
+    modified here.
+    """
+    path = Path(os.path.expandvars(os.path.expanduser(str(module_path or "")))).resolve()
+    if not path.is_file() or path.suffix.lower() != ".ko":
+        return []
+    try:
+        result = subprocess.run(
+            ["nm", "-n", str(path)], capture_output=True, text=True,
+            timeout=10, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if result.returncode != 0:
+        return []
+    names: list[str] = []
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) < 3 or fields[-2] not in {"T", "t"}:
+            continue
+        name = fields[-1].strip()
+        if not name or name.startswith("__pfx_") or name in names:
+            continue
+        names.append(name)
+        if len(names) >= 32:
+            break
+    return names
+
+
 def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str:
     """Build a context string summarizing kernel config + test_assets findings.
 
@@ -655,6 +702,7 @@ def _run_kernel_expert_with_agent_loop(
     test_assets_dir: str = "",
     max_reproduction_rounds: int = 9,
     evidence_files: list[tuple[str, str]] | None = None,
+    input_artifacts: dict | None = None,
 ) -> AIMessage:
     """Execute kernel expert analysis via an agent-loop CLI backend.
 
@@ -734,6 +782,12 @@ def _run_kernel_expert_with_agent_loop(
         static_preflight = None
         parsed_preflight = _extract_kernel_contract(output_content) if output_content.strip() else None
         if parsed_preflight is not None and parsed_preflight.status == "ok":
+            if input_artifacts:
+                parsed_preflight = _enrich_kernel_contract_from_runtime(
+                    parsed_preflight,
+                    input_artifacts=input_artifacts,
+                    output_dir=session_output_dir,
+                )
             static_preflight = _static_check_userspace_reproducer(
                 parsed_preflight, session_output_dir,
             )
@@ -1549,14 +1603,22 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     # Retry/direct callers can carry an incomplete artifact contract even
     # though the user input still contains authoritative paths. Reparse it
     # here so the kernel prompt always exposes the real log/reproducer paths.
-    if (not input_artifacts.get("reproducer_path") or not input_artifacts.get("log_path")
-            or not input_artifacts.get("expected_kernel_commit")):
+    if (
+        not input_artifacts.get("reproducer_path")
+        or not input_artifacts.get("reproducer_module_path")
+        or not input_artifacts.get("reproducer_trigger_path")
+        or not input_artifacts.get("log_path")
+        or not input_artifacts.get("expected_signal")
+        or not input_artifacts.get("guest_sysctls")
+        or not input_artifacts.get("expected_kernel_commit")
+    ):
         reparsed = parse_input_artifacts(state.get("user_input", ""), validate_paths=False)
         reparsed_dict = model_to_dict(reparsed)
         for key, value in reparsed_dict.items():
             if value and not input_artifacts.get(key):
                 input_artifacts[key] = value
     kernel_source_path = input_artifacts.get("kernel_source_path", "")
+    module_case = bool(str(input_artifacts.get("reproducer_module_path") or "").strip())
     source_snapshot_manifest = str(
         input_artifacts.get("source_snapshot_manifest_path", "") or ""
     ).strip()
@@ -1604,8 +1666,19 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         semcode_args=semcode_config.get("args", []) or [],
         source_snapshot_manifest_path=source_snapshot_manifest if external_snapshot else "",
     )
-    if source_verification.get("status") != "ok":
+    if source_verification.get("status") != "ok" and not module_case:
         return _blocked_source_verification(source_verification)
+    if module_case:
+        # Module-local symbols are outside the in-tree Semcode index. Preserve
+        # the verification result for audit, but make the source-domain limit
+        # explicit rather than replacing it with a source-text fallback.
+        source_verification = dict(source_verification)
+        original_status = source_verification.get("status", "blocked")
+        source_verification["status"] = "not_applicable"
+        source_verification["module_source_status"] = original_status
+        source_verification["blocked_reason"] = (
+            "explicit out-of-tree prebuilt module: module-local symbols are outside Semcode"
+        )
 
     if source_verification.get("mode") == "attested_external_snapshot":
         # The exact source tree is verified by its immutable manifest.  Do not
@@ -1639,6 +1712,20 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
     evidence_files: list[tuple[str, str]] = []
     if original_log_path:
         evidence_files.append(("original.log", original_log_path))
+    declared_reproducer = str(input_artifacts.get("reproducer_path", "") or "").strip()
+    if declared_reproducer and declared_reproducer.lower().endswith(".c"):
+        # Stage the exact operator source as read-only evidence. Runtime
+        # enrichment below owns the durable copy that Test Expert compiles.
+        evidence_files.append(("operator-reproducer.c", declared_reproducer))
+    declared_trigger = str(input_artifacts.get("reproducer_trigger_path", "") or "").strip()
+    if declared_trigger:
+        evidence_files.append(("known-trigger.c", declared_trigger))
+    declared_module = str(input_artifacts.get("reproducer_module_path", "") or "").strip()
+    if declared_module:
+        module_path = Path(os.path.expandvars(os.path.expanduser(declared_module))).resolve()
+        notes_path = module_path.parent / "REPRODUCTION.md"
+        if notes_path.is_file():
+            evidence_files.append(("reproduction-notes.md", str(notes_path)))
     for index, result in enumerate(expert_results, start=1):
         structured = result.get("structured_output") or {}
         artifacts = structured.get("artifacts") or {}
@@ -1685,7 +1772,22 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         *(json.dumps(item.get("structured_output", {}), ensure_ascii=False)
           for item in expert_results),
     ])
-    if external_snapshot:
+    if module_case:
+        # The declared .ko is outside the in-tree Semcode graph. Keep an
+        # explicit audit artifact so the model sees the boundary, without
+        # fabricating source evidence for module-local frames.
+        semcode_evidence_path = str(paths_get_output_dir() / "semcode-evidence.json")
+        Path(semcode_evidence_path).write_text(
+            json.dumps({
+                "status": "not_applicable",
+                "mode": "declared_prebuilt_module",
+                "semcode_available": False,
+                "expected_commit": expected_kernel_commit,
+                "source_verification": source_verification,
+            }, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    elif external_snapshot:
         semcode_evidence_path = str(paths_get_output_dir() / "semcode-evidence.json")
         Path(semcode_evidence_path).write_text(
             json.dumps({
@@ -1730,15 +1832,20 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             semcode_evidence_complete = False
     llm_agent_config = dict(agent_config)
-    if semcode_evidence_complete:
+    if module_case:
+        llm_agent_config["semcode_mcp"] = {"disabled": True}
+    elif semcode_evidence_complete:
         # The deterministic adapter already queried the exact commit.  Do
         # not start Codex's interactive MCP client for the same complete
         # evidence: on ARM64 Codex 0.146 it can hang after the result arrives.
         # A blocked/partial adapter result keeps the required MCP path intact.
         llm_agent_config["semcode_mcp"] = {"disabled": True}
-    path_analysis_required = _requires_path_analysis(
-        state.get("user_input", ""),
-        "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
+    path_analysis_required = (
+        _requires_path_analysis(
+            state.get("user_input", ""),
+            "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
+        )
+        and not module_case
     )
     semcode_path_analysis: SemcodePathAnalysisResult | None = None
     if path_analysis_required:
@@ -1797,8 +1904,10 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "verified invariant, and write a bounded non-privileged userspace C "
             "diagnostic using documented APIs only. Do not perform security abuse, "
             "privilege changes, persistence, bypasses, arbitrary kernel-state "
-            "manipulation, raw filesystem editing, private interfaces, or loadable "
-            "extensions. Never reuse withheld historical tests. If the documented "
+            "manipulation, raw filesystem editing, or arbitrary loadable extensions. "
+            "An explicitly declared prebuilt .ko may be loaded only through the "
+            "structured load_module step; never compile or modify it. Never reuse "
+            "withheld historical tests. If the documented "
             "ABI cannot reach the reported state, return status=blocked with the "
             "precise limitation. Test Expert owns QEMU and the runtime verdict. "
             "Do not run broad git show/diff commands or dump unrelated source; "
@@ -1844,7 +1953,9 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         "Do not generate privilege escalation, persistence, bypass, or arbitrary kernel-state manipulation guidance.\n"
         f"target_arch: {input_artifacts.get('target_arch', 'N/A')}\n"
         f"expected_kernel_commit: {expected_kernel_commit or 'N/A'}\n"
-        "Semcode source status: verified for the declared commit; every query must use that exact git_sha.\n"
+        f"Semcode source status: {'not applicable to module-local symbols; declared .ko/log are authoritative' if module_case else 'verified for the declared commit; every query must use that exact git_sha'}.\n"
+        f"declared expected_signal: {input_artifacts.get('expected_signal') or 'none'}\n"
+        f"declared guest_sysctls: {input_artifacts.get('guest_sysctls') or 'none'}\n"
         "Original first-hand log: evidence/original.log (read it directly; if it is missing, return a blocked evidence result rather than guessing).\n"
         "User-supplied artifact paths, boot assets, and guest settings are validated and injected by the workflow.\n"
         "Write only a bounded, non-privileged userspace C diagnostic test and the KERNEL_CONTRACT in the current workdir.\n\n"
@@ -1863,6 +1974,32 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "reason. Do not run broad git show/diff commands or dump unrelated source; "
             "use staged Semcode bodies and bounded reads of cited files/lines."
         )
+    if declared_reproducer and declared_reproducer.lower().endswith(".c"):
+        user_content += (
+            "\n\n## Explicit operator-supplied reproducer\n"
+            "Read evidence/operator-reproducer.c as first-hand ABI evidence. It is the exact "
+            "operator source and must be copied and compiled verbatim by the workflow; do not "
+            "rewrite, simplify, or substitute a generated trigger.\n"
+        )
+    if module_case:
+        resolved_module = Path(
+            os.path.expandvars(os.path.expanduser(declared_module))
+        ).resolve()
+        module_symbols = _prebuilt_module_symbol_hints(str(resolved_module))
+        user_content += (
+            "\n\n## Explicit prebuilt module contract\n"
+            f"The operator supplied this existing prebuilt module: {resolved_module}. "
+            "It is the only permitted in-kernel artifact for this constructed case. "
+            "Set prebuilt_module_authorized=true and include exactly one structured "
+            f"load_module step using modules/{resolved_module.name}; do not compile, alter, "
+            "or generate a module. Use the staged known-trigger.c when present.\n"
+        )
+        if module_symbols:
+            user_content += (
+                "Read-only nm symbol hints from the declared module: "
+                + ", ".join(module_symbols)
+                + ". Use only symbols supported by the module/log evidence.\n"
+            )
     first_hand_log_hints = _extract_first_hand_log_hints(original_log_text)
     if first_hand_log_hints and agent_config.get("backend") != "codex":
         user_content += (
@@ -2052,6 +2189,7 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             test_assets_dir=test_assets_dir,
             max_reproduction_rounds=max_reproduction_rounds,
             evidence_files=evidence_files,
+            input_artifacts=input_artifacts,
         )
     except RuntimeError as e:
         # CLI startup failure, timeout, or turn-budget exhaustion ends this
@@ -2312,10 +2450,13 @@ def _parse_kernel_expert_response(
     Shared between first-round and hint-injected rerun so both produce
     identically-shaped state updates.
     """
-    path_analysis_required = _requires_path_analysis(
-        state.get("user_input", ""),
-        text,
-        "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
+    path_analysis_required = (
+        _requires_path_analysis(
+            state.get("user_input", ""),
+            text,
+            "\n".join(str(item.get("analysis_output", "")) for item in expert_results),
+        )
+        and not bool(input_artifacts.get("reproducer_module_path"))
     )
     # Detect CLI failure text (timeout, startup error, max_turns) that
     # slipped through as a non-empty AIMessage. Block here instead of running
@@ -2504,6 +2645,7 @@ def _parse_kernel_expert_response(
         "target_arch": kernel_contract.target_arch,
         "boot_kernel_path": kernel_contract.boot_kernel_path,
         "reproducer_dir": kernel_contract.reproducer_dir,
+        "reproducer_module_path": kernel_contract.reproducer_module_path,
         "expected_signal": kernel_contract.expected_signal,
         "binaries_dir": kernel_contract.binaries_dir,
     }
@@ -3309,7 +3451,7 @@ def _coerce_contract_json(data: object) -> object:
         structured = []
         for item in raw:
             if isinstance(item, dict) and item.get("type") in {
-                "setup_vcan", "run_binary", "run_pressure", "write_sysctl",
+                "setup_vcan", "load_module", "run_binary", "run_pressure", "write_sysctl",
                 "wait", "fault_injection",
             }:
                 structured.append(item)
@@ -3494,6 +3636,133 @@ def _enrich_kernel_contract_from_runtime(
     declared_assets = str(input_artifacts.get("test_assets_dir", "") or "").strip()
     if declared_assets:
         data["test_assets_dir"] = declared_assets
+    declared_recipe = input_artifacts.get("qemu_recipe") or {}
+    if declared_recipe:
+        if not isinstance(declared_recipe, dict):
+            data["status"] = "blocked"
+            data["blocked_reason"] = "input qemu_recipe must be a JSON object"
+        else:
+            recipe = dict(data.get("qemu_recipe") or {})
+            recipe.update(declared_recipe)
+            data["qemu_recipe"] = recipe
+            evidence = list(data.get("evidence") or [])
+            evidence.append({
+                "kind": "declared_qemu_recipe",
+                "recipe": declared_recipe,
+                "authorization": "input_artifact",
+            })
+            data["evidence"] = evidence
+
+    declared_module = str(
+        input_artifacts.get("reproducer_module_path")
+        or (
+            input_artifacts.get("reproducer_path", "")
+            if str(input_artifacts.get("reproducer_path", "")).lower().endswith(".ko")
+            else ""
+        )
+        or ""
+    ).strip()
+    if declared_module:
+        data["reproducer_module_path"] = declared_module
+        data["prebuilt_module_authorized"] = True
+        evidence = list(data.get("evidence") or [])
+        evidence.append({
+            "kind": "declared_prebuilt_module",
+            "path": declared_module,
+            "authorization": "input_artifact",
+        })
+        data["evidence"] = evidence
+
+    declared_signal = str(input_artifacts.get("expected_signal") or "").strip()
+    if declared_signal:
+        data["expected_signal"] = declared_signal
+        evidence = list(data.get("evidence") or [])
+        evidence.append({
+            "kind": "declared_expected_signal",
+            "signal": declared_signal,
+            "authorization": "input_artifact",
+        })
+        data["evidence"] = evidence
+    if declared_module:
+        # Module-local frames are unavailable to in-tree Semcode. Derive an
+        # oracle only from symbols actually defined by the declared ELF when
+        # the model did not provide one; otherwise preserve the model's
+        # evidence-backed oracle unchanged.
+        oracle_data = dict(data.get("call_chain_oracle") or {})
+        if declared_signal and not oracle_data.get("fault_signatures"):
+            oracle_data["fault_signatures"] = [declared_signal]
+        module_symbols = _prebuilt_module_symbol_hints(declared_module)
+        runtime_symbols = [
+            symbol for symbol in module_symbols
+            if re.search(r"(?:_fn|_ioctl)$", symbol)
+        ]
+        if not oracle_data.get("required_frames") and runtime_symbols:
+            oracle_data["required_frames"] = [runtime_symbols[0]]
+            oracle_data.setdefault("required_top_frames", [runtime_symbols[0]])
+            if len(runtime_symbols) > 1 and not oracle_data.get("required_frame_alternatives"):
+                oracle_data["required_frame_alternatives"] = [runtime_symbols]
+            if not data.get("original_call_chain"):
+                data["original_call_chain"] = [runtime_symbols[0]]
+            evidence = list(data.get("evidence") or [])
+            evidence.append({
+                "kind": "prebuilt_module_symbol_oracle",
+                "symbols": runtime_symbols,
+                "source": "nm -n declared .ko",
+            })
+            data["evidence"] = evidence
+        data["call_chain_oracle"] = oracle_data
+
+    declared_sysctls = list(input_artifacts.get("guest_sysctls") or [])
+    if declared_sysctls:
+        existing_steps = list(data.get("execution_steps") or [])
+        existing_sysctls = {
+            (str(step.get("key") or ""), str(step.get("value") or ""))
+            for step in existing_steps
+            if isinstance(step, dict) and step.get("type") == "write_sysctl"
+        }
+        injected_steps: list[dict[str, str]] = []
+        invalid_sysctls: list[str] = []
+        for raw_declaration in declared_sysctls:
+            declaration = str(raw_declaration or "").strip()
+            key, separator, value = declaration.partition("=")
+            if (
+                not separator
+                or not re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", key)
+                or not value
+                or any(char.isspace() for char in value)
+            ):
+                invalid_sysctls.append(declaration)
+                injected_steps.append({
+                    "type": "write_sysctl", "key": key, "value": value,
+                    "rationale": "invalid input declaration; runner must block",
+                })
+                continue
+            if (key, value) not in existing_sysctls:
+                injected_steps.append({
+                    "type": "write_sysctl", "key": key, "value": value,
+                    "rationale": "input-declared guest prerequisite",
+                })
+        if injected_steps:
+            first_runtime_step = next(
+                (
+                    index for index, step in enumerate(existing_steps)
+                    if isinstance(step, dict)
+                    and step.get("type") in {"load_module", "run_binary"}
+                ),
+                len(existing_steps),
+            )
+            data["execution_steps"] = [
+                *existing_steps[:first_runtime_step],
+                *injected_steps,
+                *existing_steps[first_runtime_step:],
+            ]
+        if invalid_sysctls:
+            warnings = list(data.get("warnings") or [])
+            warnings.append(
+                "invalid input guest_sysctls were not converted: "
+                + ", ".join(invalid_sysctls)
+            )
+            data["warnings"] = warnings
     qemu_extra_cmdline = str(input_artifacts.get("qemu_extra_cmdline", "") or "").strip()
     if qemu_extra_cmdline:
         recipe = dict(data.get("qemu_recipe") or {})
@@ -3504,6 +3773,60 @@ def _enrich_kernel_contract_from_runtime(
         if missing_tokens:
             recipe["extra_cmdline"] = " ".join([*existing_tokens, *missing_tokens])
             data["qemu_recipe"] = recipe
+
+    # An explicitly declared userspace C source is authoritative. Copy it
+    # byte-for-byte into the durable session and make Test Expert compile that
+    # exact source; a generated substitute is not a valid fallback.
+    declared_reproducer = str(input_artifacts.get("reproducer_path") or "").strip()
+    if declared_reproducer and not declared_reproducer.lower().endswith(".ko"):
+        source = Path(os.path.expandvars(os.path.expanduser(declared_reproducer))).resolve()
+        if source.suffix.lower() != ".c" or not source.is_file():
+            data["status"] = "blocked"
+            data["blocked_reason"] = (
+                "input reproducer_path must name an existing .c source when it is not a .ko: "
+                + declared_reproducer
+            )
+        else:
+            destination = output_dir / "operator-reproducer.c"
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
+            except OSError as exc:
+                data["status"] = "blocked"
+                data["blocked_reason"] = f"could not materialize declared reproducer: {exc}"
+            else:
+                repro = dict(data.get("reproducer") or {})
+                recipe = dict(data.get("qemu_recipe") or {})
+                try:
+                    declared_timeout = int(recipe.get("timeout_sec") or 0)
+                except (TypeError, ValueError):
+                    declared_timeout = 0
+                try:
+                    model_timeout = int(repro.get("runtime_timeout_sec") or 0)
+                except (TypeError, ValueError):
+                    model_timeout = 0
+                repro.update({
+                    "source_dir": str(output_dir.resolve()),
+                    "source_files": [destination.name],
+                    "entry_source": destination.name,
+                    "output_binary": "operator-repro",
+                    "compiler": "gcc",
+                    "compiler_args": ["-std=gnu11", "-O2", "-static"],
+                    "link_libraries": ["pthread"],
+                    "run_args": [],
+                    "runtime_timeout_sec": max(60, model_timeout, declared_timeout),
+                    "operator_supplied": True,
+                })
+                data["reproducer"] = repro
+                evidence = list(data.get("evidence") or [])
+                evidence.append({
+                    "kind": "declared_operator_reproducer",
+                    "path": str(source),
+                    "materialized_path": str(destination.resolve()),
+                    "authorization": "input_artifact",
+                    "mode": "read_only_reuse",
+                })
+                data["evidence"] = evidence
 
     repro = dict(data.get("reproducer") or {})
     source_dir = str(repro.get("source_dir") or "")
@@ -3903,6 +4226,38 @@ def _validate_kernel_contract_artifacts(
     reproducer = contract.reproducer
     if reproducer.language != "c" or reproducer.artifact_type != "userspace":
         errors.append("reproducer must be a userspace C program")
+    if contract.reproducer_module_path:
+        if not contract.prebuilt_module_authorized:
+            errors.append(
+                "kernel modules are forbidden unless an input-declared prebuilt .ko is authorized"
+            )
+        else:
+            module_path = _resolve_contract_path(contract.reproducer_module_path)
+            if not module_path.is_file() or module_path.suffix.lower() != ".ko":
+                errors.append(
+                    "authorized reproducer_module_path must be an existing prebuilt .ko file"
+                )
+            else:
+                data["reproducer_module_path"] = str(module_path)
+                evidence.append({
+                    "kind": "artifact",
+                    "field": "reproducer_module_path",
+                    "path": str(module_path),
+                    "authorization": "input_declared_prebuilt",
+                })
+            module_steps = [
+                step for step in contract.execution_steps if step.type == "load_module"
+            ]
+            if len(module_steps) != 1:
+                errors.append(
+                    "an authorized prebuilt .ko requires exactly one load_module execution step"
+                )
+            elif module_path.is_file() and Path(module_steps[0].path).name != module_path.name:
+                errors.append(
+                    "load_module path must name the explicitly declared prebuilt .ko"
+                )
+    elif contract.prebuilt_module_authorized:
+        errors.append("prebuilt_module_authorized requires reproducer_module_path")
     if not reproducer.source_dir:
         errors.append("missing reproducer.source_dir")
     else:

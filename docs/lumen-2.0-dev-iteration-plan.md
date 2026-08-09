@@ -103,7 +103,7 @@ QEMU/调用链门禁。
 ## R13 已知 3 案例双轮回归（`79cce6d`）
 
 归档索引：
-`/home/liumingrui/benchmark_assets/lumen-v0.2-8case-archive-20260808/e2e-regression/P0-P1-r13-r14-final/summary.json`。
+`${HOME}/benchmark_assets/lumen-v0.2-8case-archive-20260808/e2e-regression/P0-P1-r13-r14-final/summary.json`。
 
 | 案例 | 第 1 轮 | 第 2 轮 | 最佳 RCA evidence score | C/真实 QEMU/一致调用链 |
 |---|---|---|---:|---|
@@ -119,7 +119,7 @@ QEMU/调用链门禁。
 | NILFS `5c04210f7c7f897c1e7f` | QEMU 第 1 次未命中，重试合同阻断 | 合同缺 `fault_signatures` | 47 | C=是，QEMU=是，一致=否 |
 | SCO `b825d87fe2d043e3e652` | 合同缺入口/故障签名 | 同类合同阻断 | 0 | C=是，QEMU=否，一致=否 |
 | e24 `e24baf53dc389927a7c3` | 合同缺入口/故障签名 | QEMU 第 1 次未命中，重试合同阻断 | 0 | C=是，QEMU=是，一致=否 |
-| Technisat `eaaaf38a95427be88f4b` | Validator 无法在 `/home/liumingrui/linux-next` 解析声明 commit `9a33b369…` | 同样的 commit preflight 阻断 | — | C=否（本轮未进入 Kernel Expert），QEMU=否，一致=否 |
+| Technisat `eaaaf38a95427be88f4b` | Validator 无法在 `${HOME}/linux-next` 解析声明 commit `9a33b369…` | 同样的 commit preflight 阻断 | — | C=否（本轮未进入 Kernel Expert），QEMU=否，一致=否 |
 
 ## 当前验收结论与差距
 
@@ -134,5 +134,5 @@ QEMU/调用链门禁。
   亦未达成，本批一致调用链为 0/8。
 - 所有每轮 `kernel_contract.json`/`KERNEL_CONTRACT.json`、C 源码、QEMU
   overlay、串口日志和 QEMU 日志均保留在上述 `e2e-regression` 目录；基础
-  rootfs 和 `/home/liumingrui/linux-next` 未删除。只清理已确认过期的临时
+  rootfs 和 `${HOME}/linux-next` 未删除。只清理已确认过期的临时
   worktree，不清理当前证据。

@@ -406,6 +406,11 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
             continue
         seen_steps.add(key)
         steps.append(step)
+    module_steps = [step for step in steps if step.type == "load_module"]
+    if module_steps and not contract.prebuilt_module_authorized:
+        raise ValueError("load_module steps require an explicitly authorized prebuilt module")
+    if contract.prebuilt_module_authorized and len(module_steps) != 1:
+        raise ValueError("an authorized prebuilt module requires exactly one load_module step")
     if not any(step.type == "run_binary" for step in steps):
         steps.append(ExecutionStep(
             type="run_binary",
@@ -418,12 +423,21 @@ def _build_plan(contract: KernelExpertOutput) -> TestPlan:
         rootfs_mode="ext4",
         rootfs_path=contract.rootfs_path,
         reproducer_dir=reproducer.source_dir,
+        reproducer_module_path=contract.reproducer_module_path,
+        prebuilt_module_authorized=contract.prebuilt_module_authorized,
         binaries_dir=contract.binaries_dir,
         reproducer=reproducer,
         execution_steps=steps,
         expected_signal=contract.expected_signal,
         test_assets_dir=contract.test_assets_dir,
-        detection_signals=DetectionSignals(serial_signals=list(oracle.fault_signatures)),
+        detection_signals=DetectionSignals(
+            serial_signals=(
+                [contract.expected_signal]
+                if contract.expected_signal
+                and (contract.reproducer.operator_supplied or contract.reproducer_module_path)
+                else list(oracle.fault_signatures)
+            ),
+        ),
         qemu_recipe=contract.qemu_recipe,
         reproduction_case_id=contract.uaf_analysis.case_id if contract.uaf_analysis else "maintenance-case",
         target_path_id=contract.uaf_analysis.reproduction_target_path_id if contract.uaf_analysis else f"tryout-{contract.tryout}",
@@ -1432,13 +1446,20 @@ def test_expert_node(state: MaintenanceWorkflowState) -> dict:
                 next_action="Install the declared QEMU capability before rerunning.",
             )
             consumes_loop = False
-        elif contract.reproducer.artifact_type != "userspace" or contract.reproducer.language != "c":
+        elif (
+            contract.reproducer.artifact_type != "userspace"
+            or contract.reproducer.language != "c"
+            or (contract.reproducer_module_path and not contract.prebuilt_module_authorized)
+        ):
             result = _blocked_attempt(
                 code="BLOCKED_NON_USERSPACE_REPRODUCER",
-                summary="Test Expert accepts only an ok userspace C contract without kernel-module artifacts.",
+                summary=(
+                    "Test Expert accepts userspace C plus only an explicitly authorized "
+                    "operator-supplied prebuilt .ko loaded by one load_module step."
+                ),
                 tryout=0,
                 failure_class="contract",
-                next_action="Return only userspace C source and a complete oracle.",
+                next_action="Return userspace C, or authorize the declared prebuilt module with one load_module step.",
             )
         else:
             try:

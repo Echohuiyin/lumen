@@ -119,7 +119,7 @@ class ExecutionStep(BaseModel):
     module load or evaluates an agent-authored shell script.
     """
 
-    type: Literal["setup_vcan", "run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
+    type: Literal["setup_vcan", "load_module", "run_binary", "run_pressure", "write_sysctl", "wait", "fault_injection"]
     path: str = ""
     interface: str = ""
     args: list[str] = Field(default_factory=list)
@@ -180,6 +180,10 @@ class UserspaceReproducer(BaseModel):
     link_libraries: list[str] = Field(default_factory=list)
     run_args: list[str] = Field(default_factory=list)
     runtime_timeout_sec: int = 60
+    # True only when the operator declared an existing source artifact.  The
+    # workflow copies it read-only and the guest compiles that exact source;
+    # the model may not replace it with a generated substitute.
+    operator_supplied: bool = False
 
 
 class ProducerFrontierContract(BaseModel):
@@ -242,6 +246,10 @@ class TestPlan(BaseModel):
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
     reproducer: UserspaceReproducer = Field(default_factory=UserspaceReproducer)
+    reproducer_module_path: str = ""
+    # A module is executable input only when the operator explicitly declared
+    # a prebuilt .ko artifact.  The runner never infers this from filenames.
+    prebuilt_module_authorized: bool = False
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
@@ -331,6 +339,9 @@ class InputArtifactsContract(BaseModel):
     rootfs_path: str = ""
     test_assets_dir: str = ""
     qemu_extra_cmdline: str = ""
+    qemu_recipe: dict[str, Any] = Field(default_factory=dict)
+    expected_signal: str = ""
+    guest_sysctls: list[str] = Field(default_factory=list)
     target_arch: str = ""
     expected_kernel_commit: str = ""
     fix_commit: str = ""
@@ -342,6 +353,8 @@ class InputArtifactsContract(BaseModel):
     log_path: str = ""
     crash_report_path: str = ""
     reproducer_path: str = ""
+    reproducer_module_path: str = ""
+    reproducer_trigger_path: str = ""
     log_excerpt: str = ""
     evidence: list[dict[str, Any]] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
@@ -448,6 +461,9 @@ class KernelExpertOutput(BaseModel):
     rootfs_path: str = ""
     rootfs_size_mb: int = 128
     reproducer_dir: str = ""
+    reproducer_module_path: str = ""
+    # True only for a prebuilt module explicitly declared by the operator.
+    prebuilt_module_authorized: bool = False
     execution_steps: list[ExecutionStep] = Field(default_factory=list)
     expected_signal: str = ""
     binaries_dir: str = ""
@@ -474,13 +490,15 @@ class KernelExpertOutput(BaseModel):
     @root_validator(pre=True)
     def _reject_legacy_execution_fields(cls, values):
         if isinstance(values, dict):
-            forbidden = {
-                "reproducer_module_path", "test_script_path", "load_module",
-            }
+            forbidden = {"test_script_path", "load_module"}
             present = sorted(field for field in forbidden if field in values and values[field])
             if present:
                 raise ValueError(
                     "legacy execution fields are forbidden: " + ", ".join(present)
+                )
+            if values.get("reproducer_module_path") and not values.get("prebuilt_module_authorized"):
+                raise ValueError(
+                    "reproducer_module_path requires prebuilt_module_authorized=true"
                 )
         return values
 

@@ -4,5 +4,6 @@ langchain-openai>=0.2.0
 langchain-core>=0.3.0
 httpx[socks]>=0.28.0
 pytest>=8.0
+pexpect>=4.9
 
 # dev: pip install -r requirements-dev.txt

@@ -29,7 +29,10 @@ def _resolve_env_vars(text: str) -> str:
             val = os.environ.get(var.strip())
             return val if val else default.strip()
         else:
-            return os.environ[inner.strip()]
+            # Keep an unresolved deployment variable visible to the artifact
+            # validator instead of failing input parsing before the workflow
+            # can report the missing declaration.
+            return os.environ.get(inner.strip(), m.group(0))
 
     result = text
     prev = None
@@ -99,14 +102,26 @@ INPUT_FILE_FIELDS = {
     # input contract and must reach the structured workflow state.
     "qemu_extra_cmdline",
     "qemu_recipe",
+    "expected_signal",
+    "guest_sysctls",
+    # Operator-supplied reproducer artifacts are read-only evidence.  Their
+    # execution remains allow-listed by the structured Kernel/Test contract.
+    "reproducer",
+    "reproducer_path",
+    "reproducer_module",
+    "reproducer_module_path",
+    "kernel_module",
+    "reproducer_trigger",
+    "reproducer_trigger_path",
+    "trigger_source",
     # Preserve bounded, human-authored maintenance constraints (for example
     # a required userspace ABI sequence) in the Kernel Expert prompt.
     "maintenance_notes",
 }
 
 INPUT_FILE_FORBIDDEN_FIELDS = {
-    "reproducer", "reproducer_path", "syz_repro", "syz repro",
-    "test_script", "test_script_path", "test script", "repro_artifact",
+    "syz_repro", "syz repro", "test_script", "test_script_path",
+    "test script", "repro_artifact",
 }
 
 
@@ -146,6 +161,15 @@ def parse_input_file(file_path: str) -> dict[str, str]:
                 raise ValueError(
                     "BLOCKED_INPUT_REPRODUCER_PRESENT: input.txt must not "
                     f"contain the forbidden artifact field {key!r}"
+                )
+            if key.casefold() in {
+                "reproducer", "reproducer_path", "reproducer_module",
+                "reproducer_module_path", "kernel_module",
+                "reproducer_trigger", "reproducer_trigger_path", "trigger_source",
+            } and Path(value).suffix.lower() not in {".c", ".ko"}:
+                raise ValueError(
+                    "BLOCKED_INPUT_REPRODUCER_PRESENT: input.txt must declare an existing "
+                    ".c source or prebuilt .ko for a reproducer artifact"
                 )
             # Resolve every declared path/value through the deployment
             # environment. Kernel source is intentionally not special-cased:

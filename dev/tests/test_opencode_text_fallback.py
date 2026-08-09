@@ -277,7 +277,7 @@ def test_empty_text_fallback_picks_up_file_contract(monkeypatch, patch_session_d
     assert contract["target_arch"] == ""
     assert contract["reproducer_dir"] == ""
     assert "test_script_path" not in contract
-    assert "reproducer_module_path" not in contract
+    assert contract["reproducer_module_path"] == ""
     assert result["kernel_ready_for_test"] is False
 
 
