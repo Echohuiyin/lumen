@@ -55,7 +55,7 @@ P2（O-009、O-012、O-014、O-015）本轮不做，避免扩大架构和验证�
 
 **正负影响**：正面是运行时实际模型档位可审计、提示词范围和耗时更稳定、同一输出可去重引用；负面是 `xhigh` 可能增加单次 Codex 延迟，过窄的源码读取约束可能使模型返回 `blocked`，因此保留精确 Semcode evidence 和明确 blocked 结果，不引入 fallback。
 
-**当前验收**：83 个 P0/P1 专项测试（含 3 skipped）和静态检查通过；smack 的真实 R0 正在运行，若 Codex 在有界时间内不产出 contract，记录为 Kernel Expert timeout，不进入 Test Expert/QEMU，不伪造复现。
+**当前验收**：83 个 P0/P1 专项测试（含 3 skipped）和静态检查通过；后续 R13/R14 双轮回归已完成，Codex 未产出 contract 的轮次均按合同/环境 blocked 归档，不伪造复现。
 
 ## 回归记录格式
 
@@ -80,3 +80,59 @@ preflight 以 blocked 归档且不消耗 try-out；编译失败和真实触发/�
 环境问题不会浪费重试预算；负面是依赖旧 one-shot runner、显式 `.ko` 或
 未声明 reproducer 的历史测试会明确阻断，必须迁移到 userspace-C contract。
 不改变独立 QEMU 的 `test_passed`/调用链判定，也不删除历史归档。
+
+## 增量合同归一化修复（`381aade` 到 `79cce6d`）
+
+这些提交都遵循“先分析引入原因，再做最小兼容映射”的边界：模型明确给出的
+字段别名才会被归一化；不会根据源码、setup 或日志推断缺失值，也不会放宽
+QEMU/调用链门禁。
+
+- `381aade`、`f872d56`、`872768c`、`f734716`、`1a87198`、`124d2f3`、
+  `dee369c`、`00dedc0`：补齐版本化调用链、原始日志帧、严格顺序、schema
+  标记和根因字段的显式别名。引入原因是 Codex 合同本身有完整证据，但字段
+  名变体让 Validator 误报为空；影响是保留原始 RCA/调用链证据，缺证据仍
+  blocked，不新增 fallback。
+- `4f98e86`：接受 `incremental_setup.change_from_previous_tryout` 的显式
+  增量文本/对象。引入原因是重试合同把已验证 setup 放在嵌套字段，旧解析器
+  将其误判为缺少增量；影响是重试能继承 setup，仍强制校验变更声明。
+- `79cce6d`：接受顶层或嵌套 `change_from_previous_tryout.incremental_change`
+  的显式字符串列表。引入原因是 Smack 第 2 次重试使用列表而非单个 `change`
+  字段，导致 `BLOCKED_INVALID_INCREMENTAL_CONTRACT`；影响是该轮真正进入
+  QEMU，未改变 progress gate、10 次硬上限或调用链判定。
+
+## R13 已知 3 案例双轮回归（`79cce6d`）
+
+归档索引：
+`/home/liumingrui/benchmark_assets/lumen-v0.2-8case-archive-20260808/e2e-regression/P0-P1-r13-r14-final/summary.json`。
+
+| 案例 | 第 1 轮 | 第 2 轮 | 最佳 RCA evidence score | C/真实 QEMU/一致调用链 |
+|---|---|---|---:|---|
+| Smack `044fdf24e96093584232` | QEMU 3 次，均 `FAILED_SIGNAL_NOT_FOUND`，第 3 次 `BLOCKED_PROGRESS_GATE` | 合同缺 `source_dir/entry_source/fault_signatures` | 75 | C=是，QEMU=是，一致=否 |
+| JFS `0a89a7b56db04c21a656` | 合同缺入口/故障签名 | QEMU 第 1 次未命中，增量重试合同阻断 | 74 | C=是，QEMU=是，一致=否 |
+| bcachefs `56edda805363e0a093b8` | 合同缺 `fault_signatures` | 合同缺入口/故障签名 | 47 | C=是，QEMU=否，一致=否 |
+
+## R14 其余 5 案例双轮回归
+
+| 案例 | 第 1 轮 | 第 2 轮 | 最佳 RCA evidence score | C/真实 QEMU/一致调用链 |
+|---|---|---|---:|---|
+| J1939 `07bb74aeafc88ba7d5b4` | 合同缺入口/故障签名 | QEMU 后 `BLOCKED_GUEST_RUNTIME_INCOMPATIBLE`：guest 缺 `pthread_clone` | 49 | C=是，QEMU=是，一致=否 |
+| NILFS `5c04210f7c7f897c1e7f` | QEMU 第 1 次未命中，重试合同阻断 | 合同缺 `fault_signatures` | 47 | C=是，QEMU=是，一致=否 |
+| SCO `b825d87fe2d043e3e652` | 合同缺入口/故障签名 | 同类合同阻断 | 0 | C=是，QEMU=否，一致=否 |
+| e24 `e24baf53dc389927a7c3` | 合同缺入口/故障签名 | QEMU 第 1 次未命中，重试合同阻断 | 0 | C=是，QEMU=是，一致=否 |
+| Technisat `eaaaf38a95427be88f4b` | Validator 无法在 `/home/liumingrui/linux-next` 解析声明 commit `9a33b369…` | 同样的 commit preflight 阻断 | — | C=否（本轮未进入 Kernel Expert），QEMU=否，一致=否 |
+
+## 当前验收结论与差距
+
+- 8/8 均完成双轮尝试或明确环境/合同终态；5/8 案例至少进入真实 QEMU，
+  7/8 生成了用户态 C 源文件，0/8 观察到与原始日志一致的完整调用链。
+- RCA evidence score 的最佳值为 Smack 75、JFS 74、bcachefs 47、J1939
+  49、NILFS 47；这些是证据充分度，不等同于人工确认的根因准确率。当前
+  根因准确率 80% 目标尚未达成，SCO/e24 以及多次合同阻断必须补齐合同和
+  源码证据后再评估，不能把模型分数当作准确率。
+- POC 100% 目标也尚未达成：Technisat 因精确 commit 不可解析没有生成本轮
+  C contract；其历史归档中的 reproducer 不会被传给 Lumen。复现目标 20%
+  亦未达成，本批一致调用链为 0/8。
+- 所有每轮 `kernel_contract.json`/`KERNEL_CONTRACT.json`、C 源码、QEMU
+  overlay、串口日志和 QEMU 日志均保留在上述 `e2e-regression` 目录；基础
+  rootfs 和 `/home/liumingrui/linux-next` 未删除。只清理已确认过期的临时
+  worktree，不清理当前证据。
