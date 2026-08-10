@@ -41,6 +41,11 @@ _SAFE_INTERFACE = re.compile(r"^[A-Za-z0-9_.-]{1,15}$")
 _SAFE_SYSCTL_KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _SAFE_GUEST_WORKDIR = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9._/-]*$")
 _SAFE_SSH_USER = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*\$?$")
+# GCC/Clang may print an optimized clone rather than the source symbol in a
+# kernel stack (for example ``foo.isra.0``).  Keep the suffix vocabulary
+# bounded and compiler-derived; do not turn a required frame into a fuzzy
+# substring match.
+_COMPILER_CLONE_SUFFIX = r"(?:\.(?:cold|isra|constprop|part)(?:\.\d+)*)"
 
 
 def _configured_image_root() -> Path:
@@ -1135,6 +1140,56 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         for line in window
     )
 
+    def _normalise_runtime_symbol(symbol: str) -> str:
+        """Reduce compiler decorations for an explicitly declared frame."""
+        value = str(symbol or "").strip().lstrip("?* ")
+        value = re.sub(
+            _COMPILER_CLONE_SUFFIX + r"$", "", value, flags=re.IGNORECASE,
+        )
+        # GCC can emit an out-of-line ``__foo.constprop.N`` implementation
+        # for a contract frame named ``foo``.  Treat only this paired leading
+        # implementation prefix as an alias; all other symbols stay token
+        # bounded.
+        if value.startswith("__"):
+            value = value[2:]
+        return value
+
+    # Do not let alias matching collapse two independently declared symbols
+    # (for example ``iput.part.0`` and ``iput``).  Exact tokens still match;
+    # only an unambiguous compiler alias can satisfy a base frame.
+    normalised_required_counts: dict[str, int] = {}
+    for frame in required_chain:
+        normalised = _normalise_runtime_symbol(frame).lower()
+        if normalised:
+            normalised_required_counts[normalised] = (
+                normalised_required_counts.get(normalised, 0) + 1
+            )
+
+    def _symbols_match(required: str, observed: str) -> bool:
+        if required.lower() == observed.lower():
+            return True
+        required_normalised = _normalise_runtime_symbol(required).lower()
+        observed_normalised = _normalise_runtime_symbol(observed).lower()
+        return bool(
+            required_normalised
+            and required_normalised == observed_normalised
+            and normalised_required_counts.get(required_normalised, 0) == 1
+        )
+
+    def _stack_symbol(line: str) -> str:
+        """Return the first symbol from a labelled kernel stack line."""
+        body = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
+        match = re.match(
+            r"^\s*(?:[?*]\s*)?"
+            r"(?:RIP:\s*(?:[0-9a-f]+:)?\s*)?"
+            r"(?P<symbol>[A-Za-z_.$][A-Za-z0-9_.$]*)"
+            r"(?:\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?)?"
+            r"(?:\s|$)",
+            body,
+            flags=re.IGNORECASE,
+        )
+        return match.group("symbol") if match else ""
+
     def frame_seen(
         line: str,
         frame: str,
@@ -1144,33 +1199,16 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         # Match symbols as tokens; stack-shaped matching below additionally
         # filters diagnostic text inside explicitly labeled Call Trace blocks.
         if stack_line_only:
-            # A labeled trace may contain interleaved subsystem diagnostics
-            # (for example vcan0: ...) before the actual stack entry.
-            # Only accept a symbol at the beginning of a stack-shaped line,
-            # after the optional timestamp/CPU prefix and ?/RIP marker.
-            body = re.sub(r"^\s*(?:\[[^\]]+\]\s*)+", "", line)
-            stack_pattern = (
-                r"^\s*(?:[?*]\s*)?"
-                r"(?:RIP:\s*(?:[0-9a-f]+:)?\s*)?"
-                + re.escape(frame)
-                + r"(?:\+0x[0-9a-f]+(?:/0x[0-9a-f]+)?)?"
-                r"(?:\s|$)"
-            )
-            if re.search(stack_pattern, body, flags=re.IGNORECASE) is None:
+            # A labelled trace may contain interleaved subsystem diagnostics;
+            # require the declared frame (or its unambiguous compiler alias)
+            # to be the first stack symbol.
+            observed = _stack_symbol(line)
+            if not observed or not _symbols_match(frame, observed):
                 return False
-        pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
-        return re.search(pattern, line, flags=re.IGNORECASE) is not None
-
-    # Avoid treating ``evict`` as present in the distinct symbol
-        # ``jfs_evict_inode``.  Stack symbols are token-like identifiers;
-        # boundaries make both presence and ordering deterministic.
-        pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
-        if re.search(pattern, line, flags=re.IGNORECASE) is not None:
             return True
-        target = _normalise_runtime_symbol(frame)
         return any(
-            _normalise_runtime_symbol(token).lower() == target.lower()
-            for token in _runtime_symbol_tokens(line)
+            _symbols_match(frame, token)
+            for token in re.findall(r"[A-Za-z_.$][A-Za-z0-9_.$]*", str(line or ""))
         )
 
     # ``required_frames`` is retained for backward compatibility, while

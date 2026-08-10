@@ -827,6 +827,40 @@ def test_call_chain_matches_symbol_offsets_from_different_build(tmp_path):
     assert match["frame_order_matched"] is True
 
 
+def test_call_chain_matches_compiler_clone_suffix(tmp_path):
+    """An optimized kernel clone still identifies the declared source frame."""
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_frames = [
+        "can_finish_ordered_extent", "btrfs_finish_ordered_extent",
+    ]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  can_finish_ordered_extent.isra.0+0x169/0x900",
+        "[   1.2]  btrfs_finish_ordered_extent+0xd9/0x370",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == []
+    assert match["required_frames_found"] == [
+        "can_finish_ordered_extent", "btrfs_finish_ordered_extent",
+    ]
+    assert match["frame_order_matched"] is True
+
+
+def test_call_chain_does_not_match_unrelated_compiler_clone(tmp_path):
+    """Clone matching remains token-bounded and does not accept substrings."""
+    plan = _plan(tmp_path)
+    plan.call_chain_oracle.required_frames = ["finish_ordered_extent"]
+    content = "\n".join([
+        "LUMEN_REPRO_START:case:path",
+        "[   1.0] Call Trace:",
+        "[   1.1]  btrfs_finish_ordered_extent.isra.0+0xd9/0x370",
+    ])
+    match = _check_call_chain_match(content, plan)
+    assert match["missing_frames"] == ["finish_ordered_extent"]
+    assert match["frame_order_matched"] is False
+
+
 def test_call_chain_strips_source_location_annotations(tmp_path):
     plan = _plan(tmp_path)
     plan.original_call_chain = [
