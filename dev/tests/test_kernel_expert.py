@@ -387,6 +387,30 @@ def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
     assert contract.call_chain_oracle.fault_signatures == ["len > ordered->bytes_left"]
     assert contract.call_chain_oracle.required_frames == ["worker_thread", "finish_extent"]
 
+
+def test_async_completion_chain_alias_is_bounded_and_ignores_panic_label():
+    rich = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ok",
+        "verified_invariant": {
+            "statement": "ordered length is bounded",
+            "observed_failure": "len > ordered->bytes_left",
+        },
+        "audit_call_chain": {
+            "kernel_async_completion": [
+                {"symbol": "process_one_work"},
+                {"symbol": "finish_extent"},
+                {"symbol": "WARN/panic escalation"},
+            ],
+        },
+        "core_oracle": [],
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.call_chain_oracle.fault_signatures == ["len > ordered->bytes_left"]
+    assert contract.call_chain_oracle.required_frames == [
+        "process_one_work", "finish_extent",
+    ]
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(
