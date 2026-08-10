@@ -2971,6 +2971,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 or rich_chain.get("forward_to_invariant")
                 or rich_chain.get("kernel_async_completion")
                 or rich_chain.get("kernel_warning_stack_top_down")
+                or rich_chain.get("target_completion_chain")
                 or rich_chain.get("frames")
             )
         else:
@@ -3030,6 +3031,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_oracle.get("events")
         or rich_oracle.get("must_match_in_order")
         or rich_oracle.get("ordered_assertions")
+        or rich_oracle.get("ordered_checks")
     )
     if isinstance(ordered_assertions, list):
         rich_signatures: list[str] = []
@@ -3080,7 +3082,14 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         isinstance(rich_chain, list)
         or (
             isinstance(rich_chain, dict)
-            and isinstance(rich_chain.get("kernel_async_completion"), list)
+            and any(
+                isinstance(rich_chain.get(key), list)
+                for key in (
+                    "kernel_async_completion",
+                    "kernel_warning_stack_top_down",
+                    "target_completion_chain",
+                )
+            )
         )
     ) and normalized.get("original_call_chain") and not (
         oracle.get("required_top_frames") or oracle.get("required_frames")
@@ -3109,6 +3118,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         rich_target.get("reported_warning")
         or rich_target.get("fault_signature")
         or rich_case.get("reported_signal")
+        or rich_case.get("reported_assertion")
         or rich_case.get("observed_violation")
         or rich_invariant.get("observed_failure")
         or rich_invariant.get("violation")

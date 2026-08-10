@@ -458,6 +458,27 @@ def test_source_evidence_inventory_supplies_frames_and_diagnostic_marker():
         "finish_extent", "worker_thread",
     ]
 
+
+def test_target_completion_chain_and_reported_assertion_aliases_are_mapped():
+    rich = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ready",
+        "case": {"reported_assertion": "len > ordered->bytes_left"},
+        "verified_invariant": {"statement": "ordered completion is bounded"},
+        "audit_call_chain": {
+            "target_completion_chain": [
+                {"function": "worker_thread"},
+                {"function": "finish_extent"},
+            ],
+        },
+        "core_oracle": {"ordered_checks": [{"order": 1, "check": "warning"}]},
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.call_chain_oracle.fault_signatures == ["len > ordered->bytes_left"]
+    assert contract.call_chain_oracle.required_frames == [
+        "worker_thread", "finish_extent",
+    ]
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(
