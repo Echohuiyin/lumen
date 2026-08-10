@@ -366,6 +366,27 @@ def test_wrapped_persisted_contract_uses_target_and_audited_chain():
     assert contract.original_call_chain == ["worker_thread", "finish_extent"]
     assert contract.call_chain_oracle.required_frames == contract.original_call_chain
 
+
+def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
+    rich = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ready_for_runtime_test",
+        "case": {
+            "verified_invariant": "completion length must stay within bytes_left",
+            "observed_violation": "len > ordered->bytes_left",
+        },
+        "audit_call_chain": [
+            {"function": "worker_thread"},
+            {"function": "finish_extent"},
+        ],
+        "core_oracle": {"ordered_checks": [{"order": 1, "check": "warning"}]},
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "completion length must stay within bytes_left"
+    assert contract.call_chain_oracle.fault_signatures == ["len > ordered->bytes_left"]
+    assert contract.call_chain_oracle.required_frames == ["worker_thread", "finish_extent"]
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(

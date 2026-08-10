@@ -3034,6 +3034,24 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 "Normalized core_oracle.ordered to the bounded runtime signal/frame gate."
             )
 
+    if isinstance(rich_chain, list) and normalized.get("original_call_chain") and not (
+        oracle.get("required_top_frames") or oracle.get("required_frames")
+    ):
+        chain_frames = [
+            _rich_symbol(frame) for frame in normalized["original_call_chain"]
+        ]
+        chain_frames = [frame for frame in chain_frames if frame]
+        if chain_frames:
+            oracle["required_top_frames"] = chain_frames
+            oracle["required_frames"] = list(chain_frames)
+            oracle["required_frame_order"] = [
+                [chain_frames[index], chain_frames[index + 1]]
+                for index in range(len(chain_frames) - 1)
+            ]
+            warnings.append(
+                "Normalized the explicit audited call chain to the bounded frame gate."
+            )
+
     subsystem = str(rich_finding.get("subsystem") or "").strip()
     if not subsystem:
         subsystem = str(rich_target.get("subsystem") or "").strip()
@@ -3042,6 +3060,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     target_signal = str(
         rich_target.get("reported_warning")
         or rich_target.get("fault_signature")
+        or rich_case.get("observed_violation")
         or ""
     ).strip()
     if target_signal and not oracle.get("fault_signatures"):
@@ -3623,7 +3642,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     elif reason is None:
         normalized["blocked_reason"] = ""
 
-    if normalized.get("status") in {"ready", "ready_for_test"}:
+    if normalized.get("status") in {
+        "ready", "ready_for_test", "ready_for_runtime_test",
+    }:
         normalized["status"] = "ok"
         warnings.append(
             "Normalized the explicit Codex KERNEL_CONTRACT ready status; "
