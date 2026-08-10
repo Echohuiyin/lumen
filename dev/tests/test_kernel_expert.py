@@ -332,6 +332,35 @@ def test_persisted_kernel_contract_aliases_are_explicitly_adapted():
     assert contract.call_chain_oracle.fault_signatures == ["ordered completion warning"]
     assert contract.execution_steps[0].args == []
 
+
+def test_wrapped_persisted_contract_uses_target_and_audited_chain():
+    rich = {
+        "KERNEL_CONTRACT": {
+            "version": 1,
+            "status": "ok",
+            "target": {
+                "subsystem": "fs/example",
+                "reported_warning": "len > tracked_bytes",
+            },
+            "verified_invariant": {
+                "statement": "completion length must not exceed tracked bytes",
+            },
+            "audit_call_chain": [
+                {"symbol": "worker_thread"},
+                {"symbol": "finish_extent"},
+            ],
+            "core_oracle": {"steps": [{"order": 1, "condition": "target warning"}]},
+            "execution_steps": [{"type": "run_binary", "binary": "operator-reproducer"}],
+        },
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "completion length must not exceed tracked bytes"
+    assert contract.call_chain_oracle.target_subsystems == ["fs/example"]
+    assert contract.call_chain_oracle.fault_signatures == ["len > tracked_bytes"]
+    assert contract.original_call_chain == ["worker_thread", "finish_extent"]
+    assert contract.call_chain_oracle.required_frames == contract.original_call_chain
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(

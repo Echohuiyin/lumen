@@ -2867,6 +2867,22 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # explicit multi-field contract, never arbitrary model prose.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
+        elif (
+            data.get("status") in {"ok", "ready", "blocked"}
+            and (
+                isinstance(data.get("case"), (str, dict))
+                or isinstance(data.get("target"), dict)
+            )
+            and isinstance(data.get("core_oracle"), dict)
+            and isinstance(data.get("audit_call_chain"), (list, dict))
+        ):
+            # A Codex maintenance revision may persist the explicit marker in
+            # the surrounding filename/object while using ``case`` as a
+            # compact description and an array-shaped audited call chain.
+            # Accept this complete structured shape; all executable fields
+            # are still required below.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
         else:
             return data
     normalized = dict(data)
@@ -2881,6 +2897,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     rich_finding = normalized.get("finding")
     if not isinstance(rich_finding, dict):
         rich_finding = {}
+    rich_target = normalized.get("target")
+    if not isinstance(rich_target, dict):
+        rich_target = {}
     rich_case = normalized.get("case")
     if not isinstance(rich_case, dict):
         rich_case = {}
@@ -2888,7 +2907,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     if not isinstance(rich_invariant, dict):
         rich_invariant = {}
     rich_chain = normalized.get("audit_call_chain")
-    if not isinstance(rich_chain, dict):
+    if not isinstance(rich_chain, (dict, list)):
         rich_chain = {}
     rich_oracle = normalized.get("core_oracle")
     if not isinstance(rich_oracle, dict):
@@ -2941,11 +2960,14 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             )
 
     if not normalized.get("original_call_chain"):
-        declared_chain = (
-            rich_chain.get("target_trigger_order")
-            or rich_chain.get("forward_to_invariant")
-            or rich_chain.get("frames")
-        )
+        if isinstance(rich_chain, dict):
+            declared_chain = (
+                rich_chain.get("target_trigger_order")
+                or rich_chain.get("forward_to_invariant")
+                or rich_chain.get("frames")
+            )
+        else:
+            declared_chain = rich_chain
         if isinstance(declared_chain, list):
             frames = [
                 symbol for item in declared_chain
@@ -3005,8 +3027,17 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             )
 
     subsystem = str(rich_finding.get("subsystem") or "").strip()
+    if not subsystem:
+        subsystem = str(rich_target.get("subsystem") or "").strip()
     if subsystem and not oracle.get("target_subsystems"):
         oracle["target_subsystems"] = [subsystem]
+    target_signal = str(
+        rich_target.get("reported_warning")
+        or rich_target.get("fault_signature")
+        or ""
+    ).strip()
+    if target_signal and not oracle.get("fault_signatures"):
+        oracle["fault_signatures"] = [target_signal]
     if oracle:
         normalized["call_chain_oracle"] = oracle
 
