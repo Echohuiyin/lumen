@@ -2863,7 +2863,10 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
         elif (
-            data.get("status") in {"ok", "ready", "blocked"}
+            data.get("status") in {
+                "ok", "ready", "blocked", "ready_for_test",
+                "ready_for_runtime_test",
+            }
             and isinstance(data.get("root_cause"), dict)
             and isinstance(data.get("original_call_chain"), dict)
             and isinstance(data.get("call_chain_oracle"), dict)
@@ -2875,7 +2878,10 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
         elif (
-            data.get("status") in {"ok", "ready", "blocked"}
+            data.get("status") in {
+                "ok", "ready", "blocked", "ready_for_test",
+                "ready_for_runtime_test",
+            }
             and (
                 isinstance(data.get("case"), (str, dict))
                 or isinstance(data.get("target"), dict)
@@ -2905,6 +2911,21 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # with ``source`` metadata and array-shaped ``core_oracle``
             # assertions.  The outer marker is recovered by the extractor;
             # this branch covers the persisted inner object.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
+        elif (
+            data.get("status") in {
+                "ok", "ready", "blocked", "ready_for_test",
+                "ready_for_runtime_test",
+            }
+            and isinstance(data.get("case"), dict)
+            and isinstance(data.get("source"), dict)
+            and isinstance(data.get("audit_call_chain"), (list, dict))
+            and isinstance(data.get("core_oracle"), (list, dict))
+            and isinstance(data.get("reproducer"), dict)
+        ):
+            # Another persisted inner object keeps the same explicit source
+            # and reproducer fields but uses a structured warning-chain map.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
         else:
@@ -3073,6 +3094,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 or rich_chain.get("kernel_warning_stack_top_down")
                 or rich_chain.get("target_completion_chain")
                 or rich_chain.get("target_warning_chain")
+                or rich_chain.get("strict_order")
+                or rich_chain.get("reported_stack_order")
                 or rich_chain.get("frames")
             )
         else:
@@ -3234,6 +3257,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     "kernel_warning_stack_top_down",
                     "target_completion_chain",
                     "target_warning_chain",
+                    "strict_order",
+                    "reported_stack_order",
                 )
             )
         )

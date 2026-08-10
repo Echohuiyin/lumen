@@ -477,6 +477,42 @@ def test_target_warning_chain_and_ordered_steps_are_mapped():
     assert contract.call_chain_oracle.required_frames == contract.original_call_chain
 
 
+def test_wrapped_strict_order_contract_maps_named_warning_chain():
+    rich = {
+        "KERNEL_CONTRACT": {
+            "version": 1,
+            "status": "ready_for_test",
+            "case": {
+                "reported_failure": "len > ordered->bytes_left",
+                "observed_effect": "WARNING: fs/btrfs/ordered-data.c:390",
+            },
+            "source": {"expected_commit": "deadbeef", "verified_commit": "deadbeef"},
+            "verified_invariant": {
+                "statement": "ordered completion length is bounded",
+            },
+            "audit_call_chain": {
+                "strict_order": [
+                    "worker_thread", "process_one_work", "can_finish_ordered_extent",
+                ],
+            },
+            "core_oracle": {
+                "ordered_steps": [
+                    {"order": 1, "assert": "len > ordered->bytes_left at fs/btrfs/ordered-data.c:390"},
+                    {"order": 2, "assert": "Kernel panic - not syncing"},
+                ],
+            },
+            "reproducer": {"operator_supplied": True},
+        },
+    }
+    contract = _extract_kernel_contract(json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "ordered completion length is bounded"
+    assert contract.original_call_chain == [
+        "worker_thread", "process_one_work", "can_finish_ordered_extent",
+    ]
+    assert contract.call_chain_oracle.required_frames == contract.original_call_chain
+
+
 def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
     rich = {
         "contract_type": "KERNEL_CONTRACT",
