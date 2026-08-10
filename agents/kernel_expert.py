@@ -2872,6 +2872,140 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     normalized = dict(data)
     warnings = list(normalized.get("warnings") or [])
 
+    # Recent project-local Codex output uses the persisted maintenance
+    # contract shape (``finding``/``verified_invariant``/
+    # ``audit_call_chain``/``core_oracle``) instead of the runtime ABI names
+    # consumed by KernelExpertOutput.  Adapt only those explicit structured
+    # fields here; no diagnosis, frame, or runtime action is inferred from
+    # free-form prose.  The later input/static/QEMU gates remain authoritative.
+    rich_finding = normalized.get("finding")
+    if not isinstance(rich_finding, dict):
+        rich_finding = {}
+    rich_invariant = normalized.get("verified_invariant")
+    if not isinstance(rich_invariant, dict):
+        rich_invariant = {}
+    rich_chain = normalized.get("audit_call_chain")
+    if not isinstance(rich_chain, dict):
+        rich_chain = {}
+    rich_oracle = normalized.get("core_oracle")
+    if not isinstance(rich_oracle, dict):
+        rich_oracle = {}
+
+    def _rich_symbol(value: object) -> str:
+        """Keep only a declared symbol from a source-annotated frame."""
+        if isinstance(value, dict):
+            text = ""
+            for key in ("function", "frame", "symbol", "name", "required_signature", "signature"):
+                candidate = str(value.get(key) or "").strip()
+                if candidate:
+                    text = candidate
+                    break
+        else:
+            text = str(value or "").strip()
+        # The persisted audit chain records source locations as ``foo
+        # (path:line)`` or ``foo [path:line]``.  They are evidence metadata,
+        # not part of the runtime symbol ABI.
+        text = re.sub(r"\s+\([^()]*\)$", "", text).strip()
+        text = re.sub(r"\s+\[[^\]]+\]$", "", text).strip()
+        return text
+
+    if not str(normalized.get("root_cause") or "").strip():
+        statement = str(rich_invariant.get("statement") or "").strip()
+        if statement:
+            normalized["root_cause"] = statement
+            basis = rich_invariant.get("source_basis")
+            if isinstance(basis, list) and basis:
+                normalized["root_cause_evidence"] = [
+                    {"kind": "verified_invariant_source", "detail": str(item)}
+                    for item in basis if str(item).strip()
+                ]
+            warnings.append(
+                "Normalized verified_invariant.statement to the runtime root-cause field."
+            )
+
+    if not normalized.get("original_call_chain"):
+        declared_chain = rich_chain.get("target_trigger_order")
+        if isinstance(declared_chain, list):
+            frames = [
+                symbol for item in declared_chain
+                if (symbol := _rich_symbol(item))
+            ]
+            if frames:
+                normalized["original_call_chain"] = frames
+                warnings.append(
+                    "Normalized audit_call_chain.target_trigger_order to the runtime call chain."
+                )
+
+    # Map the bounded, explicitly ordered runtime assertions.  ``required_log``
+    # is the serial fault contract; ``required_functions`` is the minimal
+    # source-backed frame core.  We deliberately do not turn warning-to-panic
+    # unwind frames into mandatory trigger frames.
+    raw_runtime_oracle = normalized.get("call_chain_oracle")
+    oracle = dict(raw_runtime_oracle) if isinstance(raw_runtime_oracle, dict) else {}
+    ordered_assertions = rich_oracle.get("ordered")
+    if isinstance(ordered_assertions, list):
+        rich_signatures: list[str] = []
+        rich_frames: list[str] = []
+        for assertion in ordered_assertions:
+            if not isinstance(assertion, dict):
+                continue
+            signature = str(assertion.get("required_log") or "").strip()
+            if signature and signature not in rich_signatures:
+                rich_signatures.append(signature)
+            functions = assertion.get("required_functions")
+            if isinstance(functions, list):
+                for function in functions:
+                    symbol = _rich_symbol(function)
+                    if symbol and symbol not in rich_frames:
+                        rich_frames.append(symbol)
+        if rich_signatures and not oracle.get("fault_signatures"):
+            oracle["fault_signatures"] = rich_signatures
+        if rich_frames and not (
+            oracle.get("required_top_frames") or oracle.get("required_frames")
+        ):
+            oracle["required_top_frames"] = rich_frames
+            oracle["required_frames"] = list(rich_frames)
+            oracle["required_frame_order"] = [
+                [rich_frames[index], rich_frames[index + 1]]
+                for index in range(len(rich_frames) - 1)
+            ]
+        if rich_signatures or rich_frames:
+            warnings.append(
+                "Normalized core_oracle.ordered to the bounded runtime signal/frame gate."
+            )
+
+    subsystem = str(rich_finding.get("subsystem") or "").strip()
+    if subsystem and not oracle.get("target_subsystems"):
+        oracle["target_subsystems"] = [subsystem]
+    if oracle:
+        normalized["call_chain_oracle"] = oracle
+
+    rich_setup = normalized.get("setup")
+    if not normalized.get("execution_steps") and isinstance(rich_setup, dict):
+        setup_steps: list[dict] = []
+        for item in rich_setup.get("steps") or []:
+            if not isinstance(item, dict) or item.get("type") != "run_binary":
+                continue
+            binary = str(item.get("binary") or item.get("path") or "").strip()
+            args = item.get("argv") if isinstance(item.get("argv"), list) else item.get("args")
+            if (
+                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", binary)
+                or not isinstance(args, list)
+                or not all(isinstance(arg, (str, int, float)) for arg in args)
+            ):
+                continue
+            setup_steps.append({
+                "type": "run_binary",
+                "path": binary if binary.startswith("bin/") else f"bin/{binary}",
+                "args": [str(arg) for arg in args],
+                "rationale": str(item.get("owner") or "explicit setup run_binary"),
+            })
+        if setup_steps:
+            normalized["execution_steps"] = setup_steps
+            warnings.append(
+                "Normalized the explicit setup run_binary step for the runtime handoff."
+            )
+
     def _frame_text(item: object, *, prefer_signature: bool = False) -> str:
         """Convert versioned frame records to the internal string ABI."""
         if isinstance(item, dict):

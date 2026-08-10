@@ -237,6 +237,69 @@ def test_declared_operator_reproducer_is_materialized_and_reused(tmp_path):
     assert enriched.qemu_recipe.timeout_sec == 300
     assert _static_check_userspace_reproducer(enriched, tmp_path / "session")["status"] == "passed"
 
+
+def test_persisted_kernel_contract_shape_is_adapted_without_fallback(tmp_path):
+    """The persisted Codex schema must reach the runtime ABI verbatim."""
+    rich = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ready",
+        "verified_invariant": {
+            "statement": "The completion length must not exceed the tracked extent bytes.",
+            "source_basis": ["fs/example.c:10: explicit source evidence"],
+        },
+        "finding": {"subsystem": "example completion"},
+        "audit_call_chain": {
+            "target_trigger_order": [
+                "worker_thread (kernel/workqueue.c:10-20)",
+                "finish_extent (fs/example.c:30-40)",
+            ],
+        },
+        "core_oracle": {
+            "ordered": [
+                {"order": 1, "required_log": "Workqueue: example finish_extent"},
+                {
+                    "order": 2,
+                    "required_functions": ["worker_thread", "finish_extent"],
+                    "required_log": "extent bytes mismatch",
+                },
+            ],
+        },
+        "setup": {
+            "steps": [
+                {"type": "compile", "source": "diagnostic_test.c"},
+                {"type": "run_binary", "binary": "diagnostic_test", "argv": []},
+            ],
+        },
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == rich["verified_invariant"]["statement"]
+    assert contract.original_call_chain == ["worker_thread", "finish_extent"]
+    assert contract.call_chain_oracle.required_frames == ["worker_thread", "finish_extent"]
+    assert contract.call_chain_oracle.fault_signatures == [
+        "Workqueue: example finish_extent", "extent bytes mismatch",
+    ]
+    assert [step.type for step in contract.execution_steps] == ["run_binary"]
+    assert contract.execution_steps[0].path == "bin/diagnostic_test"
+
+    source = tmp_path / "operator.c"
+    source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    image = tmp_path / "bzImage"
+    image.write_bytes(b"MZ\x00\x00")
+    enriched = _enrich_kernel_contract_from_runtime(
+        contract,
+        input_artifacts={
+            "target_arch": "x86_64",
+            "boot_kernel_path": str(image),
+            "reproducer_path": str(source),
+            "expected_signal": "extent bytes mismatch",
+        },
+        output_dir=tmp_path / "session",
+    )
+    assert enriched.reproducer.operator_supplied is True
+    assert [step.type for step in enriched.execution_steps] == ["run_binary"]
+    assert enriched.execution_steps[0].path == "bin/operator-repro"
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(
