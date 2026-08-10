@@ -1591,7 +1591,7 @@ class CodexBackend:
         return project_root, runtime_home, codex_home, skills_dir
 
     @staticmethod
-    def _ensure_project_skills_link(workdir: Path, project_root: Path) -> None:
+    def _ensure_project_skills_link(workdir: Path, skills_dir: Path) -> None:
         """Materialize project skills inside the Codex workdir.
 
         Codex's ``workspace-write`` sandbox treats a symlink from the session
@@ -1601,7 +1601,7 @@ class CodexBackend:
         session instead; the target kernel checkout is supplied separately as
         a bounded additional directory for source inspection.
         """
-        source = (project_root / ".agents").resolve()
+        source = Path(skills_dir).resolve()
         if not source.is_dir():
             raise RuntimeError(f"Codex project skills root is missing: {source}")
         link = workdir / ".agents"
@@ -1614,7 +1614,7 @@ class CodexBackend:
                 raise RuntimeError(f"Codex workdir .agents/skills is missing: {link}")
             return
         try:
-            shutil.copytree(source / "skills", link / "skills", symlinks=False)
+            shutil.copytree(source, link / "skills", symlinks=False)
         except OSError as exc:
             raise RuntimeError(
                 f"Codex could not materialize project skills in workdir: {link}"
@@ -1730,7 +1730,7 @@ class CodexBackend:
                 "Codex workdir must stay inside project_root so repository skills are discoverable: "
                 f"{workdir_path}"
             ) from exc
-        self._ensure_project_skills_link(workdir_path, project_root)
+        self._ensure_project_skills_link(workdir_path, _skills_dir)
 
         system_parts: list[str] = []
         user_parts: list[str] = []

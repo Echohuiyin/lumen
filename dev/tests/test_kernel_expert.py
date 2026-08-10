@@ -214,6 +214,29 @@ def test_materialized_contract_can_replace_non_structured_retry_output(tmp_path)
     assert '"source_files": ["repro.c"]' not in prompt
     assert '"source_files": ["diagnostic_test.c"]' in prompt
 
+
+def test_declared_operator_reproducer_is_materialized_and_reused(tmp_path):
+    source = tmp_path / "syzbot.c"
+    source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    image = tmp_path / "bzImage"
+    image.write_bytes(b"MZ\x00\x00")
+    contract = _contract(tmp_path)
+    enriched = _enrich_kernel_contract_from_runtime(
+        contract,
+        input_artifacts={
+            "reproducer_path": str(source),
+            "qemu_recipe": {"smp": "8", "cpu": "host", "timeout_sec": 300},
+        },
+        output_dir=tmp_path / "session",
+    )
+    assert enriched.reproducer.operator_supplied is True
+    assert enriched.reproducer.source_files == ["operator-reproducer.c"]
+    assert Path(enriched.reproducer.source_dir, "operator-reproducer.c").read_text() == source.read_text()
+    assert enriched.qemu_recipe.smp == "8"
+    assert enriched.qemu_recipe.cpu == "host"
+    assert enriched.qemu_recipe.timeout_sec == 300
+    assert _static_check_userspace_reproducer(enriched, tmp_path / "session")["status"] == "passed"
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(

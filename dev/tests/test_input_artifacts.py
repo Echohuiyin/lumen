@@ -23,6 +23,7 @@ def test_parse_input_rejects_unsanitized_reproducer_but_keeps_runtime_contract(t
                 "crash_report: /tmp/report.txt",
                 "reproducer: /tmp/repro.syz",
                 "qemu_extra_cmdline: no-kvmapf no-steal-acc init=/root/lumen-init",
+                'qemu_recipe: {"machine":"q35,accel=kvm","cpu":"host","smp":"8","timeout_sec":300}',
                 "maintenance_notes: use fork workers and a blocking userspace sendmsg sequence",
                 "kernel_source: /tmp/linux",
                 "expected_kernel_commit: bdf56c7580d267a123cc71ca0f2459c797b76fde",
@@ -55,6 +56,9 @@ def test_parse_input_rejects_unsanitized_reproducer_but_keeps_runtime_contract(t
     assert contract.reproducer_path == ""
     assert contract.test_assets_dir == "/tmp/lumen-test-assets"
     assert contract.qemu_extra_cmdline == "no-kvmapf no-steal-acc init=/root/lumen-init"
+    assert contract.qemu_recipe == {
+        "machine": "q35,accel=kvm", "cpu": "host", "smp": "8", "timeout_sec": 300,
+    }
     assert contract.expected_kernel_commit == "bdf56c7580d267a123cc71ca0f2459c797b76fde"
     assert contract.fix_commit == "83b67cc9be9223183caf91826d9c194d7fb128fa"
 

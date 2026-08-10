@@ -6,6 +6,7 @@ import re
 import os
 import json
 from pathlib import Path
+from typing import Any
 
 from agents.contracts import InputArtifactsContract
 from agents.test_runner import detect_kernel_type, normalize_target_arch

@@ -40,6 +40,11 @@ The deterministic runner performs commands and captures artifacts. You provide t
 - Do not reuse an image that a previous try-out has modified.
 - Do not accept boot-time failures, historical serial output, or echoing an expected text string as reproduction evidence.
 - Do not call a result successful without the required start marker, post-start target signal, required frames, required order, and target context.
+- For an authorized module whose fault is reported asynchronously (such as
+  `khungtaskd`), verify that the userspace observer remains alive beyond the
+  declared detector timeout plus a bounded scheduling margin. A procfs
+  precondition line followed by an early process exit is a failed trigger, not
+  evidence that the kernel path was absent.
 - Keep all image identity, compile output, execution output, injection settings, serial window, and comparison artifacts.
 
 ## Injection policy

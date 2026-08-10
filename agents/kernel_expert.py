@@ -300,8 +300,9 @@ def _stage_codex_evidence(
                 # from an evidence-staging bug.
                 marker_pattern = re.compile(
                     r"(?:unable\s+to\s+handle|kasan:|internal\s+error:|"
-                    r"warning:|pc\s*:|lr\s*:|rip\s*:|oops:|bug:|#pf:|"
-                    r"kernel\s+panic|call\s+trace:|end\s+trace)",
+                    r"warning:|\bpc\s*:|\blr\s*:|\brip\s*:|oops:|bug:|#pf:|"
+                    r"kernel\s+panic|hung\s+task|blocked\s+for\s+more\s+than|"
+                    r"deadlock|call\s+trace:|end\s+trace)",
                     re.IGNORECASE,
                 )
                 for line in lines:
@@ -621,8 +622,8 @@ def _build_preflight_context(boot_kernel_path: str, test_assets_dir: str) -> str
 
     assets = _scan_test_assets_for_reproducers(test_assets_dir)
     if assets:
-        parts.append("\n## test_assets 中已有的用户态测试资产（仅作接口参考）")
-        parts.append("扫描到以下现有测试资产；先核对其 ABI 与调用序列，再按本案例契约生成新的用户态 C 程序：")
+        parts.append("\n## test_assets 中已有的用户态测试资产")
+        parts.append("扫描到以下现有测试资产；输入契约明确声明的 .c 源码必须只读复用，其余资产仅作 ABI/调用序列参考：")
         for f in assets:
             kind_label = {
                 "syzbot_repro_binary": "预编译用户态测试程序（由 Test Expert 在 guest 中编译/运行）",
@@ -1919,6 +1920,11 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         )
 
     case_text = _codex_case_text(state.get("user_input", ""))
+    semcode_status_text = (
+        "not applicable to module-local symbols; the declared .ko and first-hand log are authoritative"
+        if module_case else
+        "verified for the declared commit; every query must use that exact git_sha"
+    )
     user_content = (
         "AUTHORIZED MAINTENANCE REGRESSION NOTICE: This is a defensive Linux kernel "
         "maintenance session under operator control. All generated code is a bounded "
@@ -3949,7 +3955,7 @@ def _kernel_contract_ready_for_test(contract: KernelExpertOutput) -> bool:
 
 
 def _resolve_contract_path(path: str) -> Path:
-    expanded = Path(os.path.expanduser(path))
+    expanded = Path(os.path.expandvars(os.path.expanduser(path)))
     if not expanded.is_absolute():
         expanded = PROJECT_ROOT / expanded
     return expanded.resolve()

@@ -168,6 +168,12 @@ The contract must let Test Expert distinguish the reported maintenance event fro
 
 Architecture and syscall-entry wrappers (for example `__arm64_sys_*`, `__x64_sys_*`, `__do_sys_*`, `__se_sys_*`, `__invoke_syscall`, `el0_*`, and similar entry/return helpers) must never be placed in `required_top_frames` or `required_frames`; list them only in `allowed_wrapper_frames` when the report contains them. Do not respond to a missing inline or wrapper frame by broadening the oracle. Lower callers may differ because the userspace trigger and scheduler context differ; keep the complete chain in `original_call_chain` for audit and require only the declared core frames and their order.
 
+When one report contains multiple independent `Call Trace` blocks (for example,
+two blocked kernel threads), do not put frames from different blocks together
+in one `required_top_frames`/`required_frames` list. Anchor the required list to
+one complete block and represent the sibling block with a genuine alternative
+group and an ordered pair; the runner compares each stack block separately.
+
 Generic diagnostic banners or a subsystem name alone are insufficient. Do not put generic markers into an alternatives group for a concrete frame.
 
 ## Loop behavior

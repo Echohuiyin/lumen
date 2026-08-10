@@ -1165,7 +1165,13 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
         # ``jfs_evict_inode``.  Stack symbols are token-like identifiers;
         # boundaries make both presence and ordering deterministic.
         pattern = rf"(?<![A-Za-z0-9_.$]){re.escape(frame)}(?![A-Za-z0-9_.$])"
-        return re.search(pattern, line, flags=re.IGNORECASE) is not None
+        if re.search(pattern, line, flags=re.IGNORECASE) is not None:
+            return True
+        target = _normalise_runtime_symbol(frame)
+        return any(
+            _normalise_runtime_symbol(token).lower() == target.lower()
+            for token in _runtime_symbol_tokens(line)
+        )
 
     # ``required_frames`` is retained for backward compatibility, while
     # ``required_frame_alternatives`` describes mutually exclusive branches
@@ -1379,14 +1385,86 @@ def _check_call_chain_match(log_content: str, plan: TestPlan) -> dict[str, Any]:
             "frame_order_direction": "forward" if forward else ("reverse" if reverse else "mismatch"),
         }
 
-    evaluations = [_evaluate_trace(block) for block in _trace_windows()]
+    trace_windows = _trace_windows()
+    evaluations = [_evaluate_trace(block) for block in trace_windows]
     # Prefer a complete single stack.  If no stack is complete, retain the
-    # most informative one for diagnostics; never merge frames across blocks.
+    # most informative one unless the independently verified multi-block
+    # ordering rule below applies.
     complete = [item for item in evaluations if item["frame_order_matched"]]
-    chosen = complete[0] if complete else max(
-        evaluations,
-        key=lambda item: (len(item["required_frames_found"]), -len(item["missing_frames"])),
-    )
+    if complete:
+        chosen = complete[0]
+    else:
+        # A report may contain several independent stacks for the same
+        # asynchronous event (for example one blocked task per side of an
+        # ABBA deadlock).  Do not merge arbitrary frame presence across
+        # blocks.  Permit the aggregate only when every required group is
+        # observed and every declared ordering edge is satisfied inside one
+        # block, with one consistent stack orientation.  This preserves the
+        # strict single-stack path above and rejects split, unordered chains.
+        def _frame_position(trace_lines: list[str], frame: str) -> int:
+            non_question = [
+                line for line in trace_lines
+                if not re.search(r"\]\s+\?", line)
+            ]
+            candidates = non_question
+            if not any(frame_seen(line, frame) for line in candidates):
+                candidates = trace_lines
+            return next(
+                (index for index, line in enumerate(candidates)
+                 if frame_seen(line, frame)),
+                -1,
+            )
+
+        union_found = {
+            frame
+            for item in evaluations
+            for frame in item["required_frames_found"]
+        }
+        aggregate_missing = [
+            group[0] if len(group) == 1 else " or ".join(group)
+            for group in required_groups
+            if not any(frame in union_found for frame in group)
+        ]
+        edge_directions: list[str] = []
+        unmatched_pairs: list[list[str]] = []
+        if not aggregate_missing:
+            for pair in pairs:
+                directions = []
+                for trace in trace_windows:
+                    left = _frame_position(trace, pair[0])
+                    right = _frame_position(trace, pair[1])
+                    if left < 0 or right < 0 or left == right:
+                        continue
+                    directions.append("forward" if left < right else "reverse")
+                if not directions:
+                    unmatched_pairs.append(pair)
+                else:
+                    edge_directions.append(directions[0])
+        if (
+            len(trace_windows) > 1
+            and not aggregate_missing
+            and not unmatched_pairs
+            and len(set(edge_directions)) <= 1
+        ):
+            chosen = {
+                "required_frames_found": [
+                    frame for frame in required_chain if frame in union_found
+                ] + [
+                    frame for group in alternative_groups
+                    for frame in group if frame in union_found
+                    and frame not in required_chain
+                ],
+                "missing_frames": [],
+                "frame_order_matched": True,
+                "frame_order_direction": edge_directions[0]
+                if edge_directions else "forward",
+                "trace_blocks_aggregated": True,
+            }
+        else:
+            chosen = max(
+                evaluations,
+                key=lambda item: (len(item["required_frames_found"]), -len(item["missing_frames"])),
+            )
     result.update(chosen)
     return result
 
