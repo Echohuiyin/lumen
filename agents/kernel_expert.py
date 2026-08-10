@@ -3078,6 +3078,21 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 "Normalized core_oracle.ordered to the bounded runtime signal/frame gate."
             )
 
+    expected_signature = rich_oracle.get("expected_regression_signature")
+    if (
+        isinstance(expected_signature, list)
+        and expected_signature
+        and not oracle.get("fault_signatures")
+    ):
+        signatures = [
+            str(item).strip() for item in expected_signature if str(item).strip()
+        ]
+        if signatures:
+            oracle["fault_signatures"] = signatures
+            warnings.append(
+                "Normalized the explicit expected_regression_signature list to the signal gate."
+            )
+
     if (
         isinstance(rich_chain, list)
         or (
