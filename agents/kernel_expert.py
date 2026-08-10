@@ -3012,9 +3012,15 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         direct = _rich_symbol(item)
         raw_text = str(item or "")
         compound = bool(re.search(r"[()\s=>]", raw_text))
+        explicit_symbol_field = isinstance(item, dict) and any(
+            str(item.get(key) or "").strip()
+            for key in ("function", "frame", "symbol", "name")
+        )
         if direct == "panic":
             return []
         if direct and (
+            explicit_symbol_field
+            or
             not evidence_symbols
             or direct in evidence_symbols
             or not compound
@@ -3042,6 +3048,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             rich_invariant.get("statement")
             or rich_case.get("verified_invariant")
             or rich_case.get("summary")
+            or rich_finding.get("verified_invariant")
+            or rich_finding.get("summary")
             or ""
         ).strip()
         if statement:
@@ -3064,6 +3072,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 or rich_chain.get("kernel_async_completion")
                 or rich_chain.get("kernel_warning_stack_top_down")
                 or rich_chain.get("target_completion_chain")
+                or rich_chain.get("target_warning_chain")
                 or rich_chain.get("frames")
             )
         else:
@@ -3125,6 +3134,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_oracle.get("must_match_in_order")
         or rich_oracle.get("ordered_assertions")
         or rich_oracle.get("ordered_checks")
+        or rich_oracle.get("ordered_steps")
         or normalized.get("strict_ordered_core_oracle")
         or rich_oracle.get("steps")
     )
@@ -3138,6 +3148,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             raw_signature = ""
             for key in (
                 "required_log", "match", "pattern", "must_match", "signature", "assert",
+                "must_observe",
             ):
                 value = assertion.get(key)
                 if value:
@@ -3149,7 +3160,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 if (
                     signature
                     and (
-                        signature_key != "assert"
+                        signature_key not in {"assert", "must_observe"}
                         or re.search(
                             r"len\s*>\s*\S+|\b(?:BUG|WARNING|KASAN|Oops|hung_task)\s*[:#]|"
                             r"Kernel panic|panic_on_warn",
@@ -3222,6 +3233,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     "kernel_async_completion",
                     "kernel_warning_stack_top_down",
                     "target_completion_chain",
+                    "target_warning_chain",
                 )
             )
         )
@@ -3251,6 +3263,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     target_signal = str(
         rich_target.get("reported_warning")
         or rich_target.get("fault_signature")
+        or rich_finding.get("signal")
+        or rich_finding.get("warning_text")
         or rich_case.get("reported_signal")
         or rich_case.get("reported_assertion")
         or rich_case.get("observed_warning")

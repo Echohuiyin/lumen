@@ -440,6 +440,43 @@ def test_type_marked_contract_with_incremental_setup_is_adapted():
     assert contract.execution_steps[0].path == "bin/diagnostic_test"
 
 
+def test_target_warning_chain_and_ordered_steps_are_mapped():
+    rich = {
+        "type": "KERNEL_CONTRACT",
+        "status": "ready",
+        "target": {"subsystem": "btrfs", "architecture": "x86_64"},
+        "finding": {
+            "signal": "WARNING: fs/btrfs/ordered-data.c:390",
+            "verified_invariant": "len must not exceed ordered->bytes_left",
+        },
+        "audit_call_chain": {
+            "target_warning_chain": [
+                {"order": 1, "function": "worker_thread"},
+                {"order": 2, "function": "can_finish_ordered_extent"},
+            ],
+        },
+        "core_oracle": {
+            "ordered_steps": [
+                {"order": 1, "must_observe": "WARNING: fs/btrfs/ordered-data.c:390"},
+                {"order": 2, "must_observe": "Kernel panic - not syncing"},
+            ],
+        },
+        "reproducer": {"operator_supplied": True},
+        "incremental_setup": {
+            "steps": [{"kind": "run_binary", "binary": "diagnostic_test"}],
+        },
+    }
+    contract = _extract_kernel_contract(json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "len must not exceed ordered->bytes_left"
+    assert contract.original_call_chain == ["worker_thread", "can_finish_ordered_extent"]
+    assert contract.call_chain_oracle.fault_signatures == [
+        "WARNING: fs/btrfs/ordered-data.c:390",
+        "Kernel panic - not syncing",
+    ]
+    assert contract.call_chain_oracle.required_frames == contract.original_call_chain
+
+
 def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
     rich = {
         "contract_type": "KERNEL_CONTRACT",
