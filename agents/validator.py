@@ -152,24 +152,43 @@ def _validate_input_by_rules(user_input: str) -> ValidationResultContract:
         )
 
     input_artifacts = parse_input_artifacts(text, validate_paths=False)
-    if input_artifacts.reproducer_path or any(
+    # A declared upstream C source or prebuilt .ko is an audited, read-only
+    # operator artifact.  It is allowed through the validator only so the
+    # later Kernel/Test contracts can enforce exact copy/load semantics.  Any
+    # other reproducer type remains fail-closed at this boundary.
+    declared_reproducer = str(input_artifacts.reproducer_path or "").strip()
+    declared_module = str(input_artifacts.reproducer_module_path or "").strip()
+    supported_reproducer = bool(
+        declared_reproducer
+        and Path(declared_reproducer).suffix.lower() in {".c", ".ko"}
+    )
+    supported_module = bool(
+        declared_module
+        and Path(declared_module).suffix.lower() == ".ko"
+    )
+    unsupported_reproducer = any(
         "reproducer artifact" in str(error).lower()
+        or "blocked_input_reproducer_present" in str(error).lower()
         for error in input_artifacts.errors
+    )
+    if unsupported_reproducer or (
+        (declared_reproducer or declared_module)
+        and not (supported_reproducer or supported_module)
     ):
         return ValidationResultContract(
             status="blocked",
             validation_passed=False,
-            reason="input_contains_reproducer",
+            reason="input_contains_unsupported_reproducer",
             feedback=(
-                "input.txt 必须脱敏：请移除 reproducer/syz repro/C/KO/script 路径；"
-                "历史 reproducer 只能留在审计归档，不能传给 Lumen。"
+                "input.txt 只允许声明现有 .c 或显式预构建 .ko；"
+                "syz/script/其他 reproducer 类型必须阻断。"
             ),
             error=ErrorEnvelope(
                 category="INVALID_INPUT",
                 code="BLOCKED_INPUT_REPRODUCER_PRESENT",
-                message="The Lumen input contains an explicit reproducer artifact.",
+                message="The Lumen input contains an unsupported reproducer artifact.",
                 retryable=False,
-                next_action="Remove reproducer paths/content and submit the sanitized input.txt.",
+                next_action="Declare an existing .c source or explicitly authorized prebuilt .ko.",
             ),
         )
     kernel_source_path = input_artifacts.kernel_source_path

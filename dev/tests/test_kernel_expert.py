@@ -393,6 +393,27 @@ def test_structured_kernel_contract_round_trips_without_module_build():
         assert validated.reproducer.output_binary == "lumen-repro"
 
 
+def test_declared_operator_source_gets_one_explicit_run_step(tmp_path):
+    source = tmp_path / "official-repro.c"
+    source.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    session = tmp_path / "session"
+    session.mkdir()
+    contract = _enrich_kernel_contract_from_runtime(
+        _contract(tmp_path),
+        input_artifacts={
+            "reproducer_path": str(source),
+            "boot_kernel_path": str(tmp_path / "bzImage"),
+        },
+        output_dir=session,
+    )
+    assert contract.reproducer.operator_supplied is True
+    assert contract.reproducer.source_dir == str(session.resolve())
+    assert contract.reproducer.source_files == ["operator-reproducer.c"]
+    assert [step.type for step in contract.execution_steps] == ["run_binary"]
+    assert contract.execution_steps[0].path == "bin/operator-repro"
+    assert (session / "operator-reproducer.c").read_bytes() == source.read_bytes()
+
+
 def test_contract_accepts_evidence_path_manifest_without_dropping_handoff():
     with tempfile.TemporaryDirectory() as directory:
         contract = _contract(Path(directory))

@@ -59,7 +59,7 @@ def main():
         print("  boot_kernel: <path>")
         print("  kernel_source: <path>")
         print("See input.txt.template for a working example.")
-        return
+        return 2
 
     # Load config
     config = load_config(args.config)
@@ -118,6 +118,14 @@ def main():
 
     print(f"\nSession files: {session_dir}/")
 
+    # Keep CLI/E2E status truthful: validation blocks and non-reproducing test
+    # contracts must be visible to shell gates through a non-zero exit code.
+    if result.get("validation_passed") is False:
+        return 1
+    if result.get("test_passed") is not True:
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

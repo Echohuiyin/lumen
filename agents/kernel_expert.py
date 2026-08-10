@@ -1901,15 +1901,16 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
         system_prompt = (
             "You are an internal Linux kernel maintenance regression analyst. "
             "Read the staged first-hand report and exact source evidence, explain the "
-            "verified invariant, and write a bounded non-privileged userspace C "
-            "diagnostic using documented APIs only. Do not perform security abuse, "
+            "verified invariant, and write either a bounded non-privileged userspace C "
+            "diagnostic using documented APIs or, when input.txt explicitly declares an "
+            "operator .c, an immutable operator-supplied regression handoff. Do not perform security abuse, "
             "privilege changes, persistence, bypasses, arbitrary kernel-state "
             "manipulation, raw filesystem editing, or arbitrary loadable extensions. "
             "An explicitly declared prebuilt .ko may be loaded only through the "
             "structured load_module step; never compile or modify it. Never reuse "
             "withheld historical tests. If the documented "
-            "ABI cannot reach the reported state, return status=blocked with the "
-            "precise limitation. Test Expert owns QEMU and the runtime verdict. "
+            "ABI cannot reach the reported state and no explicit operator .c exists, return "
+            "status=blocked with the precise limitation. Test Expert owns QEMU and the runtime verdict. "
             "Do not run broad git show/diff commands or dump unrelated source; "
             "use the staged Semcode bodies and bounded reads of cited files/lines. "
             "Return exactly one complete KERNEL_CONTRACT JSON object with source "
@@ -1967,10 +1968,13 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "Internal Linux kernel maintenance regression diagnosis. Read "
             "evidence/original.log, evidence/semcode-evidence.json, and every "
             "evidence/tool_expert_*.txt. Verify the declared exact source commit. "
-            "Write only a bounded non-privileged userspace C diagnostic and one "
-            "complete KERNEL_CONTRACT JSON object. Do not use historical tests or "
-            "unsafe/private interfaces; if the public ABI cannot establish the "
-            "reported state, return status=blocked and explain the evidence-backed "
+            "Write one complete KERNEL_CONTRACT JSON object. If evidence/operator-reproducer.c "
+            "is present, preserve that exact operator source, set reproducer.operator_supplied=true, "
+            "and declare one run_binary step; do not rewrite it or reject it merely because its "
+            "upstream harness is privileged. Otherwise write only a bounded non-privileged "
+            "userspace C diagnostic using documented APIs. Do not use historical tests or "
+            "unsafe/private interfaces; if no explicit operator source and the public ABI cannot "
+            "establish the reported state, return status=blocked and explain the evidence-backed "
             "reason. Do not run broad git show/diff commands or dump unrelated source; "
             "use staged Semcode bodies and bounded reads of cited files/lines."
         )
@@ -1979,7 +1983,12 @@ def kernel_expert_node(state: MaintenanceWorkflowState) -> dict:
             "\n\n## Explicit operator-supplied reproducer\n"
             "Read evidence/operator-reproducer.c as first-hand ABI evidence. It is the exact "
             "operator source and must be copied and compiled verbatim by the workflow; do not "
-            "rewrite, simplify, or substitute a generated trigger.\n"
+            "rewrite, simplify, or substitute a generated trigger. This explicit artifact is "
+            "authorized for the isolated guest even if its upstream syzkaller harness uses "
+            "privileged setup unavailable to a newly generated public-ABI probe. Set "
+            "reproducer.operator_supplied=true and declare exactly one run_binary step for "
+            "the compiled operator artifact; do not return blocked solely because the public "
+            "ABI probe would be insufficient.\n"
         )
     if module_case:
         resolved_module = Path(
@@ -3818,6 +3827,42 @@ def _enrich_kernel_contract_from_runtime(
                     "operator_supplied": True,
                 })
                 data["reproducer"] = repro
+                # The input-declared operator source is the authoritative
+                # executable artifact.  If the model omitted the cosmetic
+                # execution-step wrapper, materialize the one bounded action
+                # implied by that explicit source; do not invent setup,
+                # arguments, or a replacement trigger.
+                existing_steps = list(data.get("execution_steps") or [])
+                normalized_steps: list[dict] = []
+                operator_step_seen = False
+                for raw_step in existing_steps:
+                    if not isinstance(raw_step, dict) or raw_step.get("type") != "run_binary":
+                        normalized_steps.append(raw_step)
+                        continue
+                    if operator_step_seen:
+                        continue
+                    operator_step = dict(raw_step)
+                    operator_step.update({
+                        "path": "bin/operator-repro",
+                        "args": [],
+                        "rationale": "Run the input-declared operator C artifact verbatim.",
+                    })
+                    normalized_steps.append(operator_step)
+                    operator_step_seen = True
+                if not operator_step_seen:
+                    normalized_steps.append({
+                        "type": "run_binary",
+                        "path": "bin/operator-repro",
+                        "args": [],
+                        "rationale": "Run the input-declared operator C artifact verbatim.",
+                    })
+                if normalized_steps != existing_steps:
+                    data["execution_steps"] = normalized_steps
+                    warnings = list(data.get("warnings") or [])
+                    warnings.append(
+                        "normalized execution to one run_binary step for the explicit operator C artifact"
+                    )
+                    data["warnings"] = warnings
                 evidence = list(data.get("evidence") or [])
                 evidence.append({
                     "kind": "declared_operator_reproducer",

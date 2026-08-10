@@ -53,16 +53,27 @@ def test_missing_kernel_source_blocks():
     assert "kernel_source" in result.missing_fields
 
 
-def test_explicit_reproducer_is_blocked_before_expert_routing():
+def test_supported_c_reproducer_is_allowed_before_expert_routing():
     result = _validate_input_by_rules(
         "Bug Promote: KASAN slab issue\n"
         "kernel_source: /tmp/linux\n"
         "log: /tmp/kernel.log\n"
         "reproducer: /tmp/repro.c\n"
     )
+    assert result.status == "ok"
+    assert result.validation_passed is True
+
+
+def test_unsupported_reproducer_is_blocked_before_expert_routing():
+    result = _validate_input_by_rules(
+        "Bug Promote: KASAN slab issue\n"
+        "kernel_source: /tmp/linux\n"
+        "log: /tmp/kernel.log\n"
+        "reproducer: /tmp/repro.syz\n"
+    )
     assert result.status == "blocked"
     assert result.validation_passed is False
-    assert result.reason == "input_contains_reproducer"
+    assert result.reason == "input_contains_unsupported_reproducer"
     assert result.error is not None
     assert result.error.code == "BLOCKED_INPUT_REPRODUCER_PRESENT"
 
