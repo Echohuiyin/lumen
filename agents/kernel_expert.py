@@ -2970,6 +2970,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                 rich_chain.get("target_trigger_order")
                 or rich_chain.get("forward_to_invariant")
                 or rich_chain.get("kernel_async_completion")
+                or rich_chain.get("kernel_warning_stack_top_down")
                 or rich_chain.get("frames")
             )
         else:
@@ -2996,6 +2997,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_oracle.get("ordered_events")
         or rich_oracle.get("events")
         or rich_oracle.get("must_match_in_order")
+        or rich_oracle.get("ordered_assertions")
     )
     if isinstance(ordered_assertions, list):
         rich_signatures: list[str] = []
@@ -3006,6 +3008,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             raw_signature = (
                 assertion.get("required_log")
                 or assertion.get("match")
+                or assertion.get("pattern")
+                or assertion.get("must_match")
                 or assertion.get("signature")
                 or ""
             )
@@ -3072,6 +3076,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     target_signal = str(
         rich_target.get("reported_warning")
         or rich_target.get("fault_signature")
+        or rich_case.get("reported_signal")
         or rich_case.get("observed_violation")
         or rich_invariant.get("observed_failure")
         or ""

@@ -411,6 +411,31 @@ def test_async_completion_chain_alias_is_bounded_and_ignores_panic_label():
         "process_one_work", "finish_extent",
     ]
 
+
+def test_ordered_assertions_and_warning_stack_aliases_are_mapped():
+    rich = {
+        "contract_type": "KERNEL_CONTRACT",
+        "status": "ok",
+        "case": {"reported_signal": "WARNING: example: len > bytes_left"},
+        "verified_invariant": {"statement": "bytes remain bounded"},
+        "audit_call_chain": {
+            "kernel_warning_stack_top_down": [
+                "fault_site", "finish_extent", "worker_thread",
+            ],
+        },
+        "core_oracle": {
+            "ordered_assertions": [
+                {"order": 1, "pattern": "warning precursor"},
+                {"order": 2, "must_match": ["finish_extent", "worker_thread"]},
+            ],
+        },
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.call_chain_oracle.fault_signatures == ["warning precursor"]
+    assert contract.call_chain_oracle.required_frames == [
+        "finish_extent", "worker_thread",
+    ]
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(
