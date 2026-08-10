@@ -513,6 +513,32 @@ def test_wrapped_strict_order_contract_maps_named_warning_chain():
     assert contract.call_chain_oracle.required_frames == contract.original_call_chain
 
 
+def test_completion_path_is_reversed_before_workqueue_context():
+    rich = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "case": {"reported_invariant": "ordered length is bounded"},
+        "audit_call_chain": {
+            "completion_path_in_log_order": [
+                "simple_end_io_work", "btrfs_bio_end_io", "can_finish_ordered_extent",
+            ],
+            "workqueue_context": ["process_one_work", "worker_thread"],
+        },
+        "core_oracle": {
+            "required_sequence": [
+                {"order": 1, "match": "len > ordered->bytes_left"},
+            ],
+        },
+        "reproducer": {"operator_supplied": True},
+    }
+    contract = _extract_kernel_contract(json.dumps(rich))
+    assert contract.original_call_chain == [
+        "can_finish_ordered_extent", "btrfs_bio_end_io", "simple_end_io_work",
+        "process_one_work", "worker_thread",
+    ]
+    assert contract.call_chain_oracle.required_frames == contract.original_call_chain
+
+
 def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
     rich = {
         "contract_type": "KERNEL_CONTRACT",

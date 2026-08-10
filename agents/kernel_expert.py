@@ -3069,6 +3069,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             rich_invariant.get("statement")
             or rich_case.get("verified_invariant")
             or rich_case.get("summary")
+            or rich_case.get("reported_invariant")
             or rich_finding.get("verified_invariant")
             or rich_finding.get("summary")
             or ""
@@ -3087,17 +3088,29 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
 
     if not normalized.get("original_call_chain"):
         if isinstance(rich_chain, dict):
-            declared_chain = (
-                rich_chain.get("target_trigger_order")
-                or rich_chain.get("forward_to_invariant")
-                or rich_chain.get("kernel_async_completion")
-                or rich_chain.get("kernel_warning_stack_top_down")
-                or rich_chain.get("target_completion_chain")
-                or rich_chain.get("target_warning_chain")
-                or rich_chain.get("strict_order")
-                or rich_chain.get("reported_stack_order")
-                or rich_chain.get("frames")
-            )
+            completion_path = rich_chain.get("completion_path_in_log_order")
+            workqueue_context = rich_chain.get("workqueue_context")
+            if isinstance(completion_path, list):
+                # This persisted field is expressed from the outer end-I/O
+                # callback toward the warning helper, while the serial stack
+                # is leaf-to-caller.  Reverse only this explicit path and
+                # append the separately declared workqueue context so the
+                # runtime frame order remains one contiguous stack.
+                declared_chain = list(reversed(completion_path))
+                if isinstance(workqueue_context, list):
+                    declared_chain.extend(workqueue_context)
+            else:
+                declared_chain = (
+                    rich_chain.get("target_trigger_order")
+                    or rich_chain.get("forward_to_invariant")
+                    or rich_chain.get("kernel_async_completion")
+                    or rich_chain.get("kernel_warning_stack_top_down")
+                    or rich_chain.get("target_completion_chain")
+                    or rich_chain.get("target_warning_chain")
+                    or rich_chain.get("strict_order")
+                    or rich_chain.get("reported_stack_order")
+                    or rich_chain.get("frames")
+                )
         else:
             declared_chain = rich_chain
         if isinstance(declared_chain, list):
@@ -3158,6 +3171,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_oracle.get("ordered_assertions")
         or rich_oracle.get("ordered_checks")
         or rich_oracle.get("ordered_steps")
+        or rich_oracle.get("required_sequence")
         or normalized.get("strict_ordered_core_oracle")
         or rich_oracle.get("steps")
     )
@@ -3184,6 +3198,10 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     signature
                     and (
                         signature_key not in {"assert", "must_observe"}
+                        and not (
+                            signature_key == "match"
+                            and isinstance(rich_oracle.get("required_sequence"), list)
+                        )
                         or re.search(
                             r"len\s*>\s*\S+|\b(?:BUG|WARNING|KASAN|Oops|hung_task)\s*[:#]|"
                             r"Kernel panic|panic_on_warn",
@@ -3259,6 +3277,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     "target_warning_chain",
                     "strict_order",
                     "reported_stack_order",
+                    "completion_path_in_log_order",
                 )
             )
         )
@@ -3294,6 +3313,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_case.get("reported_assertion")
         or rich_case.get("observed_warning")
         or rich_case.get("observed_violation")
+        or rich_case.get("verified_observation")
         or rich_invariant.get("observed_failure")
         or rich_invariant.get("violation")
         or rich_invariant.get("observed_violation")
