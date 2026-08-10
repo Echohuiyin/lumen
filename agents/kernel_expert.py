@@ -2906,7 +2906,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     rich_invariant = normalized.get("verified_invariant")
     if not isinstance(rich_invariant, dict):
         rich_invariant = {}
-    rich_chain = normalized.get("audit_call_chain")
+    rich_chain = normalized.get("audit_call_chain") or normalized.get("full_audit_call_chain")
     if not isinstance(rich_chain, (dict, list)):
         rich_chain = {}
     rich_oracle = normalized.get("core_oracle")
@@ -3032,6 +3032,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_oracle.get("must_match_in_order")
         or rich_oracle.get("ordered_assertions")
         or rich_oracle.get("ordered_checks")
+        or normalized.get("strict_ordered_core_oracle")
     )
     if isinstance(ordered_assertions, list):
         rich_signatures: list[str] = []
@@ -3137,6 +3138,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_case.get("observed_violation")
         or rich_invariant.get("observed_failure")
         or rich_invariant.get("violation")
+        or rich_invariant.get("observed_violation")
         or ""
     ).strip()
     if not oracle.get("fault_signatures"):

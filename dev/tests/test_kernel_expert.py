@@ -497,6 +497,28 @@ def test_expected_regression_signature_alias_supplies_signal_gate():
         "len > ordered->bytes_left", "WARNING: ordered-data.c:390",
     ]
 
+
+def test_full_audit_and_strict_core_oracle_aliases_are_mapped():
+    rich = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "verified_invariant": {
+            "statement": "ordered completion is bounded",
+            "observed_violation": "len > ordered->bytes_left",
+        },
+        "full_audit_call_chain": [
+            {"function": "worker_thread"}, {"function": "finish_extent"},
+        ],
+        "strict_ordered_core_oracle": [
+            {"order": 1, "assert": "warning"},
+        ],
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.call_chain_oracle.fault_signatures == ["len > ordered->bytes_left"]
+    assert contract.call_chain_oracle.required_frames == [
+        "worker_thread", "finish_extent",
+    ]
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(
