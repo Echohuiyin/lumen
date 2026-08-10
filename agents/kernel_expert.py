@@ -3139,6 +3139,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_invariant.get("observed_failure")
         or rich_invariant.get("violation")
         or rich_invariant.get("observed_violation")
+        or rich_invariant.get("violating_observation")
         or ""
     ).strip()
     if not oracle.get("fault_signatures"):
