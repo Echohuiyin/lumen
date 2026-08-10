@@ -2989,6 +2989,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         rich_oracle.get("ordered")
         or rich_oracle.get("ordered_events")
         or rich_oracle.get("events")
+        or rich_oracle.get("must_match_in_order")
     )
     if isinstance(ordered_assertions, list):
         rich_signatures: list[str] = []
@@ -2996,14 +2997,21 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         for assertion in ordered_assertions:
             if not isinstance(assertion, dict):
                 continue
-            signature = str(
+            raw_signature = (
                 assertion.get("required_log")
                 or assertion.get("match")
                 or assertion.get("signature")
                 or ""
-            ).strip()
-            if signature and signature not in rich_signatures:
-                rich_signatures.append(signature)
+            )
+            if isinstance(raw_signature, str):
+                signature = raw_signature.strip()
+                if signature and signature not in rich_signatures:
+                    rich_signatures.append(signature)
+            elif isinstance(raw_signature, list):
+                for frame in raw_signature:
+                    symbol = _rich_symbol(frame)
+                    if symbol and symbol not in rich_frames:
+                        rich_frames.append(symbol)
             functions = assertion.get("required_functions")
             if isinstance(functions, list):
                 for function in functions:

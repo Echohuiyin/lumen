@@ -349,7 +349,12 @@ def test_wrapped_persisted_contract_uses_target_and_audited_chain():
                 {"symbol": "worker_thread"},
                 {"symbol": "finish_extent"},
             ],
-            "core_oracle": {"steps": [{"order": 1, "condition": "target warning"}]},
+            "core_oracle": {
+                "must_match_in_order": [
+                    {"order": 1, "match": "target warning"},
+                    {"order": 2, "match": ["worker_thread", "finish_extent"]},
+                ],
+            },
             "execution_steps": [{"type": "run_binary", "binary": "operator-reproducer"}],
         },
     }
@@ -357,7 +362,7 @@ def test_wrapped_persisted_contract_uses_target_and_audited_chain():
     assert contract.status == "ok"
     assert contract.root_cause == "completion length must not exceed tracked bytes"
     assert contract.call_chain_oracle.target_subsystems == ["fs/example"]
-    assert contract.call_chain_oracle.fault_signatures == ["len > tracked_bytes"]
+    assert contract.call_chain_oracle.fault_signatures == ["target warning"]
     assert contract.original_call_chain == ["worker_thread", "finish_extent"]
     assert contract.call_chain_oracle.required_frames == contract.original_call_chain
 
