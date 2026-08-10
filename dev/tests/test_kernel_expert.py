@@ -436,6 +436,28 @@ def test_ordered_assertions_and_warning_stack_aliases_are_mapped():
         "finish_extent", "worker_thread",
     ]
 
+
+def test_source_evidence_inventory_supplies_frames_and_diagnostic_marker():
+    rich = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready_for_test",
+        "verified_invariant": {"statement": "ordered length is bounded"},
+        "audit_call_chain": {"operator_to_kernel_trigger": ["operator workload"]},
+        "source_evidence": [
+            {"functions": ["finish_extent", "worker_thread"]},
+            {"facts": ["first-hand log reports len > ordered->bytes_left"]},
+        ],
+        "core_oracle": {"ordered_steps": []},
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.call_chain_oracle.fault_signatures == [
+        "first-hand log reports len > ordered->bytes_left",
+    ]
+    assert contract.call_chain_oracle.required_frames == [
+        "finish_extent", "worker_thread",
+    ]
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(

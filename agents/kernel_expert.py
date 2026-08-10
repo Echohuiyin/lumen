@@ -2986,6 +2986,38 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     "Normalized audit_call_chain.target_trigger_order to the runtime call chain."
                 )
 
+    # Some contracts retain the audit narrative as operation-level ``call``
+    # prose and put the concrete symbols in source-evidence records instead.
+    # Preserve that explicit source-backed frame inventory when the narrative
+    # has no standalone symbol fields; do not parse arbitrary prose into a
+    # runtime action or invent a trigger.
+    if not normalized.get("original_call_chain"):
+        evidence_frames: list[str] = []
+        for item in normalized.get("source_evidence") or []:
+            if not isinstance(item, dict):
+                continue
+            raw_functions = (
+                item.get("functions")
+                or item.get("function")
+                or item.get("symbols")
+                or item.get("symbol")
+            )
+            if isinstance(raw_functions, list):
+                candidates = raw_functions
+            elif raw_functions:
+                candidates = [raw_functions]
+            else:
+                candidates = []
+            for candidate in candidates:
+                symbol = _rich_symbol(candidate)
+                if symbol and symbol not in evidence_frames:
+                    evidence_frames.append(symbol)
+        if evidence_frames:
+            normalized["original_call_chain"] = evidence_frames
+            warnings.append(
+                "Normalized source_evidence function inventory to the audited runtime call chain."
+            )
+
     # Map the bounded, explicitly ordered runtime assertions.  ``required_log``
     # is the serial fault contract; ``required_functions`` is the minimal
     # source-backed frame core.  We deliberately do not turn warning-to-panic
@@ -3079,8 +3111,34 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_case.get("reported_signal")
         or rich_case.get("observed_violation")
         or rich_invariant.get("observed_failure")
+        or rich_invariant.get("violation")
         or ""
     ).strip()
+    if not oracle.get("fault_signatures"):
+        evidence_signatures: list[str] = []
+        for item in normalized.get("source_evidence") or []:
+            if not isinstance(item, dict):
+                continue
+            raw_facts = item.get("facts") or item.get("fact") or item.get("verified_body_fact")
+            if isinstance(raw_facts, list):
+                facts = raw_facts
+            elif raw_facts:
+                facts = [raw_facts]
+            else:
+                facts = []
+            for fact in facts:
+                text = str(fact or "").strip()
+                if text and re.search(
+                    r"len\s*>\s*\S+|\bWARNING:\b|Kernel panic|BTRFS error",
+                    text,
+                    flags=re.IGNORECASE,
+                ) and text not in evidence_signatures:
+                    evidence_signatures.append(text)
+        if evidence_signatures:
+            oracle["fault_signatures"] = evidence_signatures
+            warnings.append(
+                "Normalized explicit diagnostic markers from source_evidence facts."
+            )
     if target_signal and not oracle.get("fault_signatures"):
         oracle["fault_signatures"] = [target_signal]
     if oracle:
