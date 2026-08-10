@@ -2855,6 +2855,13 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # and guest gates remain authoritative after normalization.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
+        elif data.get("type") == "KERNEL_CONTRACT":
+            # A later maintenance-contract revision names the marker
+            # ``type`` instead of ``schema``/``contract``.  Accept only this
+            # exact marker; all executable fields remain subject to the same
+            # downstream gates.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
         elif (
             data.get("status") in {"ok", "ready", "blocked"}
             and isinstance(data.get("root_cause"), dict)
@@ -3287,10 +3294,15 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         normalized["call_chain_oracle"] = oracle
 
     rich_setup = normalized.get("setup")
+    if not isinstance(rich_setup, dict):
+        rich_setup = normalized.get("incremental_setup")
     if not normalized.get("execution_steps") and isinstance(rich_setup, dict):
         setup_steps: list[dict] = []
         for item in rich_setup.get("steps") or []:
-            if not isinstance(item, dict) or item.get("type") != "run_binary":
+            if not isinstance(item, dict):
+                continue
+            step_type = item.get("type") or item.get("kind")
+            if step_type != "run_binary":
                 continue
             binary = str(item.get("binary") or item.get("path") or "").strip()
             args = item.get("argv") if "argv" in item else item.get("args", [])

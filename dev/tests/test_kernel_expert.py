@@ -407,6 +407,39 @@ def test_wrapped_array_core_contract_is_explicitly_adapted():
     ]
 
 
+def test_type_marked_contract_with_incremental_setup_is_adapted():
+    rich = {
+        "type": "KERNEL_CONTRACT",
+        "status": "ready",
+        "case": {
+            "subsystem": "btrfs",
+            "symptom": "len > ordered->bytes_left",
+            "verified_invariant": "ordered completion length stays bounded",
+        },
+        "audit_call_chain": [
+            {"symbol": "can_finish_ordered_extent.isra.0"},
+            {"symbol": "btrfs_finish_ordered_extent"},
+        ],
+        "core_oracle": [
+            {"order": 1, "condition": "target warning"},
+        ],
+        "reproducer": {"operator_supplied": True},
+        "incremental_setup": {
+            "steps": [
+                {"order": 1, "kind": "run_binary", "binary": "diagnostic_test"},
+            ],
+        },
+    }
+    contract = _extract_kernel_contract(json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "ordered completion length stays bounded"
+    assert contract.call_chain_oracle.fault_signatures == ["len > ordered->bytes_left"]
+    assert contract.call_chain_oracle.required_frames == [
+        "can_finish_ordered_extent.isra.0", "btrfs_finish_ordered_extent",
+    ]
+    assert contract.execution_steps[0].path == "bin/diagnostic_test"
+
+
 def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
     rich = {
         "contract_type": "KERNEL_CONTRACT",
