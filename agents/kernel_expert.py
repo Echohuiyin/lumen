@@ -2911,6 +2911,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         rich_chain = {}
     rich_oracle = normalized.get("core_oracle")
     if not isinstance(rich_oracle, dict):
+        rich_oracle = normalized.get("strict_ordered_core_oracle")
+    if not isinstance(rich_oracle, dict):
         rich_oracle = {}
 
     def _rich_symbol(value: object) -> str:
@@ -2936,7 +2938,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         # The persisted audit chain records source locations as ``foo
         # (path:line)`` or ``foo [path:line]``.  They are evidence metadata,
         # not part of the runtime symbol ABI.
-        text = re.sub(r"\s+\([^()]*\)$", "", text).strip()
+        text = re.sub(r"\s*\([^()]*\)$", "", text).strip()
         text = re.sub(r"\s+\[[^\]]+\]$", "", text).strip()
         if not re.fullmatch(
             r"[A-Za-z_.$][A-Za-z0-9_.$]*(?:\+0x[0-9A-Fa-f]+(?:/0x[0-9A-Fa-f]+)?)?",
@@ -2944,6 +2946,68 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         ):
             return ""
         return text
+
+    evidence_symbols: set[str] = set()
+    for evidence_item in normalized.get("source_evidence") or []:
+        if not isinstance(evidence_item, dict):
+            continue
+        raw_functions = (
+            evidence_item.get("functions")
+            or evidence_item.get("function")
+            or evidence_item.get("symbols")
+            or evidence_item.get("symbol")
+        )
+        candidates = (
+            raw_functions if isinstance(raw_functions, list)
+            else [raw_functions] if raw_functions else []
+        )
+        evidence_symbols.update(
+            symbol for item in candidates if (symbol := _rich_symbol(item))
+        )
+
+    def _collect_evidence_words(value: object) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                _collect_evidence_words(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                _collect_evidence_words(nested)
+        elif isinstance(value, str):
+            evidence_symbols.update(re.findall(
+                r"\b[a-z][a-z0-9_.$]*\b", value,
+            ))
+
+    _collect_evidence_words(normalized.get("source_evidence"))
+
+    def _symbols_from_chain_item(item: object) -> list[str]:
+        """Extract only symbols explicitly present in source evidence."""
+        direct = _rich_symbol(item)
+        raw_text = str(item or "")
+        compound = bool(re.search(r"[()\s=>]", raw_text))
+        if direct == "panic":
+            return []
+        if direct and (
+            not evidence_symbols
+            or direct in evidence_symbols
+            or not compound
+        ):
+            return [direct]
+        text = str(item or "")
+        found: list[str] = []
+        for match in re.finditer(
+            r"(?<![A-Za-z0-9_.$>])([A-Za-z_][A-Za-z0-9_.$]*)\s*(?=\()",
+            text,
+        ):
+            symbol = match.group(1)
+            if evidence_symbols and symbol not in evidence_symbols:
+                continue
+            if symbol not in found:
+                found.append(symbol)
+        if not found:
+            first = re.match(r"\s*([A-Za-z_][A-Za-z0-9_.$]*)\b", text)
+            if first and (not evidence_symbols or first.group(1) in evidence_symbols):
+                found.append(first.group(1))
+        return found
 
     if not str(normalized.get("root_cause") or "").strip():
         statement = str(
@@ -2977,10 +3041,11 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         else:
             declared_chain = rich_chain
         if isinstance(declared_chain, list):
-            frames = [
-                symbol for item in declared_chain
-                if (symbol := _rich_symbol(item))
-            ]
+            frames = []
+            for item in declared_chain:
+                for symbol in _symbols_from_chain_item(item):
+                    if symbol not in frames:
+                        frames.append(symbol)
             if frames:
                 normalized["original_call_chain"] = frames
                 warnings.append(
@@ -3033,6 +3098,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_oracle.get("ordered_assertions")
         or rich_oracle.get("ordered_checks")
         or normalized.get("strict_ordered_core_oracle")
+        or rich_oracle.get("steps")
     )
     if isinstance(ordered_assertions, list):
         rich_signatures: list[str] = []
@@ -3063,6 +3129,16 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     symbol = _rich_symbol(function)
                     if symbol and symbol not in rich_frames:
                         rich_frames.append(symbol)
+        required_call_order = rich_oracle.get("required_call_order")
+        if isinstance(required_call_order, list):
+            for item in required_call_order:
+                symbol = _rich_symbol(item)
+                if symbol and symbol not in rich_frames:
+                    rich_frames.append(symbol)
+                text = str(item or "").strip()
+                if text and re.search(r"len\s*>\s*\S+|\bWARNING:\b|Kernel panic", text, re.IGNORECASE):
+                    if text not in rich_signatures:
+                        rich_signatures.append(text)
         if rich_signatures and not oracle.get("fault_signatures"):
             oracle["fault_signatures"] = rich_signatures
         if rich_frames and not (
@@ -3135,6 +3211,7 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_target.get("fault_signature")
         or rich_case.get("reported_signal")
         or rich_case.get("reported_assertion")
+        or rich_case.get("observed_warning")
         or rich_case.get("observed_violation")
         or rich_invariant.get("observed_failure")
         or rich_invariant.get("violation")
