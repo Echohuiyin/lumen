@@ -367,6 +367,46 @@ def test_wrapped_persisted_contract_uses_target_and_audited_chain():
     assert contract.call_chain_oracle.required_frames == contract.original_call_chain
 
 
+def test_wrapped_array_core_contract_is_explicitly_adapted():
+    """The persisted outer marker and array oracle must not become a block."""
+    rich = {
+        "KERNEL_CONTRACT": {
+            "status": "ready",
+            "case": {
+                "subsystem": "btrfs ordered-data",
+                "symptom": "len > ordered->bytes_left",
+                "warning_site": "fs/btrfs/ordered-data.c:390",
+            },
+            "source": {
+                "expected_commit": "deadbeef",
+                "commit_verified": True,
+            },
+            "verified_invariant": "ordered completion length stays within bytes_left",
+            "audit_call_chain": [
+                {"function": "can_finish_ordered_extent.isra.0"},
+                {"function": "btrfs_finish_ordered_extent"},
+            ],
+            "core_oracle": [
+                {"order": 1, "assert": "len > ordered->bytes_left at fs/btrfs/ordered-data.c:390"},
+                {"order": 2, "assert": "The ordered call trace follows the audited chain."},
+            ],
+            "reproducer": {
+                "operator_supplied": True,
+                "steps": [{"order": 1, "kind": "run_binary", "binary": "diagnostic_test"}],
+            },
+        },
+    }
+    contract = _extract_kernel_contract(json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "ordered completion length stays within bytes_left"
+    assert contract.call_chain_oracle.fault_signatures == [
+        "len > ordered->bytes_left at fs/btrfs/ordered-data.c:390",
+    ]
+    assert contract.call_chain_oracle.required_frames == [
+        "can_finish_ordered_extent.isra.0", "btrfs_finish_ordered_extent",
+    ]
+
+
 def test_runtime_ready_contract_uses_case_violation_and_chain_frames():
     rich = {
         "contract_type": "KERNEL_CONTRACT",

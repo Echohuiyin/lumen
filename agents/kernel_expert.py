@@ -2883,6 +2883,23 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             # are still required below.
             data = dict(data)
             data["contract"] = "KERNEL_CONTRACT"
+        elif (
+            data.get("status") in {
+                "ok", "ready", "blocked", "ready_for_test",
+                "ready_for_runtime_test",
+            }
+            and isinstance(data.get("case"), dict)
+            and isinstance(data.get("source"), dict)
+            and isinstance(data.get("audit_call_chain"), list)
+            and isinstance(data.get("core_oracle"), list)
+            and isinstance(data.get("reproducer"), dict)
+        ):
+            # The maintenance skill also emits a fully explicit contract
+            # with ``source`` metadata and array-shaped ``core_oracle``
+            # assertions.  The outer marker is recovered by the extractor;
+            # this branch covers the persisted inner object.
+            data = dict(data)
+            data["contract"] = "KERNEL_CONTRACT"
         else:
             return data
     normalized = dict(data)
@@ -2904,13 +2921,17 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     if not isinstance(rich_case, dict):
         rich_case = {}
     rich_invariant = normalized.get("verified_invariant")
-    if not isinstance(rich_invariant, dict):
+    if isinstance(rich_invariant, str):
+        rich_invariant = {"statement": rich_invariant}
+    elif not isinstance(rich_invariant, dict):
         rich_invariant = {}
     rich_chain = normalized.get("audit_call_chain") or normalized.get("full_audit_call_chain")
     if not isinstance(rich_chain, (dict, list)):
         rich_chain = {}
     rich_oracle = normalized.get("core_oracle")
-    if not isinstance(rich_oracle, dict):
+    if isinstance(rich_oracle, list):
+        rich_oracle = {"ordered": rich_oracle}
+    elif not isinstance(rich_oracle, dict):
         rich_oracle = normalized.get("strict_ordered_core_oracle")
     if not isinstance(rich_oracle, dict):
         rich_oracle = {}
@@ -3106,17 +3127,31 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         for assertion in ordered_assertions:
             if not isinstance(assertion, dict):
                 continue
-            raw_signature = (
-                assertion.get("required_log")
-                or assertion.get("match")
-                or assertion.get("pattern")
-                or assertion.get("must_match")
-                or assertion.get("signature")
-                or ""
-            )
+            signature_key = ""
+            raw_signature = ""
+            for key in (
+                "required_log", "match", "pattern", "must_match", "signature", "assert",
+            ):
+                value = assertion.get(key)
+                if value:
+                    signature_key = key
+                    raw_signature = value
+                    break
             if isinstance(raw_signature, str):
                 signature = raw_signature.strip()
-                if signature and signature not in rich_signatures:
+                if (
+                    signature
+                    and (
+                        signature_key != "assert"
+                        or re.search(
+                            r"len\s*>\s*\S+|\b(?:BUG|WARNING|KASAN|Oops|hung_task)\s*[:#]|"
+                            r"Kernel panic|panic_on_warn",
+                            signature,
+                            flags=re.IGNORECASE,
+                        )
+                    )
+                    and signature not in rich_signatures
+                ):
                     rich_signatures.append(signature)
             elif isinstance(raw_signature, list):
                 for frame in raw_signature:
@@ -3217,6 +3252,8 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         or rich_invariant.get("violation")
         or rich_invariant.get("observed_violation")
         or rich_invariant.get("violating_observation")
+        or rich_case.get("warning_site")
+        or rich_case.get("symptom")
         or ""
     ).strip()
     if not oracle.get("fault_signatures"):
@@ -3921,6 +3958,13 @@ def _extract_kernel_contract(text: str) -> KernelExpertOutput:
                 if stripped.lower().startswith("json"):
                     stripped = stripped[4:].strip()
             data, _ = json.JSONDecoder().raw_decode(stripped)
+            # Codex may persist the explicit marker as an outer JSON key:
+            # ``{"KERNEL_CONTRACT": {...}}``.  Unwrap only that named
+            # object and retain the marker; no nested evidence object is
+            # promoted by shape guessing.
+            if isinstance(data, dict) and isinstance(data.get("KERNEL_CONTRACT"), dict):
+                data = dict(data["KERNEL_CONTRACT"])
+                data["contract"] = "KERNEL_CONTRACT"
             # Do not accept a nested object (for example one evidence item)
             # merely because pydantic can fill all of its defaults.  Only a
             # top-level contract-shaped object is eligible for handoff.
