@@ -300,6 +300,38 @@ def test_persisted_kernel_contract_shape_is_adapted_without_fallback(tmp_path):
     assert [step.type for step in enriched.execution_steps] == ["run_binary"]
     assert enriched.execution_steps[0].path == "bin/operator-repro"
 
+
+def test_persisted_kernel_contract_aliases_are_explicitly_adapted():
+    rich = {
+        "contract": "KERNEL_CONTRACT",
+        "status": "ready",
+        "case": {"verified_invariant": "ordered completion invariant"},
+        "audit_call_chain": {
+            "forward_to_invariant": [
+                {"function": "worker_thread"},
+                {
+                    "function": "finish_extent",
+                    "role": "fault site (reported symbol finish_extent.isra.0)",
+                },
+            ],
+        },
+        "core_oracle": {
+            "ordered_events": [
+                {"required": True, "match": "ordered completion warning"},
+            ],
+        },
+        "setup": {"steps": [{"type": "run_binary", "binary": "diagnostic_test"}]},
+    }
+    contract = _extract_kernel_contract("KERNEL_CONTRACT: " + json.dumps(rich))
+    assert contract.status == "ok"
+    assert contract.root_cause == "ordered completion invariant"
+    assert contract.original_call_chain == ["worker_thread", "finish_extent.isra.0"]
+    assert contract.call_chain_oracle.required_frames == [
+        "worker_thread", "finish_extent.isra.0",
+    ]
+    assert contract.call_chain_oracle.fault_signatures == ["ordered completion warning"]
+    assert contract.execution_steps[0].args == []
+
 def test_inline_report_annotations_are_preserved(tmp_path):
     report = tmp_path / "report.txt"
     report.write_text(

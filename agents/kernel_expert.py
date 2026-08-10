@@ -2881,6 +2881,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     rich_finding = normalized.get("finding")
     if not isinstance(rich_finding, dict):
         rich_finding = {}
+    rich_case = normalized.get("case")
+    if not isinstance(rich_case, dict):
+        rich_case = {}
     rich_invariant = normalized.get("verified_invariant")
     if not isinstance(rich_invariant, dict):
         rich_invariant = {}
@@ -2902,6 +2905,15 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
                     break
         else:
             text = str(value or "").strip()
+        if isinstance(value, dict):
+            role = str(value.get("role") or "")
+            reported = re.search(
+                r"reported symbol\s+([A-Za-z_][A-Za-z0-9_.$]*)",
+                role,
+                flags=re.IGNORECASE,
+            )
+            if reported:
+                text = reported.group(1)
         # The persisted audit chain records source locations as ``foo
         # (path:line)`` or ``foo [path:line]``.  They are evidence metadata,
         # not part of the runtime symbol ABI.
@@ -2910,7 +2922,12 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
         return text
 
     if not str(normalized.get("root_cause") or "").strip():
-        statement = str(rich_invariant.get("statement") or "").strip()
+        statement = str(
+            rich_invariant.get("statement")
+            or rich_case.get("verified_invariant")
+            or rich_case.get("summary")
+            or ""
+        ).strip()
         if statement:
             normalized["root_cause"] = statement
             basis = rich_invariant.get("source_basis")
@@ -2924,7 +2941,11 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             )
 
     if not normalized.get("original_call_chain"):
-        declared_chain = rich_chain.get("target_trigger_order")
+        declared_chain = (
+            rich_chain.get("target_trigger_order")
+            or rich_chain.get("forward_to_invariant")
+            or rich_chain.get("frames")
+        )
         if isinstance(declared_chain, list):
             frames = [
                 symbol for item in declared_chain
@@ -2942,14 +2963,23 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
     # unwind frames into mandatory trigger frames.
     raw_runtime_oracle = normalized.get("call_chain_oracle")
     oracle = dict(raw_runtime_oracle) if isinstance(raw_runtime_oracle, dict) else {}
-    ordered_assertions = rich_oracle.get("ordered")
+    ordered_assertions = (
+        rich_oracle.get("ordered")
+        or rich_oracle.get("ordered_events")
+        or rich_oracle.get("events")
+    )
     if isinstance(ordered_assertions, list):
         rich_signatures: list[str] = []
         rich_frames: list[str] = []
         for assertion in ordered_assertions:
             if not isinstance(assertion, dict):
                 continue
-            signature = str(assertion.get("required_log") or "").strip()
+            signature = str(
+                assertion.get("required_log")
+                or assertion.get("match")
+                or assertion.get("signature")
+                or ""
+            ).strip()
             if signature and signature not in rich_signatures:
                 rich_signatures.append(signature)
             functions = assertion.get("required_functions")
@@ -2987,7 +3017,9 @@ def _normalise_codex_maintenance_contract(data: dict) -> dict:
             if not isinstance(item, dict) or item.get("type") != "run_binary":
                 continue
             binary = str(item.get("binary") or item.get("path") or "").strip()
-            args = item.get("argv") if isinstance(item.get("argv"), list) else item.get("args")
+            args = item.get("argv") if "argv" in item else item.get("args", [])
+            if args is None:
+                args = []
             if (
                 not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", binary)
                 or not isinstance(args, list)
